@@ -1,0 +1,123 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONUNBUFFERED: "1"
+  FORCE_COLOR: "1"
+  UV_PYTHON_DOWNLOADS: "automatic"
+
+permissions:
+  contents: read
+
+jobs:
+  # ─── Lint + format check ───────────────────────────────────────────────────
+  lint:
+    name: Lint & format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: "pyproject.toml"
+
+      - name: Install Python 3.11
+        run: uv python install 3.11
+
+      - name: Install project (with dev extras)
+        run: uv sync --extra dev
+
+      - name: Ruff lint
+        run: uv run ruff check src tests
+
+      - name: Ruff format check
+        run: uv run ruff format --check src tests
+
+  # ─── Type checking ─────────────────────────────────────────────────────────
+  typecheck:
+    name: Type check (mypy strict)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: "pyproject.toml"
+
+      - run: uv python install 3.11
+      - run: uv sync --extra dev
+      - name: Mypy
+        run: uv run mypy src tests
+
+  # ─── Security ──────────────────────────────────────────────────────────────
+  security:
+    name: Security (bandit + pip-audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: "pyproject.toml"
+
+      - run: uv python install 3.11
+      - run: uv sync --extra dev
+
+      - name: Bandit
+        run: uv run bandit -r src -c pyproject.toml
+
+      - name: pip-audit (deps CVE)
+        # --skip-editable : ne pas auditer le package emeraude lui-meme (local).
+        # --ignore-vuln CVE-2026-3219 : vuln dans pip (outil de build, pas
+        # une dep runtime d'Emeraude) ; pas de fix version publiee. A retirer
+        # des qu'un pip patche.
+        run: uv run pip-audit --skip-editable --ignore-vuln CVE-2026-3219
+        continue-on-error: false
+
+  # ─── Tests + coverage (matrix 3.11 + 3.12) ─────────────────────────────────
+  test:
+    name: Test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: "pyproject.toml"
+
+      - name: Install Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Install project
+        run: uv sync --extra dev --python ${{ matrix.python-version }}
+
+      - name: Run tests with coverage
+        run: uv run --python ${{ matrix.python-version }} pytest -n auto
+
+      - name: Upload coverage XML
+        if: matrix.python-version == '3.11'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          retention-days: 14
