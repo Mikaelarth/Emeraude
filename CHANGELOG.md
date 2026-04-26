@@ -6,6 +6,59 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.14] - 2026-04-26
+
+### Added
+
+- **Execution layer opens** —
+  `src/emeraude/agent/execution/__init__.py` and
+  `src/emeraude/agent/execution/circuit_breaker.py`. Implements the
+  4-state machine from doc 05 §"CIRCUIT BREAKER 4 niveaux" and rule
+  R10 from doc 07 (non-bypass safety net) :
+  - `CircuitBreakerState` `StrEnum` : `HEALTHY`, `WARNING`,
+    `TRIGGERED`, `FROZEN`.
+  - `get_state()` reads from settings DB ; corrupt value defaults to
+    `FROZEN` (fail-safe over fail-open).
+  - `set_state(new, reason)` persists + emits a
+    `CIRCUIT_BREAKER_STATE_CHANGE` audit event with `from`, `to`,
+    and `reason` payload (rule R9).
+  - Convenience transitions : `trip(reason)`, `warn(reason)`,
+    `freeze(reason)`, `reset(reason)`.
+  - Decision API :
+    - `is_trade_allowed()` — `True` only in `HEALTHY` (strict R10).
+    - `is_trade_allowed_with_warning()` — `True` in `HEALTHY` or
+      `WARNING` ; the caller must apply reduced sizing in `WARNING`.
+- 22 new tests (394 → 416) :
+  - 2 default tests (no row → `HEALTHY`).
+  - 4 per-state behavior tests (each state's effect on the two
+    decision predicates).
+  - 5 transition tests (each transition persists and is observable).
+  - 1 persistence test (state survives a connection close-and-reopen
+    simulated restart).
+  - 2 corrupt-state tests (unknown DB value → `FROZEN`, blocks all).
+  - 2 audit-trail tests (single transition emits one event,
+    sequence of three emits three with correct chronological order).
+  - 2 enum invariant tests (exactly four states, names ASCII upper).
+  - Hypothesis property tests :
+    - `set_state(s); get_state() == s` for every valid `s`.
+    - `is_trade_allowed` ⇔ `state == HEALTHY`.
+    - `is_trade_allowed_with_warning` ⇔ `state ∈ {HEALTHY, WARNING}`.
+    - Arbitrary transition sequence lands on the last state.
+
+### Notes
+
+- This iteration ships the **state machine + manual API** only.
+  Automatic triggers (drawdown 24h, consecutive losses, latency)
+  consume signals from modules not yet built ; they will land in a
+  future iteration once the data feeds are wired (anti-rule A1 :
+  no anticipatory features).
+- The corrupt-value-defaults-to-FROZEN behavior is the most important
+  invariant of this module : an unknown DB value blocks all trading.
+  Verified by both a unit test and an integration assertion.
+
+[Unreleased]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.14...HEAD
+[0.0.14]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.13...v0.0.14
+
 ## [0.0.13] - 2026-04-26
 
 ### Added
@@ -46,7 +99,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - The CVaR-based cap (R5 doc 10) is a future iteration ; this module
   exposes the sizing arithmetic only.
 
-[Unreleased]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.13...HEAD
 [0.0.13]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.12...v0.0.13
 
 ## [0.0.12] - 2026-04-26
