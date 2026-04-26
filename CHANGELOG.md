@@ -6,6 +6,80 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.27] - 2026-04-26
+
+### Added
+
+- **R12 Operational reporting (core 7 metrics)** — doc 10 §"R12 —
+  Reporting opérationnel (anti-vanity)" : 5/15 innovations livrées
+  (était 4/15 : R5, R9, R10, R11). Module pure
+  `agent/learning/performance_report.py` agrège
+  :meth:`tracker.history()` en un :class:`PerformanceReport`
+  audit-friendly que la future UI Kivy pourra afficher en un écran.
+  - **Sample size** : `n_trades`, `n_wins`, `n_losses` (break-even
+    compté en perte par symétrie avec la convention bandit).
+  - **Decomposition** : `win_rate`, `avg_win`, `avg_loss` (magnitude
+    positive), `expectancy` (= mean R-multiple, le seul vrai
+    "edge indicator").
+  - **Profit factor** : `sum_wins / |sum_losses|`.
+    `Decimal('Infinity')` pour les courbes monotones gagnantes.
+  - **Sharpe** : `mean(R) / std(R)` per-trade (sample std n-1, pas
+    annualisé — c'est en R-multiples).
+  - **Sortino** : `mean(R) / downside_std(R)` ; variance prise vs 0
+    (target return), pas vs mean — convention Sortino standard.
+  - **Calmar** : `sum(R) / max_drawdown`. `Infinity` si pas de DD.
+  - **Max drawdown** : pire chute peak-to-trough sur la courbe
+    cumulative R, en magnitude positive.
+  - Pure module : `getcontext().sqrt()` natif Decimal (pas de cast
+    float dans le chemin chaud), helpers privés
+    (`_mean`, `_std_sample`, `_downside_std`, `_max_drawdown`,
+    `_empty_report`) tous testables.
+  - **Différé (anti-règle A1)** : les 5 métriques avancées de doc 10
+    R12 (HODL benchmark, slippage observé vs modélisé, ECE
+    calibration, Kelly used vs optimal, R8 tradability) attendent
+    leurs modules amont (market-data history, per-trade fill
+    quality, calibration probabiliste, R8 microstructure). Cette
+    iter livre le squelette des 7 ratios qui ne demandent rien de
+    nouveau côté tracking.
+- 28 nouveaux tests (722 → 750), tous verts :
+  - 23 unit dans `tests/unit/test_performance_report.py` :
+    edge cases (empty, open positions skipped, single-sample),
+    counts/rates (correct, break-even = loss), expectancy and
+    averages (mean, no wins → avg_win 0, no losses → avg_loss 0),
+    profit factor (basic, < 1 sur expectancy négative, infini sans
+    losses), Sharpe/Sortino (constant → 0, signs match expectancy,
+    Sortino isolation downside, no losses → Sortino 0), Calmar/DD
+    (winners purs → Infinity, drawdown basic, losers purs → calmar
+    négatif), end-to-end via vrai `PositionTracker.history()`,
+    shape frozen + dataclass.
+  - 5 Hypothesis property tests dans
+    `tests/property/test_performance_report_properties.py` :
+    `n_trades == len(input)`, `n_wins + n_losses == n_trades`,
+    `0 <= win_rate <= 1`, magnitudes (`avg_win`, `avg_loss`,
+    `max_drawdown`) toutes >= 0, `profit_factor > 1 iff
+    expectancy > 0` (modulo cas dégénérés Infinity / 0).
+
+### Notes
+
+- Coverage ratchets à **99.80 %** (était 99.79). Module à **100 %**
+  (1 guard "empty list" dans `_max_drawdown` marqué
+  `# pragma: no cover` car `compute_performance_report`
+  court-circuite déjà sur input vide).
+- **Pas d'intégration UI** cette iter : doc 10 R12 mentionne
+  "écran lisible en 5 secondes" mais cet écran fait partie du
+  Pilier #1 UI (Kivy) qui n'existe pas encore. Cette iter livre
+  les *données* du futur écran ; le rendering visuel viendra
+  plus tard.
+- **Conventions Sortino** : variance des seuls returns négatifs vs
+  target=0 (et non vs mean). C'est la définition la plus répandue
+  dans la littérature trading. Alternative "Sortino ratio post"
+  utilise mean comme target ; on a choisi 0 pour cohérence avec
+  la métrique R-multiple (où 0 = break-even).
+- **Référence académique** :
+  - Sharpe (1966), *Mutual Fund Performance*.
+  - Sortino & van der Meer (1991), *Downside Risk*.
+  - Young (1991), *Calmar Ratio: A Smoother Tool*.
+
 ## [0.0.26] - 2026-04-26
 
 ### Added
