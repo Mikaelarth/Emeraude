@@ -40,6 +40,7 @@ repos:
           - types-requests
           - hypothesis
           - pytest
+          - certifi  # required for type-checking infra/net.py
         args: ["--config-file=pyproject.toml"]
         # Run only on src; tests have their own type-check tolerance.
         files: ^src/

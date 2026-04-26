@@ -6,6 +6,50 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.5] - 2026-04-26
+
+### Added
+
+- `src/emeraude/infra/net.py` — single audit point for outbound HTTP
+  (rule R8 of the cahier des charges) :
+  - `SSL_CTX` : module-level singleton, ``ssl.create_default_context``
+    seeded with the certifi CA bundle when available, falling back to
+    the system trust store. Configured for ``CERT_REQUIRED`` +
+    hostname verification + TLS 1.2+ minimum.
+  - `build_ssl_context(cafile=None)` : factory exposed for tests.
+  - `_certifi_cafile()` : isolates the certifi probe so tests can mock
+    its presence/absence.
+  - `urlopen(url, method, headers, data, timeout, user_agent)` : the
+    blessed way to call HTTP. Always uses :data:`SSL_CTX`, default
+    timeout 30 s (SLA pillar #3), default User-Agent identifying
+    Emeraude. Wraps ``urllib.request.urlopen`` and propagates
+    ``HTTPError`` / ``URLError`` to callers.
+- `certifi>=2024.0` declared as an explicit runtime dependency
+  (previously transitive via `requests`).
+- 20 new tests (126 → 146) covering :
+  - SSL context : type, ``CERT_REQUIRED``, ``check_hostname``, TLS 1.2+.
+  - Factory variants : with cafile, without (system default).
+  - Certifi probe : path returned when installed, ``None`` when mocked
+    out via ``sys.modules``.
+  - `urlopen` : body return value, SSL context propagation, timeout
+    forwarding, default + override User-Agent, custom headers, method
+    + data propagation, ``HTTPError`` and ``URLError`` propagation.
+  - Hypothesis : arbitrary header name + value combinations are
+    attached to the ``Request`` ; arbitrary timeout values are
+    forwarded verbatim.
+
+### Notes
+
+- Network tests use `unittest.mock` patches on `urllib.request.urlopen`,
+  not real HTTP sockets — deterministic, no flaky CI on transient
+  upstream issues.
+- The bandit ``S310`` warning (urlopen with arbitrary URL schemes) is
+  suppressed via documented ``# noqa`` markers : URLs in this
+  codebase are hard-coded endpoints, never user-supplied.
+
+[Unreleased]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.5...HEAD
+[0.0.5]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.4...v0.0.5
+
 ## [0.0.4] - 2026-04-26
 
 ### Added
@@ -53,7 +97,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   on decrypt rather than raising. The threat model excludes
   "attacker writes to the DB".
 
-[Unreleased]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.4...HEAD
 [0.0.4]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.3...v0.0.4
 
 ## [0.0.3] - 2026-04-26

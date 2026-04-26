@@ -267,9 +267,10 @@ wheels = [
 
 [[package]]
 name = "emeraude"
-version = "0.0.4"
+version = "0.0.5"
 source = { editable = "." }
 dependencies = [
+    { name = "certifi" },
     { name = "kivy" },
     { name = "requests" },
 ]
@@ -293,6 +294,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "bandit", extras = ["toml"], marker = "extra == 'dev'", specifier = ">=1.7.10" },
+    { name = "certifi", specifier = ">=2024.0" },
     { name = "commitizen", marker = "extra == 'dev'", specifier = ">=3.30.0" },
     { name = "detect-secrets", marker = "extra == 'dev'", specifier = ">=1.5.0" },
     { name = "hypothesis", marker = "extra == 'dev'", specifier = ">=6.115.0" },
