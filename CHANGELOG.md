@@ -6,6 +6,55 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.6] - 2026-04-26
+
+### Added
+
+- `src/emeraude/infra/retry.py` — exponential-backoff retry decorator
+  for transient HTTP failures :
+  - `retry(max_attempts, initial_delay, backoff_factor, max_delay,
+    jitter_range, should_retry)` decorator factory.
+  - `default_should_retry(exc)` predicate : retries
+    :class:`urllib.error.URLError` and :class:`urllib.error.HTTPError`
+    with code ``429`` or ``5xx`` ; non-retryable for any other case.
+  - Default policy tuned for Binance / CoinGecko APIs : 5 attempts,
+    initial delay 0.5 s, factor 2, max delay 30 s, jitter 0.5x-1.5x.
+  - Cryptographically-seeded jitter (``random.SystemRandom``) — avoids
+    bandit ``S311`` without behavioral cost.
+  - Each retry emits a ``WARNING`` log line with attempt/total,
+    exception class+message, computed wait — free audit trail of
+    HTTP retries.
+  - Invalid ``max_attempts < 1`` raises ``ValueError`` immediately.
+- 34 new tests (146 → 180) covering :
+  - `default_should_retry` over the full HTTP code matrix
+    (parametrized 7 retryable + 7 non-retryable codes), URL errors,
+    arbitrary other exceptions.
+  - Decorator basics : success path, transient-then-success,
+    exhaustion, non-retryable propagation, 429 retried, 404 not
+    retried.
+  - Backoff timing : exponential schedule under deterministic jitter,
+    `max_delay` cap on long delays, jitter multiplier applied.
+  - Custom `should_retry` policy injectable.
+  - Validation : zero / negative `max_attempts` rejected ; `=1`
+    disables retrying.
+  - `functools.wraps` preserves `__name__` and `__doc__`.
+  - Hypothesis : call count == max_attempts when always failing,
+    no recorded sleep exceeds `max_delay × jitter_max`.
+
+### Notes
+
+- Module placed in `infra/` (not `core/` per the spec): retry is a
+  cross-cutting infrastructure concern wrapping HTTP calls, not
+  domain logic. The spec layout (`core/retry.py`) was a flat-layout
+  artifact ; clean architecture puts utilities at the infra layer.
+- The `# nosec B311` warning is dodged by using
+  ``random.SystemRandom`` rather than ``random.random``. Jitter has
+  no security implication, but the cleaner code is worth the tiny
+  syscall overhead per retry.
+
+[Unreleased]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.6...HEAD
+[0.0.6]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.5...v0.0.6
+
 ## [0.0.5] - 2026-04-26
 
 ### Added
@@ -47,7 +96,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   suppressed via documented ``# noqa`` markers : URLs in this
   codebase are hard-coded endpoints, never user-supplied.
 
-[Unreleased]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.5...HEAD
 [0.0.5]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.4...v0.0.5
 
 ## [0.0.4] - 2026-04-26
