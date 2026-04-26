@@ -6,6 +6,53 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.8] - 2026-04-26
+
+### Added
+
+- `src/emeraude/infra/market_data.py` — read-only public market-data
+  feeds (counterpart to the signed `exchange.py`) :
+  - `Kline` (frozen, slotted dataclass) : parsed OHLCV candle with
+    Decimal prices and volumes, epoch-ms times. Built via
+    `Kline.from_binance_array(arr)` from the documented Binance kline
+    array format.
+  - `CoinMarketData` (frozen, slotted dataclass) : subset of CoinGecko's
+    `/coins/markets` payload — `id`, `symbol`, `name`, `current_price`,
+    `market_cap`, `volume_24h`, `price_change_pct_24h`. Missing or null
+    upstream fields coerce to `None` rather than raising.
+  - `get_klines(symbol, interval, limit)` : Binance `/api/v3/klines`,
+    default `1h` / 100 candles.
+  - `get_current_price(symbol)` : Binance `/api/v3/ticker/price`,
+    returns Decimal.
+  - `get_top_coins_market_data(limit, vs_currency)` : CoinGecko top-N
+    by market cap, default USD.
+  - All HTTP calls go through `infra.net.urlopen` (R8) and are
+    wrapped by `infra.retry.retry()` (transient absorption).
+- 20 new tests (211 → 231) covering :
+  - `Kline` parsing of all 12 fields, immutability, Decimal types.
+  - `CoinMarketData` full payload, missing fields, explicit nulls.
+  - `get_klines` URL construction, default interval/limit, base URL,
+    empty response.
+  - `get_current_price` Decimal return + ticker URL.
+  - `get_top_coins_market_data` parsing, default order/per_page,
+    custom `vs_currency` propagation, CoinGecko base URL.
+- Hypothesis property tests :
+  - `Kline.from_binance_array` round-trip over arbitrary OHLCV ranges
+    (1 satoshi to 100 trillion) and timestamps.
+  - `CoinMarketData` numeric fields are always `Decimal` regardless of
+    upstream representation.
+
+### Notes
+
+- No in-memory cache : anti-règle A1 (no anticipatory features). The
+  bot's hourly cycle stays well below CoinGecko's 30 req/min ceiling.
+  TTL caching can land in a future iteration if measurement justifies it.
+- This module closes the `infra/` layer for the v0.0.x series. The
+  next iteration starts the **domain** layer (indicators / signals).
+
+[Unreleased]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.8...HEAD
+[0.0.8]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.7...v0.0.8
+
 ## [0.0.7] - 2026-04-26
 
 ### Added
@@ -54,7 +101,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   to the `tests/**/*.py` exclusion list. Test credentials are by
   nature hardcoded and well-known.
 
-[Unreleased]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.7...HEAD
 [0.0.7]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.6...v0.0.7
 
 ## [0.0.6] - 2026-04-26
