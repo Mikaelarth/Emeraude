@@ -43,6 +43,10 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import TYPE_CHECKING, Final
 
+from emeraude.agent.execution.breaker_monitor import (
+    BreakerCheckResult,
+    BreakerMonitor,
+)
 from emeraude.agent.execution.position_tracker import Position, PositionTracker
 from emeraude.agent.reasoning.risk_manager import Side
 from emeraude.infra import audit, market_data
@@ -84,6 +88,8 @@ class CycleReport:
         interval: kline interval, e.g. ``"1h"``.
         fetched_at: epoch-second timestamp of the cycle.
         current_price: ticker price used for the tick step.
+        breaker_check: result of the pre-decision breaker monitor
+            check (None when no monitor is wired).
         decision: full :class:`CycleDecision` from the orchestrator.
         tick_outcome: position closed by the pre-decision tick (stop
             or target hit), or ``None``.
@@ -95,6 +101,7 @@ class CycleReport:
     interval: str
     fetched_at: int
     current_price: Decimal
+    breaker_check: BreakerCheckResult | None
     decision: CycleDecision
     tick_outcome: Position | None
     opened_position: Position | None
@@ -124,6 +131,7 @@ class AutoTrader:
         capital_provider: Callable[[], Decimal] | None = None,
         orchestrator: Orchestrator | None = None,
         tracker: PositionTracker | None = None,
+        breaker_monitor: BreakerMonitor | None = None,
         fetch_klines: Callable[[str, str, int], list[Kline]] | None = None,
         fetch_current_price: Callable[[str], Decimal] | None = None,
     ) -> None:
@@ -142,6 +150,14 @@ class AutoTrader:
                 :class:`Orchestrator` with the doc-04 trio.
             tracker: position lifecycle component. Defaults to a fresh
                 :class:`PositionTracker`.
+            breaker_monitor: auto-escalation monitor that scans the
+                position history and trips / warns the circuit breaker
+                before the orchestrator runs. Defaults to a fresh
+                :class:`BreakerMonitor` wired to the same tracker —
+                a no-history cycle is a no-op so empty / unit-test
+                scenarios remain unaffected. The monitor only
+                escalates, never downgrades, so a manually-tripped
+                breaker stays tripped.
             fetch_klines: HTTP fetcher for klines, signature
                 ``(symbol, interval, limit) -> list[Kline]``. Defaults
                 to :func:`market_data.get_klines`.
@@ -159,6 +175,14 @@ class AutoTrader:
             orchestrator if orchestrator is not None else Orchestrator()
         )
         self._tracker: PositionTracker = tracker if tracker is not None else PositionTracker()
+        # Wire a default monitor against the same tracker — its check
+        # is a single DB read so the cost is trivial. Tests that want
+        # custom thresholds inject a configured instance.
+        self._breaker_monitor: BreakerMonitor = (
+            breaker_monitor
+            if breaker_monitor is not None
+            else BreakerMonitor(tracker=self._tracker)
+        )
         self._fetch_klines: Callable[[str, str, int], list[Kline]] = (
             fetch_klines if fetch_klines is not None else market_data.get_klines
         )
@@ -194,15 +218,22 @@ class AutoTrader:
         current_price = self._fetch_current_price(self._symbol)
         klines = self._fetch_klines(self._symbol, self._interval, self._klines_limit)
 
-        # Step 1 : tick first so an existing position closes before any
-        # new decision is taken on stale state.
+        # Step 1 : tick first so an existing position closes before
+        # any new decision is taken on stale state.
         tick_outcome = self._tracker.tick(current_price=current_price, now=ts)
 
-        # Step 2 : decision.
+        # Step 2 : auto-escalate the circuit breaker if the post-tick
+        # history reveals a streak / cumulative-loss situation. This
+        # runs *after* tick so the just-closed trade is in the history,
+        # and *before* decide so the orchestrator sees the up-to-date
+        # breaker state on its own pre-decision check.
+        breaker_check = self._breaker_monitor.check(now=ts)
+
+        # Step 3 : decision.
         capital = self._capital_provider()
         decision = self._orchestrator.make_decision(capital=capital, klines=klines)
 
-        # Step 3 : open if all conditions hold.
+        # Step 4 : open if all conditions hold.
         opened = self._maybe_open(
             decision=decision,
             tick_outcome=tick_outcome,
@@ -214,6 +245,7 @@ class AutoTrader:
             interval=self._interval,
             fetched_at=ts,
             current_price=current_price,
+            breaker_check=breaker_check,
             decision=decision,
             tick_outcome=tick_outcome,
             opened_position=opened,
@@ -287,11 +319,17 @@ def _audit_payload(report: CycleReport) -> dict[str, str | int | None]:
     the JSON column round-trips without precision loss.
     """
     decision = report.decision
+    breaker = report.breaker_check
     payload: dict[str, str | int | None] = {
         "symbol": report.symbol,
         "interval": report.interval,
         "fetched_at": report.fetched_at,
         "current_price": str(report.current_price),
+        "breaker_state": (breaker.state_after.value if breaker is not None else None),
+        "breaker_transitioned": (
+            "true" if breaker is not None and breaker.transitioned else "false"
+        ),
+        "breaker_reason": (breaker.triggered_reason if breaker is not None else None),
         "should_trade": "true" if decision.should_trade else "false",
         "skip_reason": decision.skip_reason,
         "regime": decision.regime.value if decision.regime is not None else None,

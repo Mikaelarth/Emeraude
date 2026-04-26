@@ -6,6 +6,88 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.23] - 2026-04-26
+
+### Added
+
+- **Automatic circuit-breaker triggers (doc 05 §"Sécurité")** —
+  `src/emeraude/agent/execution/breaker_monitor.py`. The breaker now
+  escalates *automatically* based on closed-position history, so the
+  bot stops itself before disaster instead of waiting for a manual
+  intervention. Closes the safety loop on R10 + doc 04
+  ``cooldown_candles`` family of rules.
+  - `BreakerCheckResult` `frozen+slots` dataclass : `state_before`,
+    `state_after`, `consecutive_losses`, `cumulative_r_24h`,
+    `n_trades_24h`, `triggered_reason`, plus a `transitioned`
+    convenience property.
+  - `BreakerMonitor` class with explicit DI of `tracker`,
+    `warn_consecutive_losses` (default 3), `trip_consecutive_losses`
+    (default 5), `trip_cumulative_r_loss_24h` (default -3 R),
+    `window_seconds` (default 24 h), `history_limit` (default 200).
+    Validates : warn >= 1, trip >= warn, R-loss strictly negative,
+    positive window and limit.
+  - `check(*, now)` : reads the position history and applies the
+    appropriate transition. **Escalation only** : HEALTHY -> WARN ->
+    TRIGGERED ; never auto-recovers. TRIGGERED and FROZEN are
+    terminal — recovery is a manual operator action via
+    `circuit_breaker.reset()` (rule R10). Severity ordering :
+    consec-trip > cumulative-R-trip > consec-warn ; the most severe
+    condition wins.
+  - Pure helpers `_count_consecutive_losses` and
+    `_cumulative_r_window` are testable in isolation. Cumulative
+    counts only trades whose `closed_at` is inside the rolling
+    window, so old trades naturally fall off without explicit
+    pruning.
+- **AutoTrader integration** — `services/auto_trader.py` :
+  - New constructor parameter `breaker_monitor: BreakerMonitor | None`.
+    Defaults to a fresh monitor wired to the same tracker — a
+    no-history cycle is a no-op, so existing tests stay green
+    without modification.
+  - `run_cycle` calls `breaker_monitor.check()` between `tick()` and
+    `make_decision()`. The orchestrator's own pre-decision breaker
+    read therefore sees the up-to-date state, and a freshly tripped
+    breaker immediately produces a `breaker_blocked` skip.
+  - `CycleReport` gains `breaker_check: BreakerCheckResult | None`.
+    The audit `AUTO_TRADER_CYCLE` payload gains `breaker_state`,
+    `breaker_transitioned`, `breaker_reason` for replay clarity.
+- 27 new tests (632 → 659), all green :
+  - 22 unit tests in `tests/unit/test_breaker_monitor.py`
+    covering construction validation (zero / negative / inverted
+    thresholds rejected), empty history (HEALTHY, no transition),
+    consecutive WARN (2 partial losses no-op, 3 partial losses
+    WARN, no re-trigger when already WARN, win breaks streak),
+    consecutive TRIP (5 losses TRIGGERED, TRIP > WARN precedence),
+    cumulative-R 24 h gate (below-threshold no-op, at-threshold
+    trip, old trades excluded by window, winners offset losses),
+    terminal states (TRIGGERED stays TRIGGERED, FROZEN stays
+    FROZEN), result shape (frozen, transitioned property).
+  - 5 integration tests in `tests/unit/test_auto_trader.py` :
+    report carries `breaker_check`, 3 history losses propagate
+    WARN to the orchestrator, 5 history losses TRIGGERED blocks
+    the decision via `breaker_blocked` skip, audit payload
+    includes the new fields, custom monitor injectable.
+
+### Notes
+
+- Coverage ratchets to **99.77 %** (was 99.76 %). New module at 100 %.
+- **Asymmetric gate by design** : the monitor only escalates,
+  never downgrades. A winning trade after a losing streak does
+  not auto-clear a WARN, and a TRIGGERED breaker stays TRIGGERED
+  until an operator calls `reset()`. Doc 07 §3 hierarchy : safety
+  beats UX ergonomy ; automatic recovery from a trip is a
+  well-known anti-pattern in trading-system safety.
+- **Severity precedence** : consec-trip > cumulative-R-trip >
+  consec-warn. With default thresholds (warn=3, trip=5,
+  R-loss=-3), 5 full losses (-5 R) hits the consec-trip path
+  before the cumulative path is even evaluated. Tests
+  isolate each gate by tuning the loss size (-0.5 R partials
+  for pure consec, full -1 R losses for combined).
+- **Audit trail interleave** : the breaker module's own
+  `CIRCUIT_BREAKER_STATE_CHANGE` event still fires from the
+  monitor's `circuit_breaker.warn()` / `.trip()` calls — the
+  auto-trader payload adds context but does not replace the
+  authoritative breaker audit row.
+
 ## [0.0.22] - 2026-04-26
 
 ### Added

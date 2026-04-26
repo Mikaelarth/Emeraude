@@ -8,6 +8,8 @@ from pathlib import Path
 import pytest
 
 from emeraude.agent.execution import circuit_breaker
+from emeraude.agent.execution.breaker_monitor import BreakerMonitor
+from emeraude.agent.execution.circuit_breaker import CircuitBreakerState
 from emeraude.agent.execution.position_tracker import (
     ExitReason,
     PositionTracker,
@@ -414,3 +416,130 @@ class TestFetcherInjection:
 class TestDefaultCapitalProvider:
     def test_default_is_doc04_cold_start_20_usd(self, fresh_db: Path) -> None:
         assert _default_capital_provider() == Decimal("20")
+
+
+# ─── Breaker monitor integration ────────────────────────────────────────────
+
+
+@pytest.mark.unit
+class TestBreakerMonitorIntegration:
+    def test_report_carries_breaker_check(self, fresh_db: Path) -> None:
+        circuit_breaker.reset()
+        at = _make_trader()
+        report = at.run_cycle(now=1_700_000_000)
+        assert report.breaker_check is not None
+        # Empty history -> no transition.
+        assert report.breaker_check.state_after == CircuitBreakerState.HEALTHY
+        assert report.breaker_check.transitioned is False
+
+    def test_three_losses_in_history_warn_and_halve_size(self, fresh_db: Path) -> None:
+        # Pre-seed 3 partial losses (each -0.5 R = total -1.5 R, below
+        # the cumulative-trip floor of -3 R) so the consec-WARN fires
+        # alone. The orchestrator then sees WARNING and halves sizing.
+        circuit_breaker.reset()
+        tracker = PositionTracker()
+        for i in range(3):
+            tracker.open_position(
+                strategy="trend_follower",
+                regime=Regime.BULL,
+                side=Side.LONG,
+                entry_price=Decimal("100"),
+                stop=Decimal("98"),
+                target=Decimal("104"),
+                quantity=Decimal("0.1"),
+                risk_per_unit=Decimal("2"),
+                opened_at=10 * i,
+            )
+            tracker.close_position(
+                exit_price=Decimal("99"),  # -0.5 R partial loss
+                exit_reason=ExitReason.MANUAL,
+                closed_at=10 * i + 1,
+            )
+
+        at = _make_trader(tracker=tracker)
+        report = at.run_cycle(now=1_700_000_000)
+        # Monitor escalated to WARNING via consec gate.
+        assert report.breaker_check is not None
+        assert report.breaker_check.transitioned is True
+        assert report.breaker_check.state_after == CircuitBreakerState.WARNING
+        # Orchestrator picked up the WARN ; either it skipped OR opened
+        # with halved size. With strong signals + capital we expect
+        # an open with halved quantity.
+        assert report.decision.breaker_state == CircuitBreakerState.WARNING
+
+    def test_five_losses_trip_blocks_decision(self, fresh_db: Path) -> None:
+        circuit_breaker.reset()
+        tracker = PositionTracker()
+        for i in range(5):
+            tracker.open_position(
+                strategy="trend_follower",
+                regime=Regime.BULL,
+                side=Side.LONG,
+                entry_price=Decimal("100"),
+                stop=Decimal("98"),
+                target=Decimal("104"),
+                quantity=Decimal("0.1"),
+                risk_per_unit=Decimal("2"),
+                opened_at=10 * i,
+            )
+            # Use a tiny -0.1 R loss so cumulative stays above the trip
+            # floor and only the consec-trip path fires.
+            tracker.close_position(
+                exit_price=Decimal("99.8"),
+                exit_reason=ExitReason.MANUAL,
+                closed_at=10 * i + 1,
+            )
+
+        at = _make_trader(tracker=tracker)
+        report = at.run_cycle(now=1_700_000_000)
+        assert report.breaker_check is not None
+        assert report.breaker_check.state_after == CircuitBreakerState.TRIGGERED
+        # Orchestrator now sees TRIGGERED and skips.
+        assert report.decision.should_trade is False
+        assert report.decision.skip_reason == "breaker_blocked"
+        assert report.opened_position is None
+
+    def test_audit_payload_includes_breaker_fields(self, fresh_db: Path) -> None:
+        circuit_breaker.reset()
+        at = _make_trader()
+        at.run_cycle(now=1_700_000_000)
+        assert audit.flush_default_logger(timeout=2.0)
+        events = audit.query_events(event_type="AUTO_TRADER_CYCLE")
+        assert len(events) == 1
+        payload = events[0]["payload"]
+        assert payload["breaker_state"] == CircuitBreakerState.HEALTHY.value
+        assert payload["breaker_transitioned"] == "false"
+        assert payload["breaker_reason"] is None
+
+    def test_custom_monitor_injectable(self, fresh_db: Path) -> None:
+        # A monitor with very tight thresholds trips on a single loss.
+        circuit_breaker.reset()
+        tracker = PositionTracker()
+        tracker.open_position(
+            strategy="trend_follower",
+            regime=Regime.BULL,
+            side=Side.LONG,
+            entry_price=Decimal("100"),
+            stop=Decimal("98"),
+            target=Decimal("104"),
+            quantity=Decimal("0.1"),
+            risk_per_unit=Decimal("2"),
+            opened_at=10,
+        )
+        tracker.close_position(
+            exit_price=Decimal("98"),
+            exit_reason=ExitReason.STOP_HIT,
+            closed_at=11,
+        )
+
+        tight = BreakerMonitor(
+            tracker=tracker,
+            warn_consecutive_losses=1,
+            trip_consecutive_losses=1,
+            trip_cumulative_r_loss_24h=Decimal("-100"),  # never via cumulative
+        )
+        at = _make_trader(tracker=tracker)
+        at._breaker_monitor = tight
+        report = at.run_cycle(now=1_700_000_000)
+        assert report.breaker_check is not None
+        assert report.breaker_check.state_after == CircuitBreakerState.TRIGGERED
