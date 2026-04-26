@@ -11,7 +11,7 @@ build-backend = "hatchling.build"
 # ─── Projet (PEP 621) ────────────────────────────────────────────────────────
 [project]
 name = "emeraude"
-version = "0.0.10"
+version = "0.0.11"
 description = "Agent de trading crypto autonome, mobile-first Android, 100% local, evolutif"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
@@ -219,7 +219,7 @@ skips = []  # ne rien skipper par defaut ; documenter au cas par cas
 # ═════════════════════════════════════════════════════════════════════════════
 [tool.commitizen]
 name = "cz_conventional_commits"
-version = "0.0.10"
+version = "0.0.11"
 tag_format = "v$version"
 version_scheme = "semver"
 update_changelog_on_bump = true

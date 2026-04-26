@@ -6,6 +6,59 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.11] - 2026-04-26
+
+### Added
+
+- **Reasoning layer opens** — `agent/reasoning/__init__.py` and the
+  `agent/reasoning/strategies/` sub-package. The first three concrete
+  strategies (cf. doc 04) :
+  - `Strategy` `Protocol` (duck-typed interface) +
+    `StrategySignal` `frozen+slots` dataclass with bound-checked
+    `score ∈ [-1, 1]`, `confidence ∈ [0, 1]`, and a human-readable
+    `reasoning` string.
+  - `TrendFollower` — 4 binary votes : EMA12 vs EMA26, close vs EMA50,
+    MACD line vs signal, MACD histogram sign. Score in
+    `{-1, -0.5, 0, +0.5, +1}` ; confidence is the dominant vote
+    fraction.
+  - `MeanReversion` — 3 ternary votes (long, short, silent) on RSI
+    extremes (<25 / >75), Bollinger position (close vs lower/upper),
+    Stochastic %K extremes (<15 / >85). Returns `None` when no
+    extreme triggers OR when votes are perfectly split.
+  - `BreakoutHunter` — resistance / support breach over 20-bar
+    window with `±0.5 %` margin, volume confirmation (current >
+    median), and Bollinger squeeze-release boost. Returns `None`
+    when no breakout. Confidence capped at 1.0.
+- 41 new tests (299 → 340) across 4 unit files + 1 property file :
+  - `test_strategies_base.py` — 11 tests : bounds, immutability,
+    parametrized validation.
+  - `test_strategy_trend_follower.py` — 6 tests including the
+    accelerating-uptrend max-score case and the documented "linear
+    uptrend → score 0" architectural property.
+  - `test_strategy_mean_reversion.py` — 6 tests including the
+    monkeypatch-based contradictory-extremes path coverage.
+  - `test_strategy_breakout_hunter.py` — 7 tests including
+    volume-confidence boost A/B and squeeze-release detection.
+  - Hypothesis : 3 invariant tests asserting that each strategy's
+    output respects the `[-1, 1]` × `[0, 1]` contract on noisy
+    arbitrary OHLCV input.
+
+### Notes
+
+- Strategies are **pure** (no I/O) and depend only on indicators +
+  market_data dataclasses. Each strategy's `Strategy` protocol
+  conformance is checked structurally by mypy strict.
+- `MeanReversion` is **silent by design** outside extremes — it
+  refuses to vote when the market is in a normal range, rather
+  than emitting noise around 0.
+- `TrendFollower` documents an intentional behavior : on a perfectly
+  *linear* uptrend, MACD plateaus and the signal catches up, yielding
+  a balanced score of 0. The strategy refuses "STRONG BUY" when
+  momentum has died, even if the long-term trend is still up.
+
+[Unreleased]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.11...HEAD
+[0.0.11]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.10...v0.0.11
+
 ## [0.0.10] - 2026-04-26
 
 ### Added
@@ -51,7 +104,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   3 hours of confirmation, which empirically rejects most boundary
   noise while staying responsive to genuine regime changes.
 
-[Unreleased]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.10...HEAD
 [0.0.10]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.9...v0.0.10
 
 ## [0.0.9] - 2026-04-26
