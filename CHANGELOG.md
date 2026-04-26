@@ -6,6 +6,69 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.17] - 2026-04-26
+
+### Added
+
+- **Governance layer opens** — `src/emeraude/agent/governance/__init__.py`
+  and `src/emeraude/agent/governance/champion_lifecycle.py`. Implements
+  the 4-state lifecycle from doc 10 §7 ("Champion lifecycle") :
+  - Migration `005_champion_history.sql` : table
+    `champion_history(id PK, champion_id, state, promoted_at,
+    expired_at, sharpe_walk_forward, sharpe_live, expiry_reason,
+    parameters_json)` STRICT mode + indexes on `state` and
+    `promoted_at`. Numeric fields stored as TEXT (Decimal precision).
+  - `ChampionState` `StrEnum` : `ACTIVE`, `SUSPECT`, `EXPIRED`,
+    `IN_VALIDATION`.
+  - `ChampionRecord` `frozen+slots` dataclass with all row fields ;
+    `parameters` is JSON-decoded to a `dict[str, Any]`, sharpes are
+    `Decimal | None`.
+  - `ChampionLifecycle` class :
+    - `current()` — returns the unique ACTIVE record (or `None`).
+    - `promote(champion_id, parameters, sharpe_walk_forward)` — auto-
+      expires the previous ACTIVE before inserting the new one.
+      Emits a `CHAMPION_PROMOTED` audit event.
+    - `transition(new_state, reason)` — updates the current
+      champion's state ; sets `expired_at` + `expiry_reason` when
+      transitioning to `EXPIRED`. Emits a
+      `CHAMPION_LIFECYCLE_TRANSITION` audit event with `from`, `to`,
+      `champion_id`, `reason`.
+    - `update_live_sharpe(sharpe)` — periodic update, **no** audit
+      event (would saturate the trail). Raises if no ACTIVE.
+    - `history(limit=100)` — returns records sorted most-recent-first.
+  - Invariant : at most one row has ``state = 'ACTIVE'`` and
+    ``expired_at IS NULL`` at any point. Enforced by `promote`.
+- 25 new tests (459 → 484) :
+  - 2 migration assertions (table + columns).
+  - 2 empty-DB tests.
+  - 5 promote tests (first promotion, current points to it, second
+    promotion expires first, at-most-one-active invariant, audit
+    event emitted).
+  - 4 transition tests (no ACTIVE raises, ACTIVE→SUSPECT,
+    SUSPECT→EXPIRED sets expired_at, audit event payload).
+  - 3 update_live_sharpe tests (updates current, no ACTIVE raises,
+    no audit event).
+  - 3 history tests (most-recent-first, respects limit, includes
+    expired records).
+  - 2 ChampionRecord defaults + Decimal types.
+  - 1 enum invariant (4 states exactly).
+  - 3 Hypothesis property tests :
+    - At-most-one ACTIVE invariant for any sequence of promotions.
+    - `history()` count equals number of promotions.
+    - `current()` always returns the most recent promotion.
+
+### Notes
+
+- Scheduled re-validation, walk-forward + robustness checks, and DSR
+  computation come alongside `services/auto_trader` and the
+  statistical-significance modules (anti-rule A1).
+- Doc 10 §7 critères CL1-CL4 will be tied to the future scheduling
+  infrastructure ; the state machine and history required for them
+  are now in place.
+
+[Unreleased]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.17...HEAD
+[0.0.17]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.16...v0.0.17
+
 ## [0.0.16] - 2026-04-26
 
 ### Added
@@ -56,7 +119,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   from a closed two-element set (`alpha` or `beta`) inside the
   function — never user input.
 
-[Unreleased]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.16...HEAD
 [0.0.16]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.15...v0.0.16
 
 ## [0.0.15] - 2026-04-26
