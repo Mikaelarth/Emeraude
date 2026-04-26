@@ -6,6 +6,49 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.13] - 2026-04-26
+
+### Added
+
+- `src/emeraude/agent/reasoning/position_sizing.py` — Kelly fractional
+  + volatility targeting + absolute cap (cf. doc 04 §"Position Sizing
+  Kelly Fractional"). The hierarchy-doc-07-rule-1 capital-safety
+  invariant is enforced by always applying the minimum of three caps :
+  - `kelly_fraction(win_rate, win_loss_ratio)` — classical
+    `f* = (p*b - q) / b` clamped to `[0, 1]`. Negative-EV setups
+    coerce to 0 (anti-rule A4).
+  - `position_size(capital, win_rate, win_loss_ratio, price, atr,
+    kelly_multiplier=0.5, max_pct_per_trade=0.05, vol_target=0.01)` —
+    returns the order quantity in base-asset units. Half-Kelly
+    default. Absolute cap default 5 %. Vol-target default 1 %.
+- 28 new tests (366 → 394) :
+  - 8 tests on `kelly_fraction` : 50/50 × 2:1 textbook = 0.25, full
+    win = 1, zero win = 0, negative-EV = 0, break-even = 0,
+    parametrized validation (win_rate ∉ [0,1], ratio ≤ 0).
+  - 9 tests on `position_size` invalid inputs (zero/negative
+    capital, price, atr, kelly, multiplier, cap, vol_target).
+  - 4 tests on cap binding : absolute cap wins on aggressive Kelly,
+    vol cap reduces high-vol size, zero ATR uses cap, multiplier
+    scales linearly.
+  - 2 realistic 20-USD scenarios validating the user's actual
+    capital constraint.
+  - 3 Hypothesis property tests :
+    - Kelly fraction always in `[0, 1]`.
+    - position_size always ≥ 0.
+    - **invariant** : position USD never exceeds
+      `capital × max_pct_per_trade` even with full Kelly + tiny ATR.
+
+### Notes
+
+- Default `max_pct_per_trade=0.05` is conservative ; the future
+  `services/auto_trader.py` will pass realistic caller-controlled
+  values when wiring the live config.
+- The CVaR-based cap (R5 doc 10) is a future iteration ; this module
+  exposes the sizing arithmetic only.
+
+[Unreleased]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.13...HEAD
+[0.0.13]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.12...v0.0.13
+
 ## [0.0.12] - 2026-04-26
 
 ### Added
@@ -47,7 +90,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - A vote returning `None` (no contributors / all weights zero) is the
   "stay flat" signal for the future `auto_trader` orchestrator.
 
-[Unreleased]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.12...HEAD
 [0.0.12]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.11...v0.0.12
 
 ## [0.0.11] - 2026-04-26
