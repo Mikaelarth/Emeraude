@@ -6,6 +6,88 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.20] - 2026-04-26
+
+### Added
+
+- **Position lifecycle bridge between decisions and learning** —
+  `src/emeraude/agent/execution/position_tracker.py` plus migration
+  `006_positions.sql`. Closes the loop on Pilier #2 (agent evolutif) :
+  the orchestrator decides, the auto-trader (future iteration) places
+  orders, this module records what those orders *did* and feeds the
+  realized R-multiple back to :class:`RegimeMemory` and
+  :class:`StrategyBandit`.
+  - Migration `006_positions.sql` — STRICT mode, partial index on
+    `WHERE closed_at IS NULL` for the hot "is anything open"
+    lookup, plus indexes on `opened_at` and `(strategy, regime)`.
+    Numeric fields stored as TEXT for `Decimal` precision.
+  - `ExitReason` `StrEnum` : `STOP_HIT`, `TARGET_HIT`, `MANUAL`.
+  - `Position` `frozen+slots` dataclass with all row fields and an
+    `is_open` convenience property. Decimal columns parsed eagerly
+    on read so callers never re-handle TEXT serialization.
+  - `PositionTracker` class with explicit injection of
+    `RegimeMemory` and `StrategyBandit` (defaults to fresh
+    instances). Methods :
+    - `open_position(*, strategy, regime, side, entry_price, stop,
+      target, quantity, risk_per_unit, opened_at=None)` : refuses if
+      a position is already open (doc 04 `max_positions = 1`),
+      validates positive entry / quantity / risk, emits
+      `POSITION_OPENED` audit event.
+    - `current_open()` : returns the single open position or `None`.
+    - `close_position(*, exit_price, exit_reason, closed_at=None)` :
+      manual close, computes the side-signed R-multiple, updates the
+      row, calls `record_outcome` + `update_outcome`, emits
+      `POSITION_CLOSED` audit event.
+    - `tick(*, current_price, now=None)` : auto-closes the open
+      position if the price hit the stop (boundary inclusive) or the
+      target. Returns the now-closed `Position` or `None`. The
+      future `services.auto_trader` will call this on every cycle.
+    - `history(*, limit=100)` : closed positions, most recent first.
+  - Realized R-multiple, side-signed :
+    - LONG  : `(exit - entry) / risk`
+    - SHORT : `(entry - exit) / risk`
+    Break-even (`r == 0`) is treated as a loss in the bandit (won
+    requires `r > 0`) — anti-rule against over-rewarding marginal
+    trades, mirrors :class:`StrategyBandit`'s convention.
+- 40 new tests (544 → 584), all green :
+  - 36 unit tests in `tests/unit/test_position_tracker.py` covering
+    migration shape (table + columns), empty DB, every open path
+    (success, second-open refusal, validation rejections, audit
+    event), every close path (LONG / SHORT winners and losers,
+    no-open error, negative price, slot freed after close, audit
+    event), every tick path (LONG below-stop / at-stop / above-target
+    / inside band ; SHORT above-stop / below-target / inside band ;
+    no-open ; negative price), learning feedback (regime memory
+    sums, bandit alpha/beta increments, break-even -> loss), and
+    history (recency order, excludes open, respects limit, negative
+    limit rejected).
+  - 4 Hypothesis property tests in
+    `tests/property/test_position_tracker_properties.py` :
+    LONG `sign(r_realized) == sign(exit - entry)`, SHORT
+    `sign(r_realized) == sign(entry - exit)`, "at most one open"
+    invariant after any sequence of open/close, and "tick inside
+    band never closes" for LONG positions.
+
+### Notes
+
+- Coverage ratchets to **99.74 %** (was 99.72 %). New module at 100 %.
+- The tracker is **DB-backed but pure at the network layer** : no HTTP,
+  no order placement. Live prices flow in via `tick(current_price=...)`,
+  which the future `services.auto_trader` will call once per cycle.
+- Audit events fire **after** the row is durable — a crash mid-call
+  cannot leave the bandit ahead of the DB. This trades a tiny window
+  of "outcome recorded, audit not yet flushed" for the much more
+  important guarantee that the source of truth (the row) is the only
+  thing that ever drives learning.
+- Doc 04 sets `max_positions = 1` for the 20 USD account ; the schema
+  itself does not enforce uniqueness so a future multi-position mode
+  can drop the application-level check without a migration.
+- `_signed_r_multiple` keeps a defensive `risk_per_unit > 0` guard
+  marked `# pragma: no cover` — `open_position` already rejects
+  non-positive risk before insertion, so a row read from the DB
+  always satisfies the invariant. The guard protects against future
+  code paths that might bypass the wrapper.
+
 ## [0.0.19] - 2026-04-26
 
 ### Added
