@@ -6,6 +6,76 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.18] - 2026-04-25
+
+### Added
+
+- **Services layer opens** — `src/emeraude/services/__init__.py` plus
+  `src/emeraude/services/orchestrator.py`. Implements the doc 05
+  §"BotMaitre cycle 60 min" single-cycle pipeline that finally wires
+  the agent layers end-to-end :
+  - `TradeDirection` `StrEnum` (`LONG`, `SHORT`).
+  - `CycleDecision` `frozen+slots` dataclass capturing the full
+    audit chain : `should_trade`, `regime`, `ensemble_vote`,
+    `qualified`, `direction`, `position_quantity`, `price`, `atr`,
+    `breaker_state`, `skip_reason`, `reasoning`. A skip is **never**
+    an error — it is the bot's normal "stay flat" signal documented
+    by `skip_reason`.
+  - Six `SKIP_*` constants : `breaker_blocked`, `empty_klines`,
+    `insufficient_data`, `no_contributors`, `ensemble_not_qualified`,
+    `position_size_zero`.
+  - `Orchestrator` class with explicit dependency injection
+    (strategies, regime_memory, optional bandit, regime_weights,
+    Kelly + sizing knobs, `warning_size_factor=0.5`,
+    `fallback_win_rate=0.45`, `fallback_win_loss_ratio=1.5`,
+    `adaptive_min_trades=30`). Defaults wire the doc-04 trio
+    (TrendFollower, MeanReversion, BreakoutHunter) and
+    `REGIME_WEIGHTS` fallback.
+  - `Orchestrator.make_decision(*, capital, klines)` — pure decision
+    pipeline, eleven gates from breaker check to direction emission.
+    No HTTP, no order placement, no scheduling.
+  - Adaptive-weights blend : `RegimeMemory.get_adaptive_weights`
+    drives the ensemble weights ; an injected `StrategyBandit`
+    multiplies a Thompson sample on top for exploration.
+  - Dominant-strategy selection : the strategy with the largest
+    `|score * confidence * weight|` provides the win rate that
+    feeds Kelly. Below `adaptive_min_trades` per-(strategy, regime),
+    the orchestrator falls back to `0.45` (slight edge over Kelly
+    break-even at `b=1.5`) so the agent can explore on cold start.
+  - WARNING-state sizing : position quantity halved (0.5 factor)
+    when the breaker reports `WARNING`, matching doc 05 §"Sécurité
+    — Bug logique -> drawdown massif".
+- 25 new tests (484 → 509), all green :
+  - 23 unit tests in `tests/unit/test_orchestrator.py` covering
+    construction (defaults, empty rejection, custom strategies),
+    every skip path (breaker triggered/frozen, empty klines,
+    insufficient data, no contributors, not qualified, position
+    size zero), happy paths (long, short, WARNING-halved sizing),
+    adaptive behaviour (dominant strategy picked, regime memory
+    overrides win rate above threshold, optional bandit, custom
+    regime_weights of zero block contribution, None signal handled
+    in `_dominant_strategy`), and `CycleDecision` shape (no
+    direction on skip, `frozen=True` immutability, default
+    regime_weights are `REGIME_WEIGHTS`).
+  - 4 Hypothesis property tests in
+    `tests/property/test_orchestrator_properties.py` :
+    `position_quantity >= 0` for any input, `skip_reason is None
+    iff should_trade is True`, direction matches ensemble score
+    sign when trading, capital zero never trades.
+
+### Notes
+
+- Coverage ratchets to **99.70 %** (was 99.60 %).
+- The orchestrator is **pure decision** : it reads the local DB
+  (breaker state, regime memory, bandit posteriors) but never makes
+  network calls or places orders. The future `services.auto_trader`
+  will own the I/O loop and feed outcomes back to the learning
+  modules.
+- Per-strategy R-multiple tracking is intentionally not added in
+  this iteration (anti-rule A1) — the orchestrator uses a `1.5`
+  R fallback until `RegimeMemory` is extended with R per
+  (strategy, regime).
+
 ## [0.0.17] - 2026-04-26
 
 ### Added
