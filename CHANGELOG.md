@@ -6,6 +6,84 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.24] - 2026-04-26
+
+### Added
+
+- **R5 Tail risk metrics (doc 10 §"Risque de queue")** —
+  `src/emeraude/agent/learning/risk_metrics.py`. Première innovation
+  R1-R15 substantielle après R9 (audit) et R10 (breaker) : 3/15
+  innovations livrées. Pure module en pure Python (no NumPy / scipy
+  per stack figée), opère sur une liste de Decimal R-multiples.
+  - `TailRiskMetrics` `frozen+slots` dataclass : `n_samples`, `mean`,
+    `std`, `skewness`, `excess_kurtosis`, `var_95`, `var_99`,
+    `cvar_95`, `cvar_99`, `var_cornish_fisher_99`, `max_drawdown`.
+  - `compute_tail_metrics(returns)` : entrée minimum 0 sample
+    (zero-padded result), pas d'exception sur les early-life cases.
+  - **VaR Gaussienne historique** : quantile empirique côté queue
+    inférieure ; reportée en valeur **négative** (perte attendue).
+  - **CVaR / Expected Shortfall** : moyenne des returns sous le
+    seuil VaR. Par construction `CVaR <= VaR`.
+  - **VaR Cornish-Fisher 99 %** : ajustée par skewness empirique +
+    excess kurtosis selon Favre & Galeano (2002)
+    `z_cf = z + (z²-1)/6 * S + (z³-3z)/24 * K - (2z³-5z)/36 * S²`.
+    Avec `S = K = 0` (Gaussienne parfaite) revient à la VaR
+    Gaussienne plain.
+  - **Max drawdown** : pire chute peak-to-trough sur la courbe R
+    cumulée, reportée en magnitude **positive**.
+  - Helpers internes pure Python : `_decimal_sqrt` (Newton-Raphson
+    sur Decimal, jamais de cast float pour préserver la précision
+    audit), `_mean`, `_std_sample`, `_skewness`, `_excess_kurtosis`,
+    `_historical_quantile`, `_cvar_lower_tail`, `_cornish_fisher_z`,
+    `_max_drawdown`. Tous testables en isolation.
+  - Constantes hardcodées : `_Z_95 = -1.6448...`, `_Z_99 = -2.3263...`
+    (quantiles inverses de la loi normale standard, valeurs tables).
+- 31 nouveaux tests (659 → 690), tous verts :
+  - 25 unit dans `tests/unit/test_risk_metrics.py` couvrant edge
+    cases (vide, single-sample), mean/std connus (1..5 → mean=3,
+    std=sqrt(2.5)), skewness directionnelle (gauche/droite/symétrique),
+    excess kurtosis leptokurtique (mass au centre + queues rares),
+    VaR/CVaR sur 100 et 200 samples (queue strictement plus extrême
+    que le quantile), Cornish-Fisher (Gaussienne ≈ plain VaR ;
+    skew négatif → CF plus extrême), max drawdown (winners purs = 0,
+    drawdown simple, losers purs, recovery préserve le DD réalisé),
+    `_decimal_sqrt` (zero, carré parfait, sqrt(2) irrationnel,
+    négatif rejeté), résultat frozen + n_samples cohérent, smoke
+    test intégratif sur historique R réaliste.
+  - 6 Hypothesis property tests dans
+    `tests/property/test_risk_metrics_properties.py` :
+    `CVaR(α) <= VaR(α)`, `VaR(99) <= VaR(95)`, max drawdown ≥ 0,
+    std ≥ 0, n_samples == len(input), winners purs → DD = 0.
+
+### Notes
+
+- Coverage ratchets to **99.79 %** (was 99.77 %). Nouveau module à
+  **100 %** (4 guards "empty list" dans helpers privés marqués
+  `# pragma: no cover` car `compute_tail_metrics` court-circuite
+  déjà sur n=0 — ces branches sont défensives, jamais atteintes
+  par l'API publique).
+- **Pas d'intégration `position_sizing` cette itération** (anti-règle
+  A1) : doc 10 mentionne "intégré dans
+  `position_sizing.optimal_position_size`" mais le wiring est une
+  iter dédiée. Ce module livre le calcul pur.
+- **Critère mesurable I5** ("max DD réel ≤ 1.2 × CVaR_99 prédit
+  sur 90 j") nécessite 90 jours de trades pour validation runtime.
+  Module disponible dès maintenant ; validation à un palier
+  ultérieur.
+- **Pure Python Decimal** : `_decimal_sqrt` via Newton-Raphson plutôt
+  que cast `float(value) ** 0.5` pour préserver la précision
+  Decimal jusqu'à 1e-20. Coût computationnel négligeable (~50
+  itérations max, convergence en ~5).
+- **Cornish-Fisher choisi sur scipy** car la stack figée interdit
+  scipy. Les coefficients normaux z_95 et z_99 sont des constantes
+  de tables statistiques bien connues, hardcodées avec 16 décimales
+  de précision.
+- **Première itération sous protocole strict** : 6 gates locales
+  exécutées (ruff + format + mypy + bandit + pip-audit + pytest -n
+  auto). pip-audit signale CVE-2026-3219 dans `pip` lui-même
+  (l'installeur, pas une dépendance runtime d'Emeraude — la stack
+  shippe kivy + requests + certifi seulement).
+
 ## [0.0.23] - 2026-04-26
 
 ### Added
