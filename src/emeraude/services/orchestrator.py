@@ -62,6 +62,7 @@ from typing import TYPE_CHECKING, Final, cast
 
 from emeraude.agent.execution import circuit_breaker
 from emeraude.agent.execution.circuit_breaker import CircuitBreakerState
+from emeraude.agent.learning.hoeffding import DEFAULT_DELTA, is_significant
 from emeraude.agent.learning.regime_memory import RegimeMemory
 from emeraude.agent.perception.indicators import atr
 from emeraude.agent.perception.regime import Regime, detect_regime
@@ -233,6 +234,7 @@ class Orchestrator:
         fallback_win_rate: Decimal = _DEFAULT_FALLBACK_WIN_RATE,
         fallback_win_loss_ratio: Decimal = _DEFAULT_FALLBACK_WIN_LOSS_RATIO,
         adaptive_min_trades: int = _DEFAULT_ADAPTIVE_MIN_TRADES,
+        hoeffding_delta: Decimal = DEFAULT_DELTA,
         stop_atr_multiplier: Decimal = DEFAULT_STOP_ATR_MULTIPLIER,
         target_atr_multiplier: Decimal = DEFAULT_TARGET_ATR_MULTIPLIER,
         min_rr: Decimal = DEFAULT_MIN_RR,
@@ -262,7 +264,14 @@ class Orchestrator:
             fallback_win_loss_ratio: average R-multiple used by Kelly
                 until per-strategy R is tracked (future iteration).
             adaptive_min_trades: trade count above which regime memory
-                stats override the fallbacks.
+                stats are *eligible* to override the fallbacks. The
+                actual override fires only when the Hoeffding test
+                says the empirical estimate is statistically
+                distinguishable from the fallback (doc 10 R11).
+            hoeffding_delta: confidence risk level for the
+                Hoeffding-bounded override of fallback values. Default
+                ``0.05`` (95 % confidence). Smaller delta = stricter
+                bound = more conservative override.
             stop_atr_multiplier: ATR multiplier for the protective stop.
                 Default ``2.0`` (doc 04 §"_compute_stop_take").
             target_atr_multiplier: ATR multiplier for the take-profit.
@@ -299,6 +308,7 @@ class Orchestrator:
         self._fallback_win_rate = fallback_win_rate
         self._fallback_win_loss_ratio = fallback_win_loss_ratio
         self._adaptive_min_trades = adaptive_min_trades
+        self._hoeffding_delta = hoeffding_delta
         self._stop_atr_multiplier = stop_atr_multiplier
         self._target_atr_multiplier = target_atr_multiplier
         self._min_rr = min_rr
@@ -531,25 +541,48 @@ class Orchestrator:
         return best_name
 
     def _win_rate_for(self, strategy: str, regime: Regime) -> Decimal:
-        """Return the per-(strategy, regime) win rate, or the fallback."""
+        """Return the per-(strategy, regime) win rate, or the fallback.
+
+        The override fires only when (a) ``n_trades >= adaptive_min_trades``
+        AND (b) the Hoeffding bound says the empirical win-rate is
+        statistically distinguishable from the fallback at confidence
+        ``1 - hoeffding_delta`` (doc 10 R11). Otherwise the gap could
+        be sampling noise and the fallback stays.
+        """
         stats = self._regime_memory.get_stats(strategy, regime)
-        if stats.n_trades >= self._adaptive_min_trades:
+        if stats.n_trades >= self._adaptive_min_trades and is_significant(
+            observed=stats.win_rate,
+            prior=self._fallback_win_rate,
+            n=stats.n_trades,
+            delta=self._hoeffding_delta,
+        ):
             return stats.win_rate
         return self._fallback_win_rate
 
     def _win_loss_ratio_for(self, strategy: str, regime: Regime) -> Decimal:
         """Return the per-(strategy, regime) Kelly R-multiple.
 
-        Adaptive when (a) ``n_trades >= adaptive_min_trades`` AND
+        Adaptive when all three conditions hold :
+        (a) ``n_trades >= adaptive_min_trades``,
         (b) the realized ratio is strictly positive (a freshly-warmed
-        bucket with zero losses yields ``0`` and is not Kelly-usable
-        — the caller must keep the fallback active until both wins
-        and losses have been observed).
+        bucket with zero losses yields ``0`` and is not Kelly-usable —
+        the caller must keep the fallback active until both wins and
+        losses have been observed),
+        (c) the Hoeffding bound says the empirical ratio is
+        statistically distinguishable from the fallback at confidence
+        ``1 - hoeffding_delta`` (doc 10 R11).
+
+        Otherwise the fallback stays active.
         """
         stats = self._regime_memory.get_stats(strategy, regime)
         if stats.n_trades >= self._adaptive_min_trades:
             ratio = stats.win_loss_ratio
-            if ratio > _ZERO:
+            if ratio > _ZERO and is_significant(
+                observed=ratio,
+                prior=self._fallback_win_loss_ratio,
+                n=stats.n_trades,
+                delta=self._hoeffding_delta,
+            ):
                 return ratio
         return self._fallback_win_loss_ratio
 

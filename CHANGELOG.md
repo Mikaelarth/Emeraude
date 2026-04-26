@@ -6,6 +6,79 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.26] - 2026-04-26
+
+### Added
+
+- **R11 Hoeffding bounds sur les updates de paramètres (doc 10)** —
+  4/15 innovations livrées (était 3/15 : R5, R9, R10). Le module
+  pure `agent/learning/hoeffding.py` apporte une **borne statistique**
+  rigoureuse qui complète l'heuristique `adaptive_min_trades` :
+  l'override historique fire **uniquement si** la différence avec le
+  prior dépasse `ε(n, δ) = sqrt(ln(2/δ) / (2n))`.
+  - `hoeffding_epsilon(n, *, delta=0.05) -> Decimal` : la borne
+    elle-même. ε(30, 0.05) ≈ 0.248. Plus n grand → ε plus petit
+    (bound plus serré). Plus delta petit → ε plus grand (confiance
+    plus stricte = plus exigeant pour switcher).
+  - `is_significant(*, observed, prior, n, delta=0.05) -> bool` :
+    test à utiliser au call site. Retourne True iff
+    `|observed - prior| > epsilon`. Inégalité **stricte** (égalité
+    = non significatif, on garde le prior).
+  - `min_samples_for_precision(*, epsilon_target, delta=0.05) -> int` :
+    inverse de la formule pour planifier "combien de trades faut-il
+    pour atteindre une précision donnée". Renvoie le `ceil(...)`,
+    minimum 1.
+  - Implémentation Decimal pure : `Decimal.ln()` natif stdlib,
+    `getcontext().sqrt()` natif. Aucun cast float dans le chemin
+    chaud ; les conversions float ne servent qu'au `ceil` final
+    de `min_samples_for_precision`.
+- **Wiring Orchestrator** — les deux helpers adaptifs gagnent un
+  troisième prédicat :
+  - `Orchestrator._win_rate_for` : override fires iff
+    `n_trades >= adaptive_min_trades` AND
+    `is_significant(observed=stats.win_rate, prior=fallback_win_rate, n=n_trades)`.
+  - `Orchestrator._win_loss_ratio_for` : override fires iff
+    `n_trades >= adaptive_min_trades` AND `ratio > 0` AND
+    `is_significant(observed=ratio, prior=fallback, n=n_trades)`.
+  - Nouveau knob constructeur `hoeffding_delta: Decimal = 0.05`
+    (95 % confiance par défaut). Tightenable à 0.01 (99 %) si
+    l'utilisateur veut un override encore plus prudent ; loosenable
+    à 0.20 si l'utilisateur veut switcher plus tôt sur des historiques
+    courts.
+- 25 nouveaux tests (697 → 722), tous verts :
+  - 21 unit dans `tests/unit/test_hoeffding.py` couvrant default delta,
+    monotonie ε(n) et ε(δ), valeur connue ε(30, 0.05) ≈ 0.2479,
+    rejets de validation (n < 1, delta hors (0,1)), `is_significant`
+    (gap large/petit, frontière exclusive, plus de samples =
+    significativité plus tôt, gap signé), `min_samples_for_precision`
+    (inverse, target plus serré = plus de samples, delta plus petit
+    = plus de samples, plancher à 1, validation).
+  - 4 unit dans `tests/unit/test_orchestrator.py` :
+    `test_hoeffding_blocks_premature_override_win_rate`,
+    `test_hoeffding_blocks_premature_override_win_loss_ratio`,
+    `test_hoeffding_passes_clear_gap`, `test_custom_hoeffding_delta_loosens_gate`.
+
+### Notes
+
+- Coverage stable à **99.79 %**, 722 tests verts (était 697).
+- **Anti-règle A1 respectée** : pas de refactor de `risk_metrics`
+  (qui a son propre `_decimal_sqrt` Newton-Raphson) — le module
+  hoeffding utilise simplement `Decimal.ln()` + `Context.sqrt()`
+  qui sont stdlib. Une mutualisation ferait gagner ~10 LOC mais
+  introduirait un module `_math.py` pour 2 callers seulement (anti
+  prematurée abstraction).
+- **Critère mesurable I11** ("0 % d'updates basés sur < 30 trades")
+  est **renforcé** : avec δ=0.05 et fallback à 0.45, un override
+  de win_rate exige typiquement n >= ~50 et un gap > 0.21. Concrètement
+  Hoeffding est plus strict que le seuil "30" sur les petits gaps.
+- **Compatibilité comportementale** : tous les tests d'iter #25 et
+  antérieurs continuent de passer sans modification. Le pipeline
+  est strictement plus prudent que la version précédente — jamais
+  plus laxiste.
+- **Référence** : Domingos & Hulten (2000), *Mining High-Speed Data
+  Streams (Hoeffding Trees)*. Hoeffding (1963), *Probability
+  Inequalities for Sums of Bounded Random Variables*.
+
 ## [0.0.25] - 2026-04-26
 
 ### Added
