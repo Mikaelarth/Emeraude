@@ -6,6 +6,50 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.12] - 2026-04-26
+
+### Added
+
+- `src/emeraude/agent/reasoning/ensemble.py` — weighted vote across
+  the three strategies (cf. doc 04 §"Vote pondéré") :
+  - `EnsembleVote` `NamedTuple` : `score`, `confidence`, `agreement`,
+    `n_contributors`, `reasoning`.
+  - `vote(signals, weights=None)` : implements the doc-04 formula
+    `Σ score × confidence × weight / Σ weights`. Weights default to
+    1.0 across contributing strategies ; pass `REGIME_WEIGHTS[regime]`
+    for the regime-based pondération, or future LinUCB adaptive
+    weights once accumulated.
+  - `REGIME_WEIGHTS` — Bull / Neutral / Bear mappings ported verbatim
+    from doc 04 (Bull favors trend follower, Neutral favors mean
+    reversion, Bear dampens all weights).
+  - `is_qualified(vote, ...)` : returns `True` only if all three of
+    `|score| ≥ min_score`, `confidence ≥ min_confidence`, and
+    `agreement / n_contributors ≥ min_agreement_fraction` hold.
+    Default thresholds : 0.33 / 0.5 / 2/3.
+- 26 new tests (340 → 366) :
+  - 4 tests on `REGIME_WEIGHTS` structure and direction.
+  - 5 tests on basic voting (no contributors, single, three, split,
+    skipped strategies).
+  - 4 tests on weights (zero weights, weight-skew, regime-weights
+    application, unknown-strategy drop).
+  - 1 test on reasoning concatenation.
+  - 8 tests on `is_qualified` (qualifying paths + each disqualifier
+    + custom thresholds + zero-contributors).
+  - 3 Hypothesis property tests : score in `[-1, 1]`, confidence in
+    `[0, 1]`, `agreement <= n_contributors`.
+
+### Notes
+
+- Qualification thresholds are **normalized** for the `[-1, 1]` ×
+  `[0, 1]` scale used throughout the strategies module. The doc-04
+  doc-04 ±90 / 0–100 scale is a presentation choice ; here we keep
+  the numerical scale of the underlying maths.
+- A vote returning `None` (no contributors / all weights zero) is the
+  "stay flat" signal for the future `auto_trader` orchestrator.
+
+[Unreleased]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.12...HEAD
+[0.0.12]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.11...v0.0.12
+
 ## [0.0.11] - 2026-04-26
 
 ### Added
@@ -56,7 +100,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   a balanced score of 0. The strategy refuses "STRONG BUY" when
   momentum has died, even if the long-term trend is still up.
 
-[Unreleased]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.11...HEAD
 [0.0.11]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.10...v0.0.11
 
 ## [0.0.10] - 2026-04-26
