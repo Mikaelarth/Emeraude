@@ -6,6 +6,57 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.15] - 2026-04-26
+
+### Added
+
+- **Learning layer opens** — `src/emeraude/agent/learning/__init__.py`
+  and `src/emeraude/agent/learning/regime_memory.py`. First brick of
+  Pilier #2 (agent évolutif, doc 03) :
+  - Migration `003_regime_memory.sql` : table
+    `regime_memory(strategy, regime, n_trades, n_wins, sum_r, sum_r2,
+    last_updated)` STRICT mode + index on `regime`. PK is
+    `(strategy, regime)`. Numeric aggregates stored as TEXT to
+    preserve Decimal precision over hundreds of trades.
+  - `RegimeStats` `frozen+slots` dataclass with `n_trades`, `n_wins`,
+    `sum_r`, `sum_r2` fields and computed properties `win_rate`,
+    `avg_r`, `expectancy` (all returning ``Decimal("0")`` for
+    zero-trade rows).
+  - `RegimeMemory` class :
+    - `record_outcome(strategy, regime, r_multiple)` — atomic UPSERT
+      into the table (insert if absent, increment otherwise).
+    - `get_stats(strategy, regime)` — read aggregated stats ; returns
+      zeros for unseen couples.
+    - `get_adaptive_weights(strategies, fallback, min_trades=30)` —
+      returns the full `{Regime: {strategy: Decimal}}` grid suitable
+      for `ensemble.vote(weights=...)`. Uses `fallback[regime][strategy]`
+      below threshold and the formula
+      `clamp(1.0 + expectancy, 0.1, 2.0)` above. Doc 04
+      §"Pondération adaptative" implemented.
+- 23 new tests (416 → 438) :
+  - 2 migration assertions (table + columns).
+  - 3 `RegimeStats` properties (zero-trade fallback, win rate, avg R).
+  - 5 `record_outcome` tests (first record, subsequent updates,
+    zero-R not counted as win, strategy isolation, regime isolation).
+  - 1 `get_stats` no-data test.
+  - 8 `get_adaptive_weights` tests (below threshold uses fallback,
+    above uses formula, negative expectancy downweights, floor/ceiling
+    clamping, unknown strategy → 1.0, full grid coverage, custom
+    threshold).
+  - 3 Hypothesis property tests : `n_trades` count invariant,
+    `sum_r` exact aggregation, adaptive weight always in `[0.1, 2.0]`.
+
+### Notes
+
+- This iteration ships the **memory + adaptive weighting**.
+  Hoeffding-bounded updates (R11 doc 10) and drift detection (R3) are
+  delivered separately (anti-rule A1 : no anticipatory features).
+- The `min_trades=30` default is the convergence threshold from doc 03
+  §"après ~50 trades" — 30 is a prudent earlier lower bound.
+
+[Unreleased]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.15...HEAD
+[0.0.15]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.14...v0.0.15
+
 ## [0.0.14] - 2026-04-26
 
 ### Added
@@ -56,7 +107,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   invariant of this module : an unknown DB value blocks all trading.
   Verified by both a unit test and an integration assertion.
 
-[Unreleased]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.14...HEAD
 [0.0.14]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.13...v0.0.14
 
 ## [0.0.13] - 2026-04-26
