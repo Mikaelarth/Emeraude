@@ -6,6 +6,57 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.7] - 2026-04-26
+
+### Added
+
+- `src/emeraude/infra/exchange.py` — signed Binance Spot API v3
+  connector. The first module that performs **real-money external
+  actions**, unblocking palier P1 (trading réel 20 USD) :
+  - `BinanceClient(api_key, api_secret, base_url, recv_window_ms)`
+    class. Mainnet by default ; testnet supported via
+    `TESTNET_BASE_URL`.
+  - `_sign(query_string)` : HMAC-SHA256 hex digest, validated
+    against the documented Binance test vector.
+  - `get_server_time()` : public unsigned probe.
+  - `get_account_balance(asset)` : signed read of free spot balance.
+    Returns `decimal.Decimal` ; never `float` for money.
+  - `place_market_order(symbol, side, quantity)` : MARKET BUY/SELL.
+    Emits `BINANCE_ORDER_PLACED` audit event.
+  - `place_stop_loss_market(symbol, side, quantity, stop_price)` :
+    `STOP_LOSS` (not `STOP_LOSS_LIMIT`) per doc 05 §"Sécurité —
+    Slippage adverse". Gap-safe execution. Emits audit event.
+  - `_format_decimal(value)` : strips trailing zeros, no scientific
+    notation, suitable for the Binance wire format.
+  - All public methods decorated with `@retry.retry()` — transient
+    HTTP errors (429, 5xx, URLError) absorbed automatically.
+  - Per-call signing: timestamp + recvWindow injected, query
+    serialized, HMAC over the exact string sent.
+- `tests/unit/test_exchange.py` : 31 tests — Binance documented
+  signature vector, signature determinism + 64-hex format,
+  construction (default mainnet, testnet, trailing-slash strip,
+  recv_window default), `_format_decimal` (5 parametrized cases +
+  no-scientific-notation), public GET helper, `get_server_time`
+  (URL, no signature), `get_account_balance` (Decimal parse, missing
+  asset returns 0, asset-after-iteration coverage, signature +
+  X-MBX-APIKEY header), `place_market_order` (POST body params,
+  audit event content), `place_stop_loss_market` (STOP_LOSS type
+  not LIMIT, audit event), retry behavior (429 retried, 401 not).
+- `tests/property/test_exchange_properties.py` : 3 Hypothesis tests —
+  signature == HMAC-SHA256 definition over arbitrary secret/query,
+  signature is deterministic, `_format_decimal` round-trip preserves
+  Decimal value with no scientific notation.
+
+### Changed
+
+- `pyproject.toml` per-file-ignores extended : `S105` (hardcoded
+  password assigned) and `S106` (hardcoded password argument) added
+  to the `tests/**/*.py` exclusion list. Test credentials are by
+  nature hardcoded and well-known.
+
+[Unreleased]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.7...HEAD
+[0.0.7]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.6...v0.0.7
+
 ## [0.0.6] - 2026-04-26
 
 ### Added
@@ -52,7 +103,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   no security implication, but the cleaner code is worth the tiny
   syscall overhead per retry.
 
-[Unreleased]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.6...HEAD
 [0.0.6]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.5...v0.0.6
 
 ## [0.0.5] - 2026-04-26
