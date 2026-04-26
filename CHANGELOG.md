@@ -6,6 +6,54 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.10] - 2026-04-26
+
+### Added
+
+- `src/emeraude/agent/perception/regime.py` — Bull / Bear / Neutral
+  market-regime detection (doc 05 §"REGIME EMA200 BTC"). Classifies
+  each bar via two complementary signals :
+  - **Direction** : current close vs EMA(period).
+  - **Momentum** : sign of the EMA slope over a short lookback.
+  Combined into `BULL` (both bullish), `BEAR` (both bearish),
+  `NEUTRAL` (disagreement, equality, or zero slope).
+- `Regime` `StrEnum` (Python 3.11+) — JSON / DB serializable as plain
+  strings without custom encoders.
+- `detect_regime(klines, ema_period=200, slope_lookback=10,
+  min_persistence=3)` :
+  - Returns `None` if `len(klines) < ema_period + slope_lookback`.
+  - Implements **anti-whipsaw hysteresis** : the new regime must
+    persist over `min_persistence` consecutive bars before the
+    switch is accepted. Default 3 bars (3 h on the hourly cycle).
+  - `min_persistence=1` disables hysteresis (instant switch).
+  - Validates all period parameters (≥ 1) at the boundary.
+- 24 new tests (275 → 299) :
+  - 3 validation tests (period bounds).
+  - 2 warmup tests (insufficient → None ; just-enough → result).
+  - 5 single-bar regime tests (uptrend, downtrend, flat,
+    close==ema, post-uptrend dip → NEUTRAL).
+  - 3 hysteresis tests (single-bar flicker blocked, sustained
+    switch confirmed, persistence=1 disables).
+  - 6 `_classify` helper tests covering the full truth table.
+  - 2 `Regime` enum tests (string serialization, equality).
+- Hypothesis property tests :
+  - The result is always `None` or one of the three `Regime` values.
+  - `min_persistence` larger than the series locks the initial regime.
+  - A constant series is always `NEUTRAL` (zero slope).
+
+### Notes
+
+- `RegimeChange` event class is **not** included in this release
+  (anti-règle A1 — no anticipatory features). It will be added when
+  a downstream module (drift detection, correlation stress) actually
+  consumes it.
+- Hysteresis default of 3 bars is empirical : 3 hourly bars equal
+  3 hours of confirmation, which empirically rejects most boundary
+  noise while staying responsive to genuine regime changes.
+
+[Unreleased]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.10...HEAD
+[0.0.10]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.9...v0.0.10
+
 ## [0.0.9] - 2026-04-26
 
 ### Added
@@ -58,7 +106,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Unicode mathematical glyphs (×, σ, α, − en-dash) avoided in
   docstrings/comments per ruff RUF002/RUF003 (ASCII-only convention).
 
-[Unreleased]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.9...HEAD
 [0.0.9]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.8...v0.0.9
 
 ## [0.0.8] - 2026-04-26
