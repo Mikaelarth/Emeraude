@@ -6,6 +6,59 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.16] - 2026-04-26
+
+### Added
+
+- `src/emeraude/agent/learning/bandit.py` — Thompson sampling
+  multi-armed bandit (doc 03 §"Thompson Sampling"). Complements
+  `regime_memory` with a stochastic exploration / exploitation
+  mechanism over strategies (Pilier #2) :
+  - Migration `004_strategy_performance.sql` : table
+    `strategy_performance(strategy PK, alpha, beta, last_updated)`
+    STRICT mode. Both alpha and beta default to 1 (uniform prior).
+  - `BetaCounts` `frozen+slots` dataclass with `alpha`, `beta` fields
+    and computed `n_trades` (= `alpha + beta - 2`) and
+    `expected_win_rate` (= `alpha / (alpha + beta)`).
+  - `StrategyBandit` class :
+    - `update_outcome(strategy, won=True/False)` — atomic increment
+      of alpha (won) or beta (lost). UPSERT semantics : first
+      observation inserts the row with the appropriate count + 1.
+    - `get_counts(strategy)` — returns the prior `(1, 1)` for unseen
+      strategies.
+    - `sample_weights(strategies)` — draws one sample from each
+      Beta(alpha, beta) posterior via `random.SystemRandom().betavariate`.
+      Returns `Decimal` weights in `[0, 1]`.
+- 21 new tests (438 → 459) :
+  - 2 migration assertions (table + columns).
+  - 4 `BetaCounts` property tests (uniform prior, n_trades after
+    observations, expected_win_rate at prior and after wins).
+  - 6 `update_outcome` tests (unseen prior, first win/loss inserts,
+    increments, mixed outcomes, multi-strategy isolation).
+  - 4 `sample_weights` tests with monkeypatched RNG (return Decimal,
+    bounds, correct (alpha, beta) passed, unseen → uniform).
+  - 1 persistence test (counts survive connection restart).
+  - 4 Hypothesis property tests :
+    - `alpha + beta == n_trades + 2` (priors invariant).
+    - `alpha == wins + 1`, `beta == losses + 1`.
+    - Sample weights always in `[0, 1]`.
+    - `expected_win_rate` strictly in `(0, 1)` for any positive counts.
+
+### Notes
+
+- The bandit is **complementary** to `regime_memory`, not a
+  replacement : `regime_memory` provides per-(strategy, regime)
+  expectancy weights ; the bandit provides per-strategy stochastic
+  exploration. The future orchestrator can multiply or choose between
+  them.
+- The `# noqa: S608` / `# nosec B608` on the f-string SQL UPDATE in
+  ``update_outcome`` is documented : the dynamic column name is drawn
+  from a closed two-element set (`alpha` or `beta`) inside the
+  function — never user input.
+
+[Unreleased]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.16...HEAD
+[0.0.16]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.15...v0.0.16
+
 ## [0.0.15] - 2026-04-26
 
 ### Added
@@ -54,7 +107,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - The `min_trades=30` default is the convergence threshold from doc 03
   §"après ~50 trades" — 30 is a prudent earlier lower bound.
 
-[Unreleased]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.15...HEAD
 [0.0.15]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.14...v0.0.15
 
 ## [0.0.14] - 2026-04-26
