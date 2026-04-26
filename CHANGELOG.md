@@ -6,6 +6,61 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.9] - 2026-04-26
+
+### Added
+
+- **First domain module** — opens the agent layer.
+  `src/emeraude/agent/__init__.py` and
+  `src/emeraude/agent/perception/__init__.py` create the perception
+  sub-package per the architecture documented in CLAUDE.md.
+- `src/emeraude/agent/perception/indicators.py` — pure-Python
+  technical indicators on `Decimal` series (no NumPy / pandas, per
+  doc 05) :
+  - `sma(values, period)` — simple moving average, current value.
+  - `ema(values, period)` — exponential moving average with seed = SMA
+    over the first `period` values, recursion with α = 2/(N+1).
+    Internal `_ema_series` exposes the full history for downstream use.
+  - `rsi(values, period=14)` — Wilder's RSI (1978). Edge cases handled :
+    all gains → 100, all losses → 0, no movement → 50.
+  - `macd(values, fast=12, slow=26, signal=9)` — MACDResult named
+    tuple `(macd, signal, histogram)`. Validates `fast < slow`.
+  - `bollinger_bands(values, period=20, std_dev=2.0)` — BollingerBands
+    named tuple `(middle, upper, lower)`. Population std-dev,
+    `Decimal.sqrt()` for purity. Constant series collapses to a point.
+  - `atr(klines, period=14)` — Wilder's ATR with True Range `max(HL,
+    |H-C_prev|, |L-C_prev|)`.
+  - `stochastic(klines, period=14, smooth_k=3, smooth_d=3)` —
+    StochasticResult named tuple `(k, d)`. Edge case : `high == low`
+    over window → raw %K = 50 (neutral).
+- 39 new tests (231 → 275) :
+  - 4 validation tests (period bounds, MACD ordering).
+  - 5 SMA + 4 EMA + 6 RSI + 4 MACD + 5 BB + 3 ATR + 5 Stochastic
+    = 32 unit tests across all indicators with explicit expected values.
+  - 7 property-based tests (Hypothesis) :
+    - SMA/EMA inside min/max bounds
+    - RSI bounded [0, 100]
+    - Bollinger ordering (lower ≤ middle ≤ upper)
+    - Bollinger symmetry around middle
+    - ATR non-negative
+    - Stochastic bounded [0, 100]
+- Decimal precision raised to 30 digits at module import to absorb
+  cascaded MACD computations without loss.
+
+### Notes
+
+- All indicator formulas have a documented academic / industry source
+  in the module docstring (Wilder 1978, Appel 1979, Bollinger 1980s,
+  Lane 1950s).
+- Functions return `None` rather than raising when the warmup window
+  is incomplete — caller decides whether to skip a cycle, log, or
+  default to a neutral signal.
+- Unicode mathematical glyphs (×, σ, α, − en-dash) avoided in
+  docstrings/comments per ruff RUF002/RUF003 (ASCII-only convention).
+
+[Unreleased]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.9...HEAD
+[0.0.9]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.8...v0.0.9
+
 ## [0.0.8] - 2026-04-26
 
 ### Added
@@ -50,7 +105,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - This module closes the `infra/` layer for the v0.0.x series. The
   next iteration starts the **domain** layer (indicators / signals).
 
-[Unreleased]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.8...HEAD
 [0.0.8]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.7...v0.0.8
 
 ## [0.0.7] - 2026-04-26
