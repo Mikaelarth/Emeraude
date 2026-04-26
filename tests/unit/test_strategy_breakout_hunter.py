@@ -13,10 +13,10 @@ from emeraude.infra.market_data import Kline
 
 def _kline(
     *,
-    high: float | int,
-    low: float | int,
-    close: float | int,
-    volume: float | int = 1,
+    high: float | int | Decimal,
+    low: float | int | Decimal,
+    close: float | int | Decimal,
+    volume: float | int | Decimal = 1,
     idx: int = 0,
 ) -> Kline:
     return Kline(

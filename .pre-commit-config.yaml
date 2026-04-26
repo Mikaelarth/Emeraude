@@ -32,18 +32,18 @@ repos:
       - id: ruff-format
 
   # ─── Mypy strict ───────────────────────────────────────────────────────────
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.20.2
+  # Local hook : ``uv run mypy`` uses our actual project venv (with the
+  # ``emeraude`` package installed in editable mode), so it matches CI
+  # exactly. The mirrors-mypy hook would require us to maintain a
+  # mirror of every transitive dependency.
+  - repo: local
     hooks:
       - id: mypy
-        additional_dependencies:
-          - types-requests
-          - hypothesis
-          - pytest
-          - certifi  # required for type-checking infra/net.py
-        args: ["--config-file=pyproject.toml"]
-        # Run only on src; tests have their own type-check tolerance.
-        files: ^src/
+        name: mypy (uv-managed env, mirrors CI)
+        entry: uv run mypy --config-file=pyproject.toml src tests
+        language: system
+        pass_filenames: false
+        types: [python]
 
   # ─── Bandit (security) ─────────────────────────────────────────────────────
   - repo: https://github.com/PyCQA/bandit
