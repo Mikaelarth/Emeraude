@@ -6,6 +6,56 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.4] - 2026-04-26
+
+### Added
+
+- `src/emeraude/infra/crypto.py` — at-rest obfuscation of secrets
+  (most notably Binance API keys) :
+  - `ensure_salt()` : 32-byte random salt at `paths.salt_path()`,
+    POSIX `chmod 0o600`, idempotent ; raises on corrupt salt file.
+  - `derive_key(passphrase, length, salt=None)` : PBKDF2-SHA256 with
+    100 000 iterations, ``dklen`` matches the plaintext length so the
+    XOR stream never cycles.
+  - `encrypt(plaintext, passphrase)` / `decrypt(value, passphrase)` :
+    UTF-8 → bytewise XOR → ``urlsafe_b64encode`` → ``"enc:"`` prefix.
+    Backward-compatible : plaintext rows (no prefix) are passed
+    through `decrypt` unchanged.
+  - `is_encrypted(value)` : prefix check.
+  - `set_secret_setting` / `get_secret_setting` : DB wrappers that
+    encrypt on write, decrypt on read, and gracefully read legacy
+    plaintext rows.
+- 25 new tests (87 → 112) covering :
+  - `ensure_salt` lifecycle (creation, idempotency, corruption,
+    POSIX chmod).
+  - `derive_key` properties (length, determinism, sensitivity to
+    passphrase + salt, input validation).
+  - `is_encrypted` boundary cases (empty, mid-string marker).
+  - Encrypt/decrypt round-trip (simple, empty, Unicode, 5 KB long).
+  - Determinism + non-collision properties.
+  - Legacy plaintext compatibility.
+  - Wrong-passphrase behavior (yields garbled string, not exception).
+  - Invalid base64 raises ``ValueError``.
+  - DB wrappers : raw row is prefixed, legacy plain reads transparently.
+  - Integration : end-to-end Binance-keys lifecycle with
+    connection-restart, passphrase-change verification, plain-to-
+    encrypted upgrade path.
+  - Hypothesis : encrypt/decrypt round-trip over arbitrary UTF-8 +
+    passphrase, prefix invariant, plain pass-through, deterministic.
+
+### Notes
+
+- Threat model documented at module level : casual DB read access only.
+  Stronger threats (rooted device, arbitrary code execution) are
+  addressed by the planned Android KeyStore migration (palier 4 of the
+  roadmap, cahier des charges doc 05).
+- No HMAC / authentication tag : tampered ciphertext yields garbage
+  on decrypt rather than raising. The threat model excludes
+  "attacker writes to the DB".
+
+[Unreleased]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.4...HEAD
+[0.0.4]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.3...v0.0.4
+
 ## [0.0.3] - 2026-04-26
 
 ### Added
@@ -52,7 +102,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   (309 statements + 58 branches).
 - `pyproject.toml`, `__init__.py`, commitizen config bumped to 0.0.3.
 
-[Unreleased]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.3...HEAD
 [0.0.3]: https://github.com/Mikaelarth/Emeraude/compare/v0.0.2...v0.0.3
 
 ## [0.0.2] - 2026-04-25
