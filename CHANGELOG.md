@@ -6,6 +6,72 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.19] - 2026-04-26
+
+### Added
+
+- **Risk manager (anti-rule A4 enforced by code)** —
+  `src/emeraude/agent/reasoning/risk_manager.py`. Pure module computing
+  ATR-based stop-loss / take-profit levels and the resulting R-multiple :
+  - `Side` `StrEnum` (`LONG` / `SHORT`) — kept inside `agent/` so the
+    risk manager has no upward dependency on the services layer.
+  - `TradeLevels` `frozen+slots` dataclass : `side`, `entry`, `stop`,
+    `target`, `risk_per_unit`, `reward_per_unit`, `r_multiple`. All
+    `Decimal` for audit fidelity.
+  - `compute_levels(*, entry, atr, side, stop_atr_multiplier=2,
+    target_atr_multiplier=4)` : doc 04 §"_compute_stop_take" defaults
+    yield nominal R/R = 2.0. Validates positive entry, non-negative
+    ATR and multipliers. Degenerate `risk == 0` (ATR=0 or zero stop
+    multiplier) surfaces as `Decimal('Infinity')` so the caller's
+    qualification gate flips naturally.
+  - `is_acceptable_rr(levels, *, min_rr=1.5)` : the anti-rule A4
+    floor. Inclusive (R = 1.5 passes, 1.49 fails).
+- **Orchestrator wiring** — `src/emeraude/services/orchestrator.py`
+  gains two new gates :
+  - `SKIP_DEGENERATE_RISK` when `risk_per_unit == 0` (ATR=0 or
+    stop_atr_multiplier=0) — the trade is non-meaningful.
+  - `SKIP_RR_TOO_LOW` when `R-multiple < min_rr`. Anti-rule A4 is
+    now refused by the engine itself, not just by documentation.
+  - `CycleDecision` gains a `trade_levels: TradeLevels | None` field.
+    `None` for early skips, set on every gate from
+    `position_size_zero` onward (including the two new skips so the
+    audit can show *why* a trade was rejected).
+  - Three new `Orchestrator` knobs : `stop_atr_multiplier`,
+    `target_atr_multiplier`, `min_rr` — defaults pull from the risk
+    manager constants.
+- 35 new tests (509 → 544), all green :
+  - 23 unit tests in `tests/unit/test_risk_manager.py` covering
+    defaults, LONG / SHORT level placement, custom multipliers, every
+    edge case (ATR=0, stop_mult=0, target_mult=0), every validation
+    rejection, and the full `is_acceptable_rr` truth table.
+  - 4 Hypothesis property tests in
+    `tests/property/test_risk_manager_properties.py` :
+    distances always `>= 0`, LONG ordering (`stop <= entry <= target`),
+    SHORT ordering (`target <= entry <= stop`), and
+    `r_multiple == target_mult / stop_mult` when risk > 0.
+  - 8 new orchestrator unit tests covering the new gates :
+    happy-path emits levels, SHORT levels symmetric, R/R below floor
+    rejected with levels still attached for audit, R/R at floor
+    accepted, custom higher floor blocks, zero stop multiplier
+    yields `degenerate_risk` skip, early-skip leaves trade_levels
+    `None`, size-zero skip leaves trade_levels `None`.
+
+### Notes
+
+- Coverage ratchets to **99.72 %** (was 99.70 %). Both new modules
+  (`risk_manager`, the extended `orchestrator`) at 100 %.
+- The orchestrator pipeline grew from 11 to 13 gates ; the docstring
+  now documents the full sequence in order of evaluation.
+- Anti-rule A4 implementation rationale : doc 04 sets the operational
+  R/R target at 2.0 (4/2 ATR multiplier ratio) but accepts R >= 1.5
+  as the break-even gate. With win-rate 0.4 and R = 1.5 the strategy
+  has expectancy zero ; below R = 1.5 the expectancy is strictly
+  negative — anti-rule A4 territory.
+- The R-multiple defaults to `Decimal('Infinity')` for degenerate
+  risk, so a caller who only checks `is_acceptable_rr` would not
+  catch a non-meaningful trade ; the orchestrator therefore tests
+  `risk_per_unit == 0` independently before the R/R gate.
+
 ## [0.0.18] - 2026-04-25
 
 ### Added

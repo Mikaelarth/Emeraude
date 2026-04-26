@@ -18,11 +18,13 @@ from emeraude.infra import database
 from emeraude.infra.market_data import Kline
 from emeraude.services.orchestrator import (
     SKIP_BREAKER_BLOCKED,
+    SKIP_DEGENERATE_RISK,
     SKIP_EMPTY_KLINES,
     SKIP_ENSEMBLE_NOT_QUALIFIED,
     SKIP_INSUFFICIENT_DATA,
     SKIP_NO_CONTRIBUTORS,
     SKIP_POSITION_SIZE_ZERO,
+    SKIP_RR_TOO_LOW,
     CycleDecision,
     Orchestrator,
     TradeDirection,
@@ -386,6 +388,7 @@ class TestCycleDecisionShape:
             position_quantity=Decimal("0"),
             price=Decimal("0"),
             atr=None,
+            trade_levels=None,
             breaker_state=CircuitBreakerState.HEALTHY,
             skip_reason=SKIP_EMPTY_KLINES,
             reasoning="x",
@@ -397,3 +400,125 @@ class TestCycleDecisionShape:
         # Sanity : Orchestrator's default regime_weights is REGIME_WEIGHTS.
         orch = Orchestrator()
         assert orch._regime_weights is REGIME_WEIGHTS
+
+
+# ─── Risk manager wiring ────────────────────────────────────────────────────
+
+
+@pytest.mark.unit
+class TestRiskManagerGate:
+    def test_happy_path_emits_trade_levels(self, fresh_db: Path) -> None:
+        orch = Orchestrator(
+            strategies=[
+                _FakeStrategy("a", _signal(0.9, confidence=0.9)),
+                _FakeStrategy("b", _signal(0.9, confidence=0.9)),
+            ],
+        )
+        decision = orch.make_decision(capital=Decimal("1000"), klines=_bull_klines())
+        assert decision.should_trade is True
+        # Trade levels are emitted with stop below entry, target above.
+        assert decision.trade_levels is not None
+        levels = decision.trade_levels
+        assert levels.entry == decision.price
+        assert levels.stop < levels.entry
+        assert levels.target > levels.entry
+        # Default 4/2 multiplier ratio yields R = 2 (modulo Decimal
+        # precision drift introduced by ATR's Wilder smoothing).
+        assert abs(levels.r_multiple - Decimal("2")) < Decimal("0.001")
+
+    def test_short_decision_short_levels(self, fresh_db: Path) -> None:
+        orch = Orchestrator(
+            strategies=[
+                _FakeStrategy("a", _signal(-0.9, confidence=0.9)),
+                _FakeStrategy("b", _signal(-0.9, confidence=0.9)),
+            ],
+        )
+        decision = orch.make_decision(capital=Decimal("1000"), klines=_bear_klines())
+        assert decision.should_trade is True
+        assert decision.direction == TradeDirection.SHORT
+        assert decision.trade_levels is not None
+        levels = decision.trade_levels
+        assert levels.stop > levels.entry
+        assert levels.target < levels.entry
+
+    def test_rr_below_floor_skips_with_levels(self, fresh_db: Path) -> None:
+        # Tighten target_atr_multiplier so R/R drops below the 1.5 floor.
+        # With stop_mult=2 and target_mult=2, R = 2/2 = 1.0 < 1.5.
+        orch = Orchestrator(
+            strategies=[
+                _FakeStrategy("a", _signal(0.9, confidence=0.9)),
+                _FakeStrategy("b", _signal(0.9, confidence=0.9)),
+            ],
+            target_atr_multiplier=Decimal("2"),
+        )
+        decision = orch.make_decision(capital=Decimal("1000"), klines=_bull_klines())
+        assert decision.should_trade is False
+        assert decision.skip_reason == SKIP_RR_TOO_LOW
+        # Levels are still attached for audit (anti-rule A4 evidence).
+        assert decision.trade_levels is not None
+        assert decision.trade_levels.r_multiple < Decimal("1.5")
+        # Direction None on every skip — the audit reads side from trade_levels.
+        assert decision.direction is None
+
+    def test_rr_at_floor_passes(self, fresh_db: Path) -> None:
+        # R = 3/2 = 1.5 sits exactly on the floor : trade allowed.
+        orch = Orchestrator(
+            strategies=[
+                _FakeStrategy("a", _signal(0.9, confidence=0.9)),
+                _FakeStrategy("b", _signal(0.9, confidence=0.9)),
+            ],
+            target_atr_multiplier=Decimal("3"),
+        )
+        decision = orch.make_decision(capital=Decimal("1000"), klines=_bull_klines())
+        assert decision.should_trade is True
+        assert decision.trade_levels is not None
+        # Floor is inclusive ; tiny precision drift is fine.
+        assert abs(decision.trade_levels.r_multiple - Decimal("1.5")) < Decimal("0.001")
+
+    def test_custom_min_rr_higher_blocks(self, fresh_db: Path) -> None:
+        # Default R = 2 ; with min_rr=2.5 the trade is rejected.
+        orch = Orchestrator(
+            strategies=[
+                _FakeStrategy("a", _signal(0.9, confidence=0.9)),
+                _FakeStrategy("b", _signal(0.9, confidence=0.9)),
+            ],
+            min_rr=Decimal("2.5"),
+        )
+        decision = orch.make_decision(capital=Decimal("1000"), klines=_bull_klines())
+        assert decision.should_trade is False
+        assert decision.skip_reason == SKIP_RR_TOO_LOW
+
+    def test_zero_stop_multiplier_skips_degenerate(self, fresh_db: Path) -> None:
+        orch = Orchestrator(
+            strategies=[
+                _FakeStrategy("a", _signal(0.9, confidence=0.9)),
+                _FakeStrategy("b", _signal(0.9, confidence=0.9)),
+            ],
+            stop_atr_multiplier=Decimal("0"),
+        )
+        decision = orch.make_decision(capital=Decimal("1000"), klines=_bull_klines())
+        assert decision.should_trade is False
+        assert decision.skip_reason == SKIP_DEGENERATE_RISK
+        # Levels still attached so audit can show risk_per_unit == 0.
+        assert decision.trade_levels is not None
+        assert decision.trade_levels.risk_per_unit == Decimal("0")
+
+    def test_breaker_skip_has_no_trade_levels(self, fresh_db: Path) -> None:
+        circuit_breaker.trip("test")
+        orch = Orchestrator(strategies=[_FakeStrategy("a", _signal(0.9))])
+        decision = orch.make_decision(capital=Decimal("1000"), klines=_bull_klines())
+        assert decision.should_trade is False
+        # Early skip : no levels computed yet.
+        assert decision.trade_levels is None
+
+    def test_size_zero_skip_has_no_trade_levels(self, fresh_db: Path) -> None:
+        # Size-zero gate fires before risk levels.
+        orch = Orchestrator(
+            strategies=[
+                _FakeStrategy("a", _signal(0.9, confidence=0.9)),
+                _FakeStrategy("b", _signal(0.9, confidence=0.9)),
+            ],
+        )
+        decision = orch.make_decision(capital=Decimal("0"), klines=_bull_klines())
+        assert decision.skip_reason == SKIP_POSITION_SIZE_ZERO
+        assert decision.trade_levels is None

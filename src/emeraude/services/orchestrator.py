@@ -33,6 +33,14 @@ Pipeline (step by step) :
 10. **Zero-quantity guard** — return ``"position_size_zero"`` skip if
     Kelly + caps collapse to zero.
 11. **Direction** — ``LONG`` if ensemble score > 0, ``SHORT`` otherwise.
+12. **Risk levels** — :func:`compute_levels` produces stop / target /
+    R-multiple from ATR. ``"degenerate_risk"`` skip if risk-per-unit
+    is zero (ATR=0 + non-zero stop multiplier still yields zero risk).
+13. **R/R floor (anti-rule A4)** — :func:`is_acceptable_rr` rejects
+    trades below ``min_rr`` (default ``1.5``). The full
+    :class:`TradeLevels` is included in the skipped
+    :class:`CycleDecision` so the audit can show *why* the trade was
+    degraded to a skip.
 
 This function is **pure** in the sense that doc 05 cares about : no
 network, no order placement, no scheduling. It still reads from the
@@ -69,6 +77,15 @@ from emeraude.agent.reasoning.position_sizing import (
     DEFAULT_VOL_TARGET,
     position_size,
 )
+from emeraude.agent.reasoning.risk_manager import (
+    DEFAULT_MIN_RR,
+    DEFAULT_STOP_ATR_MULTIPLIER,
+    DEFAULT_TARGET_ATR_MULTIPLIER,
+    Side,
+    TradeLevels,
+    compute_levels,
+    is_acceptable_rr,
+)
 from emeraude.agent.reasoning.strategies import (
     BreakoutHunter,
     MeanReversion,
@@ -102,6 +119,10 @@ SKIP_INSUFFICIENT_DATA: Final[str] = "insufficient_data"
 SKIP_NO_CONTRIBUTORS: Final[str] = "no_contributors"
 SKIP_ENSEMBLE_NOT_QUALIFIED: Final[str] = "ensemble_not_qualified"
 SKIP_POSITION_SIZE_ZERO: Final[str] = "position_size_zero"
+# Anti-rule A4 : R/R below the configured floor (default 1.5) -> skip.
+SKIP_RR_TOO_LOW: Final[str] = "rr_too_low"
+# Degenerate ATR=0 yields zero risk and zero reward — non-meaningful trade.
+SKIP_DEGENERATE_RISK: Final[str] = "degenerate_risk"
 
 
 # ─── Public types ───────────────────────────────────────────────────────────
@@ -149,6 +170,10 @@ class CycleDecision:
             empty input.
         atr: current ATR. ``None`` when not computed (early skip),
             ``Decimal(0)`` when warmup unmet.
+        trade_levels: stop / target / R-multiple from the risk manager.
+            ``None`` for every skip happening before the levels are
+            computed (gates 1-9). Set even on ``SKIP_RR_TOO_LOW`` so
+            the audit can show *why* the trade was rejected.
         breaker_state: the breaker state observed at decision time.
         skip_reason: one of the ``SKIP_*`` constants, or ``None`` when
             ``should_trade=True``.
@@ -163,6 +188,7 @@ class CycleDecision:
     position_quantity: Decimal
     price: Decimal
     atr: Decimal | None
+    trade_levels: TradeLevels | None
     breaker_state: CircuitBreakerState
     skip_reason: str | None
     reasoning: str
@@ -198,6 +224,9 @@ class Orchestrator:
         fallback_win_rate: Decimal = _DEFAULT_FALLBACK_WIN_RATE,
         fallback_win_loss_ratio: Decimal = _DEFAULT_FALLBACK_WIN_LOSS_RATIO,
         adaptive_min_trades: int = _DEFAULT_ADAPTIVE_MIN_TRADES,
+        stop_atr_multiplier: Decimal = DEFAULT_STOP_ATR_MULTIPLIER,
+        target_atr_multiplier: Decimal = DEFAULT_TARGET_ATR_MULTIPLIER,
+        min_rr: Decimal = DEFAULT_MIN_RR,
     ) -> None:
         """Wire the orchestrator with explicit dependencies.
 
@@ -225,6 +254,13 @@ class Orchestrator:
                 until per-strategy R is tracked (future iteration).
             adaptive_min_trades: trade count above which regime memory
                 stats override the fallbacks.
+            stop_atr_multiplier: ATR multiplier for the protective stop.
+                Default ``2.0`` (doc 04 §"_compute_stop_take").
+            target_atr_multiplier: ATR multiplier for the take-profit.
+                Default ``4.0`` (doc 04 forces nominal R/R = 4/2 = 2.0).
+            min_rr: minimum acceptable R/R ratio. Anti-rule A4 floor :
+                trades below this ratio are degraded to a skip rather
+                than presented as opportunities.
         """
         if strategies is None:
             # mypy treats ClassVar `name` on the concrete classes as
@@ -254,6 +290,9 @@ class Orchestrator:
         self._fallback_win_rate = fallback_win_rate
         self._fallback_win_loss_ratio = fallback_win_loss_ratio
         self._adaptive_min_trades = adaptive_min_trades
+        self._stop_atr_multiplier = stop_atr_multiplier
+        self._target_atr_multiplier = target_atr_multiplier
+        self._min_rr = min_rr
 
     # ─── Public API ─────────────────────────────────────────────────────────
 
@@ -385,6 +424,40 @@ class Orchestrator:
             )
 
         direction = TradeDirection.LONG if ev.score > _ZERO else TradeDirection.SHORT
+        side = Side.LONG if direction is TradeDirection.LONG else Side.SHORT
+        levels = compute_levels(
+            entry=last_price,
+            atr=atr_value,
+            side=side,
+            stop_atr_multiplier=self._stop_atr_multiplier,
+            target_atr_multiplier=self._target_atr_multiplier,
+        )
+
+        if levels.risk_per_unit == _ZERO:
+            return self._skip(
+                regime=regime,
+                vote_obj=ev,
+                qualified=True,
+                price=last_price,
+                atr_value=atr_value,
+                breaker_state=breaker_state,
+                reason=SKIP_DEGENERATE_RISK,
+                msg="risk per unit is zero (ATR=0 or stop multiplier=0)",
+                trade_levels=levels,
+            )
+
+        if not is_acceptable_rr(levels, min_rr=self._min_rr):
+            return self._skip(
+                regime=regime,
+                vote_obj=ev,
+                qualified=True,
+                price=last_price,
+                atr_value=atr_value,
+                breaker_state=breaker_state,
+                reason=SKIP_RR_TOO_LOW,
+                msg=f"R/R {levels.r_multiple} below floor {self._min_rr} (anti-rule A4)",
+                trade_levels=levels,
+            )
 
         return CycleDecision(
             should_trade=True,
@@ -395,6 +468,7 @@ class Orchestrator:
             position_quantity=quantity,
             price=last_price,
             atr=atr_value,
+            trade_levels=levels,
             breaker_state=breaker_state,
             skip_reason=None,
             reasoning=ev.reasoning,
@@ -460,6 +534,7 @@ class Orchestrator:
         breaker_state: CircuitBreakerState,
         reason: str,
         msg: str,
+        trade_levels: TradeLevels | None = None,
     ) -> CycleDecision:
         """Build a skip :class:`CycleDecision` with consistent defaults."""
         return CycleDecision(
@@ -471,6 +546,7 @@ class Orchestrator:
             position_quantity=_ZERO,
             price=price,
             atr=atr_value,
+            trade_levels=trade_levels,
             breaker_state=breaker_state,
             skip_reason=reason,
             reasoning=msg,
