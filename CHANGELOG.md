@@ -6,6 +6,76 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.22] - 2026-04-26
+
+### Added
+
+- **Atomic SQLite backup service (doc 09 §"Backup atomique de la DB")** —
+  `src/emeraude/services/backup.py`. Snapshot, list, restore, and prune
+  the active database without ever stopping the bot. All state-bearing
+  components (regime memory, bandit, position history, audit, champion
+  lifecycle) live in one SQLite file, so a corruption or accidental
+  wipe was previously catastrophic ; this module is the disaster-
+  recovery floor.
+  - `BackupRecord` `frozen+slots` dataclass : `path`, `epoch`, `label`,
+    `size_bytes`, `is_auto` property.
+  - `BackupService` with explicit DI of `backup_dir`, `database_path`,
+    `retention` (default 7). Constructor mkdirs the backup directory
+    so injected paths Just Work.
+  - `create(*, label="auto", now=None)` : uses
+    `sqlite3.Connection.backup` (the official Online Backup API) to
+    copy the live DB to `emeraude-{epoch}-{label}.db`. Pages are
+    copied under short reader locks while writers can keep going (WAL
+    mode). The destination file is fully self-contained — no WAL
+    companion needed. Validates labels against `^[A-Za-z0-9_-]+$` to
+    prevent path-traversal injection.
+  - `list_backups()` : returns all valid records, most recent first.
+    Files matching the glob but failing the strict regex (e.g.
+    user-dropped junk) are silently skipped — never deleted by
+    `prune` either.
+  - `restore(backup)` : uses the **inverse** Online Backup API — opens
+    the snapshot read-only and copies its pages *into* the live
+    connection. Avoids any filesystem swap (which would race with the
+    audit worker thread on Windows) while remaining transactionally
+    atomic. Accepts both a `BackupRecord` and a raw `Path`.
+  - `prune()` : keeps the most recent `retention` *automatic* backups
+    (label = `"auto"`). Manually-labeled backups (`label != "auto"`)
+    survive forever — the user's explicit `pre_v1_release.db` is
+    never deleted by retention.
+  - One audit event per operation : `BACKUP_CREATED`, `BACKUP_RESTORED`,
+    `BACKUP_PRUNED` (R9). Prune emits only when something was
+    actually deleted, so the trail does not flood with no-op events.
+- **`services` package re-exports** `BackupRecord` and `BackupService`
+  alongside the existing wiring components.
+- 24 new tests (608 → 632), all green :
+  - 24 unit tests in `tests/unit/test_backup.py` covering construction
+    (zero / negative retention rejected), `create` (file produced,
+    default label, custom label, illegal characters rejected,
+    path-traversal rejected, audit event payload), `list_backups`
+    (empty, recency order, junk files skipped, glob-match-but-regex-
+    fail skipped), `restore` (round-trips state, accepts raw `Path`,
+    missing file raises, audit event), `prune` (retention honored,
+    manual labels preserved, no-op when below retention, audit event
+    fires only on actual deletes), and `BackupRecord` shape (auto
+    property, frozen).
+
+### Notes
+
+- Coverage ratchets to **99.76 %** (was 99.75 %). New module at 100 %.
+- The reverse-backup approach for restore (snapshot -> live conn) is
+  the cleanest path on Windows : a filesystem-level `Path.replace`
+  hits the audit worker's separate thread-local DB connection, which
+  on Windows means EACCES. The Online Backup API works through any
+  open connection regardless of OS-level file locks.
+- No compression and no cloud upload (anti-rule A6 : no cloud without
+  explicit user opt-in). Future `services.cloud_sync` would be the
+  place for that, behind an opt-in toggle.
+- Filenames use epoch (not ISO date) so lexicographic order equals
+  chronological order — `list_backups` sorts trivially.
+- No automatic scheduling in this iteration (anti-rule A1) : `prune`
+  is invoked by the caller. The future `auto_trader` cycle or a
+  dedicated maintenance hook will own the schedule.
+
 ## [0.0.21] - 2026-04-26
 
 ### Added

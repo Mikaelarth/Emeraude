@@ -22,6 +22,10 @@ from emeraude.services.auto_trader import (
     AutoTrader,
     CycleReport,
 )
+from emeraude.services.backup import (
+    BackupRecord,
+    BackupService,
+)
 from emeraude.services.orchestrator import (
     CycleDecision,
     Orchestrator,
@@ -30,6 +34,8 @@ from emeraude.services.orchestrator import (
 
 __all__ = [
     "AutoTrader",
+    "BackupRecord",
+    "BackupService",
     "CycleDecision",
     "CycleReport",
     "Orchestrator",
