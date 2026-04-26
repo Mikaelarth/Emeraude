@@ -6,6 +6,87 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.21] - 2026-04-26
+
+### Added
+
+- **AutoTrader paper-trading cycle (doc 05 §"BotMaitre cycle 60 min")** —
+  `src/emeraude/services/auto_trader.py`. First end-to-end orchestrator-
+  of-the-orchestrator : on each `run_cycle()` call it fetches the
+  ticker price + recent klines, calls
+  `tracker.tick(price)` to auto-close on stop / target hits, calls
+  `orchestrator.make_decision(capital, klines)`, and opens a new
+  position when the decision is green. **Paper mode** : the tracker
+  records the row but no exchange order is placed (anti-rule A5
+  blocks live trading until the UI ships the double-tap toggle).
+  - `CycleReport` `frozen+slots` dataclass : symbol, interval,
+    `fetched_at`, `current_price`, `decision`, `tick_outcome`,
+    `opened_position`. One report per cycle, audit-friendly.
+  - `AutoTrader` class with explicit DI : `symbol`, `interval`,
+    `klines_limit` (default 250 for regime warmup + headroom),
+    `capital_provider` (default cold-start 20 USD per doc 04),
+    `orchestrator`, `tracker`, `fetch_klines`, `fetch_current_price`.
+    Tests inject pure-Python stubs ; production wires through
+    `infra.market_data`.
+  - `_default_capital_provider`: module-level callable returning the
+    doc 04 cold-start 20 USD. Audit logs identify the default.
+  - **Implicit one-cycle cooldown** : if the pre-decision tick just
+    closed a position, the auto-trader refuses to re-enter the same
+    cycle (anti-flash-trade ; coherent with but looser than doc 04
+    `cooldown_candles=6`).
+  - **Multi-cycle stacking guard** : if a previous cycle's position
+    is still in flight, a new `should_trade=True` decision is
+    refused (doc 04 `max_positions=1`). Without this guard the
+    second cycle would crash on the tracker's existing-position
+    check ; the guard turns it into a clean skip.
+  - One `AUTO_TRADER_CYCLE` audit event per cycle (R9). Per-position
+    `POSITION_OPENED` / `POSITION_CLOSED` come from the tracker so
+    the trail interleaves cycle-level and trade-level rows.
+- **Orchestrator exposes `dominant_strategy` on `CycleDecision`** —
+  the strategy whose contribution drove the vote (max
+  `|score * confidence * weight|`). Set on every decision computed
+  *after* the qualification gate (the three late skips and the happy
+  path) ; `None` for early skips. Lets the auto-trader pass the
+  right `strategy` key to `tracker.open_position(...)` so learning
+  feedback lands on the correct row, without duplicating the
+  selection logic.
+- **`services` package re-exports** `AutoTrader` and `CycleReport`
+  alongside the existing `Orchestrator`, `CycleDecision`,
+  `TradeDirection`.
+- 24 new tests (584 → 608), all green :
+  - 21 unit tests in `tests/unit/test_auto_trader.py` :
+    construction (default symbol / interval, custom values), skip
+    paths (breaker blocked, ensemble not qualified), happy paths
+    (open from strong signal, levels propagated to position,
+    dominant strategy propagated, audit event payload), tick
+    interaction (tick closes existing position, tick close blocks
+    same-cycle re-open, in-flight position blocks new open),
+    `CycleReport` shape (carries inputs, frozen), capital provider
+    (called each cycle, zero capital -> size-zero skip), fetcher
+    injection (correct symbol / interval / limit), default capital
+    provider returns 20 USD.
+  - 3 Hypothesis property tests in
+    `tests/property/test_auto_trader_properties.py` :
+    `opened is not None implies tick_outcome is None` (cooldown
+    invariant), `opened.strategy == decision.dominant_strategy`,
+    "at most one open after N cycles".
+
+### Notes
+
+- Coverage ratchets to **99.75 %** (was 99.74 %). New module at 100 %.
+- The auto-trader is **paper mode only** : the tracker writes a row
+  but no real order is placed. Real trading needs the A5 double-tap
+  toggle (UI layer not yet shipped) and empirical paper-trading
+  validation per doc 06.
+- Deliberately **no scheduler** in this iteration (anti-rule A1) :
+  `run_cycle` is invoked by the caller, which leaves room for both
+  a future Kivy-driven UI loop and a CLI scheduler without locking
+  in either.
+- `dominant_strategy` exposure was the only orchestrator change ;
+  the addition is purely structural (the field already existed
+  internally via `_dominant_strategy`) and does not alter any
+  existing behaviour.
+
 ## [0.0.20] - 2026-04-26
 
 ### Added

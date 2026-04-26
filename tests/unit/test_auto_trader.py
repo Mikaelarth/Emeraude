@@ -1,0 +1,416 @@
+"""Unit tests for emeraude.services.auto_trader."""
+
+from __future__ import annotations
+
+from decimal import Decimal
+from pathlib import Path
+
+import pytest
+
+from emeraude.agent.execution import circuit_breaker
+from emeraude.agent.execution.position_tracker import (
+    ExitReason,
+    PositionTracker,
+)
+from emeraude.agent.perception.regime import Regime
+from emeraude.agent.reasoning.risk_manager import Side
+from emeraude.agent.reasoning.strategies import StrategySignal
+from emeraude.infra import audit, database
+from emeraude.infra.market_data import Kline
+from emeraude.services.auto_trader import (
+    AutoTrader,
+    CycleReport,
+    _default_capital_provider,
+)
+from emeraude.services.orchestrator import Orchestrator
+
+# ─── Fixtures + helpers ──────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def fresh_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setenv("EMERAUDE_STORAGE_DIR", str(tmp_path))
+    database.get_connection()
+    return tmp_path / "emeraude.db"
+
+
+def _kline(close: float, *, idx: int = 0) -> Kline:
+    c = Decimal(str(close))
+    return Kline(
+        open_time=idx * 60_000,
+        open=c,
+        high=c * Decimal("1.01"),
+        low=c * Decimal("0.99"),
+        close=c,
+        volume=Decimal("1"),
+        close_time=(idx + 1) * 60_000,
+        n_trades=1,
+    )
+
+
+def _bull_klines(n: int = 220) -> list[Kline]:
+    return [_kline(100.0 + i * 0.5, idx=i) for i in range(n)]
+
+
+class _FakeStrategy:
+    def __init__(self, name: str, signal: StrategySignal | None) -> None:
+        self.name = name
+        self._signal = signal
+
+    def compute_signal(
+        self,
+        klines: list[Kline],
+        regime: Regime,
+    ) -> StrategySignal | None:
+        del klines, regime
+        return self._signal
+
+
+def _signal(score: float, confidence: float = 0.9) -> StrategySignal:
+    return StrategySignal(
+        score=Decimal(str(score)),
+        confidence=Decimal(str(confidence)),
+        reasoning="hp",
+    )
+
+
+def _make_trader(
+    *,
+    klines: list[Kline] | None = None,
+    price: Decimal = Decimal("210"),
+    capital: Decimal = Decimal("1000"),
+    orchestrator: Orchestrator | None = None,
+    tracker: PositionTracker | None = None,
+) -> AutoTrader:
+    if klines is None:
+        klines = _bull_klines()
+    if orchestrator is None:
+        orchestrator = Orchestrator(
+            strategies=[
+                _FakeStrategy("a", _signal(0.9, confidence=0.9)),
+                _FakeStrategy("b", _signal(0.9, confidence=0.9)),
+            ],
+        )
+
+    fetched_prices: list[Decimal] = []
+    fetched_klines_calls: list[tuple[str, str, int]] = []
+
+    def fake_fetch_klines(symbol: str, interval: str, limit: int) -> list[Kline]:
+        fetched_klines_calls.append((symbol, interval, limit))
+        return klines
+
+    def fake_fetch_price(symbol: str) -> Decimal:
+        fetched_prices.append(price)
+        del symbol
+        return price
+
+    return AutoTrader(
+        symbol="BTCUSDT",
+        interval="1h",
+        klines_limit=250,
+        capital_provider=lambda: capital,
+        orchestrator=orchestrator,
+        tracker=tracker if tracker is not None else PositionTracker(),
+        fetch_klines=fake_fetch_klines,
+        fetch_current_price=fake_fetch_price,
+    )
+
+
+# ─── Construction ────────────────────────────────────────────────────────────
+
+
+@pytest.mark.unit
+class TestConstruction:
+    def test_default_symbol_is_btcusdt(self, fresh_db: Path) -> None:
+        at = AutoTrader()
+        assert at.symbol == "BTCUSDT"
+
+    def test_default_interval_is_one_hour(self, fresh_db: Path) -> None:
+        at = AutoTrader()
+        assert at.interval == "1h"
+
+    def test_custom_symbol_and_interval(self, fresh_db: Path) -> None:
+        at = AutoTrader(symbol="ETHUSDT", interval="4h")
+        assert at.symbol == "ETHUSDT"
+        assert at.interval == "4h"
+
+
+# ─── Cycle path : decision skip ─────────────────────────────────────────────
+
+
+@pytest.mark.unit
+class TestCycleSkip:
+    def test_breaker_blocked_does_not_open(self, fresh_db: Path) -> None:
+        circuit_breaker.trip("test")
+        tracker = PositionTracker()
+        at = _make_trader(tracker=tracker)
+        report = at.run_cycle(now=1_700_000_000)
+        assert report.decision.should_trade is False
+        assert report.decision.skip_reason == "breaker_blocked"
+        assert report.opened_position is None
+        assert tracker.current_open() is None
+
+    def test_skip_does_not_open_position(self, fresh_db: Path) -> None:
+        # Weak signals -> ensemble not qualified -> no open.
+        orch = Orchestrator(
+            strategies=[
+                _FakeStrategy("a", _signal(0.1, confidence=0.4)),
+                _FakeStrategy("b", _signal(0.1, confidence=0.4)),
+            ],
+        )
+        tracker = PositionTracker()
+        at = _make_trader(tracker=tracker, orchestrator=orch)
+        report = at.run_cycle(now=1_700_000_000)
+        assert report.decision.should_trade is False
+        assert report.opened_position is None
+
+
+# ─── Cycle path : happy ─────────────────────────────────────────────────────
+
+
+@pytest.mark.unit
+class TestCycleHappy:
+    def test_cycle_opens_position_on_strong_signal(self, fresh_db: Path) -> None:
+        circuit_breaker.reset()
+        tracker = PositionTracker()
+        at = _make_trader(tracker=tracker)
+        report = at.run_cycle(now=1_700_000_000)
+        assert report.decision.should_trade is True
+        assert report.opened_position is not None
+        assert report.opened_position.is_open is True
+        current = tracker.current_open()
+        assert current is not None
+        assert current.id == report.opened_position.id
+
+    def test_opened_position_uses_decision_levels(self, fresh_db: Path) -> None:
+        circuit_breaker.reset()
+        tracker = PositionTracker()
+        at = _make_trader(tracker=tracker)
+        report = at.run_cycle(now=1_700_000_000)
+        assert report.opened_position is not None
+        levels = report.decision.trade_levels
+        assert levels is not None
+        assert report.opened_position.entry_price == levels.entry
+        assert report.opened_position.stop == levels.stop
+        assert report.opened_position.target == levels.target
+        assert report.opened_position.risk_per_unit == levels.risk_per_unit
+
+    def test_opened_position_uses_dominant_strategy(self, fresh_db: Path) -> None:
+        circuit_breaker.reset()
+        # "loud" dominates "quiet".
+        loud = _FakeStrategy("loud", _signal(0.9, confidence=0.9))
+        quiet = _FakeStrategy("quiet", _signal(0.5, confidence=0.4))
+        orch = Orchestrator(strategies=[loud, quiet])
+        tracker = PositionTracker()
+        at = _make_trader(orchestrator=orch, tracker=tracker)
+        report = at.run_cycle(now=1_700_000_000)
+        assert report.opened_position is not None
+        assert report.opened_position.strategy == "loud"
+
+    def test_cycle_emits_audit_event(self, fresh_db: Path) -> None:
+        circuit_breaker.reset()
+        at = _make_trader()
+        at.run_cycle(now=1_700_000_000)
+        assert audit.flush_default_logger(timeout=2.0)
+        events = audit.query_events(event_type="AUTO_TRADER_CYCLE")
+        assert len(events) == 1
+        payload = events[0]["payload"]
+        assert payload["symbol"] == "BTCUSDT"
+        assert payload["interval"] == "1h"
+        assert payload["should_trade"] == "true"
+        assert payload["regime"] == "BULL"
+        assert payload["direction"] == "LONG"
+
+
+# ─── Tick interaction ───────────────────────────────────────────────────────
+
+
+@pytest.mark.unit
+class TestTickInteraction:
+    def test_tick_closes_existing_position(self, fresh_db: Path) -> None:
+        circuit_breaker.reset()
+        tracker = PositionTracker()
+        # Open a stop-grazed LONG manually so the next tick fires.
+        tracker.open_position(
+            strategy="trend_follower",
+            regime=Regime.BULL,
+            side=Side.LONG,
+            entry_price=Decimal("100"),
+            stop=Decimal("98"),
+            target=Decimal("104"),
+            quantity=Decimal("0.1"),
+            risk_per_unit=Decimal("2"),
+            opened_at=1_700_000_000,
+        )
+
+        # The cycle's price 97 trips the stop -> tick closes.
+        # Use weak signals so the cycle does not also try to re-open.
+        orch = Orchestrator(
+            strategies=[
+                _FakeStrategy("a", _signal(0.1, confidence=0.3)),
+                _FakeStrategy("b", _signal(0.1, confidence=0.3)),
+            ],
+        )
+        at = _make_trader(price=Decimal("97"), tracker=tracker, orchestrator=orch)
+        report = at.run_cycle(now=1_700_000_500)
+        assert report.tick_outcome is not None
+        assert report.tick_outcome.exit_reason == ExitReason.STOP_HIT
+        assert tracker.current_open() is None
+
+    def test_in_flight_position_blocks_new_open(self, fresh_db: Path) -> None:
+        # Position open from a previous cycle, current price is inside
+        # the band so tick does not fire ; orchestrator says trade ;
+        # auto-trader must refuse the second open (max_positions=1).
+        circuit_breaker.reset()
+        tracker = PositionTracker()
+        tracker.open_position(
+            strategy="trend_follower",
+            regime=Regime.BULL,
+            side=Side.LONG,
+            entry_price=Decimal("100"),
+            stop=Decimal("98"),
+            target=Decimal("104"),
+            quantity=Decimal("0.1"),
+            risk_per_unit=Decimal("2"),
+            opened_at=1_700_000_000,
+        )
+        # Price 101 is inside (98, 104), tick does nothing.
+        at = _make_trader(price=Decimal("101"), tracker=tracker)
+        report = at.run_cycle(now=1_700_000_500)
+        assert report.tick_outcome is None
+        assert report.decision.should_trade is True
+        assert report.opened_position is None
+        # Existing position still open.
+        current = tracker.current_open()
+        assert current is not None
+        assert current.id == 1
+
+    def test_tick_close_blocks_same_cycle_open(self, fresh_db: Path) -> None:
+        # Implicit one-cycle cooldown : even if the orchestrator says
+        # should_trade after a tick close, do not re-enter.
+        circuit_breaker.reset()
+        tracker = PositionTracker()
+        tracker.open_position(
+            strategy="trend_follower",
+            regime=Regime.BULL,
+            side=Side.LONG,
+            entry_price=Decimal("100"),
+            stop=Decimal("98"),
+            target=Decimal("104"),
+            quantity=Decimal("0.1"),
+            risk_per_unit=Decimal("2"),
+            opened_at=1_700_000_000,
+        )
+
+        # Strong bullish signals would normally re-enter -- the cooldown
+        # guard prevents it.
+        at = _make_trader(price=Decimal("97"), tracker=tracker)
+        report = at.run_cycle(now=1_700_000_500)
+        assert report.tick_outcome is not None
+        assert report.decision.should_trade is True  # orchestrator approved
+        assert report.opened_position is None  # but auto-trader refused
+        assert tracker.current_open() is None
+
+
+# ─── CycleReport shape ──────────────────────────────────────────────────────
+
+
+@pytest.mark.unit
+class TestCycleReportShape:
+    def test_report_carries_inputs(self, fresh_db: Path) -> None:
+        circuit_breaker.reset()
+        at = _make_trader()
+        report = at.run_cycle(now=1_700_000_000)
+        assert isinstance(report, CycleReport)
+        assert report.symbol == "BTCUSDT"
+        assert report.interval == "1h"
+        assert report.fetched_at == 1_700_000_000
+        assert report.current_price == Decimal("210")
+
+    def test_report_is_frozen(self, fresh_db: Path) -> None:
+        circuit_breaker.reset()
+        at = _make_trader()
+        report = at.run_cycle(now=1_700_000_000)
+        with pytest.raises(AttributeError):
+            report.fetched_at = 0  # type: ignore[misc]
+
+
+# ─── Capital provider ───────────────────────────────────────────────────────
+
+
+@pytest.mark.unit
+class TestCapitalProvider:
+    def test_capital_provider_called_each_cycle(self, fresh_db: Path) -> None:
+        # Use weak signals so the orchestrator skips and no position
+        # is opened — exercises the capital fetch on a pure skip path.
+        circuit_breaker.reset()
+        calls: list[Decimal] = []
+
+        def provider() -> Decimal:
+            calls.append(Decimal("500"))
+            return Decimal("500")
+
+        orch = Orchestrator(
+            strategies=[
+                _FakeStrategy("a", _signal(0.1, confidence=0.3)),
+                _FakeStrategy("b", _signal(0.1, confidence=0.3)),
+            ],
+        )
+        at = _make_trader(orchestrator=orch)
+        at._capital_provider = provider
+        at.run_cycle(now=1_700_000_000)
+        at.run_cycle(now=1_700_000_500)
+        assert len(calls) == 2
+
+    def test_zero_capital_skips_size_zero(self, fresh_db: Path) -> None:
+        circuit_breaker.reset()
+        tracker = PositionTracker()
+        at = _make_trader(capital=Decimal("0"), tracker=tracker)
+        report = at.run_cycle(now=1_700_000_000)
+        assert report.decision.skip_reason == "position_size_zero"
+        assert report.opened_position is None
+
+
+# ─── Fetcher injection ──────────────────────────────────────────────────────
+
+
+@pytest.mark.unit
+class TestFetcherInjection:
+    def test_fetchers_called_with_symbol_and_interval(self, fresh_db: Path) -> None:
+        circuit_breaker.reset()
+        klines_calls: list[tuple[str, str, int]] = []
+        price_calls: list[str] = []
+
+        def fk(symbol: str, interval: str, limit: int) -> list[Kline]:
+            klines_calls.append((symbol, interval, limit))
+            return _bull_klines()
+
+        def fp(symbol: str) -> Decimal:
+            price_calls.append(symbol)
+            return Decimal("210")
+
+        at = AutoTrader(
+            symbol="ETHUSDT",
+            interval="4h",
+            klines_limit=300,
+            orchestrator=Orchestrator(
+                strategies=[
+                    _FakeStrategy("a", _signal(0.9, confidence=0.9)),
+                    _FakeStrategy("b", _signal(0.9, confidence=0.9)),
+                ],
+            ),
+            fetch_klines=fk,
+            fetch_current_price=fp,
+        )
+        at.run_cycle(now=1_700_000_000)
+        assert klines_calls == [("ETHUSDT", "4h", 300)]
+        assert price_calls == ["ETHUSDT"]
+
+
+# ─── Default capital provider ───────────────────────────────────────────────
+
+
+@pytest.mark.unit
+class TestDefaultCapitalProvider:
+    def test_default_is_doc04_cold_start_20_usd(self, fresh_db: Path) -> None:
+        assert _default_capital_provider() == Decimal("20")

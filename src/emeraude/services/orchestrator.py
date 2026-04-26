@@ -164,6 +164,14 @@ class CycleDecision:
             :func:`is_qualified`. May still be ``False`` for skipped
             cycles (e.g. weak conviction).
         direction: ``LONG`` / ``SHORT`` — only set when ``should_trade``.
+        dominant_strategy: name of the strategy with the largest
+            ``|score * confidence * weight|`` contribution. Set on every
+            decision computed *after* the qualification gate (the late
+            skips and the happy path) ; ``None`` for early skips. Used
+            by :class:`emeraude.services.auto_trader.AutoTrader` to
+            pass the right ``strategy`` key to
+            :meth:`PositionTracker.open_position` so learning feedback
+            lands on the correct row.
         position_quantity: base-asset units to trade. ``Decimal(0)`` for
             every skip case.
         price: last close from the kline series, or ``Decimal(0)`` for
@@ -185,6 +193,7 @@ class CycleDecision:
     ensemble_vote: EnsembleVote | None
     qualified: bool
     direction: TradeDirection | None
+    dominant_strategy: str | None
     position_quantity: Decimal
     price: Decimal
     atr: Decimal | None
@@ -421,6 +430,7 @@ class Orchestrator:
                 breaker_state=breaker_state,
                 reason=SKIP_POSITION_SIZE_ZERO,
                 msg="kelly and caps collapsed to zero",
+                dominant_strategy=dominant,
             )
 
         direction = TradeDirection.LONG if ev.score > _ZERO else TradeDirection.SHORT
@@ -444,6 +454,7 @@ class Orchestrator:
                 reason=SKIP_DEGENERATE_RISK,
                 msg="risk per unit is zero (ATR=0 or stop multiplier=0)",
                 trade_levels=levels,
+                dominant_strategy=dominant,
             )
 
         if not is_acceptable_rr(levels, min_rr=self._min_rr):
@@ -457,6 +468,7 @@ class Orchestrator:
                 reason=SKIP_RR_TOO_LOW,
                 msg=f"R/R {levels.r_multiple} below floor {self._min_rr} (anti-rule A4)",
                 trade_levels=levels,
+                dominant_strategy=dominant,
             )
 
         return CycleDecision(
@@ -465,6 +477,7 @@ class Orchestrator:
             ensemble_vote=ev,
             qualified=True,
             direction=direction,
+            dominant_strategy=dominant,
             position_quantity=quantity,
             price=last_price,
             atr=atr_value,
@@ -535,6 +548,7 @@ class Orchestrator:
         reason: str,
         msg: str,
         trade_levels: TradeLevels | None = None,
+        dominant_strategy: str | None = None,
     ) -> CycleDecision:
         """Build a skip :class:`CycleDecision` with consistent defaults."""
         return CycleDecision(
@@ -543,6 +557,7 @@ class Orchestrator:
             ensemble_vote=vote_obj,
             qualified=qualified,
             direction=None,
+            dominant_strategy=dominant_strategy,
             position_quantity=_ZERO,
             price=price,
             atr=atr_value,

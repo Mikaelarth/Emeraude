@@ -18,6 +18,10 @@ Future modules (cf. CLAUDE.md) :
 * ``health``       — liveness + readiness checks for the niveau-entreprise SLA.
 """
 
+from emeraude.services.auto_trader import (
+    AutoTrader,
+    CycleReport,
+)
 from emeraude.services.orchestrator import (
     CycleDecision,
     Orchestrator,
@@ -25,7 +29,9 @@ from emeraude.services.orchestrator import (
 )
 
 __all__ = [
+    "AutoTrader",
     "CycleDecision",
+    "CycleReport",
     "Orchestrator",
     "TradeDirection",
 ]

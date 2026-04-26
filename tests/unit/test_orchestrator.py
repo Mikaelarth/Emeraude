@@ -385,6 +385,7 @@ class TestCycleDecisionShape:
             ensemble_vote=None,
             qualified=False,
             direction=None,
+            dominant_strategy=None,
             position_quantity=Decimal("0"),
             price=Decimal("0"),
             atr=None,
@@ -502,6 +503,36 @@ class TestRiskManagerGate:
         # Levels still attached so audit can show risk_per_unit == 0.
         assert decision.trade_levels is not None
         assert decision.trade_levels.risk_per_unit == Decimal("0")
+
+    def test_happy_path_dominant_strategy_set(self, fresh_db: Path) -> None:
+        # The strategy with the largest |score * confidence * weight| wins.
+        loud = _FakeStrategy("loud", _signal(0.9, confidence=0.9))
+        quiet = _FakeStrategy("quiet", _signal(0.5, confidence=0.4))
+        orch = Orchestrator(strategies=[loud, quiet])
+        decision = orch.make_decision(capital=Decimal("1000"), klines=_bull_klines())
+        assert decision.should_trade is True
+        assert decision.dominant_strategy == "loud"
+
+    def test_late_skip_has_dominant_strategy(self, fresh_db: Path) -> None:
+        # SKIP_RR_TOO_LOW (with target_mult=2 -> R=1) still carries the
+        # dominant strategy so the audit knows whose win-rate fed Kelly.
+        orch = Orchestrator(
+            strategies=[
+                _FakeStrategy("a", _signal(0.9, confidence=0.9)),
+                _FakeStrategy("b", _signal(0.9, confidence=0.9)),
+            ],
+            target_atr_multiplier=Decimal("2"),
+        )
+        decision = orch.make_decision(capital=Decimal("1000"), klines=_bull_klines())
+        assert decision.should_trade is False
+        assert decision.skip_reason == SKIP_RR_TOO_LOW
+        assert decision.dominant_strategy is not None
+
+    def test_early_skip_dominant_strategy_is_none(self, fresh_db: Path) -> None:
+        circuit_breaker.trip("test")
+        orch = Orchestrator(strategies=[_FakeStrategy("a", _signal(0.8))])
+        decision = orch.make_decision(capital=Decimal("100"), klines=_bull_klines())
+        assert decision.dominant_strategy is None
 
     def test_breaker_skip_has_no_trade_levels(self, fresh_db: Path) -> None:
         circuit_breaker.trip("test")
