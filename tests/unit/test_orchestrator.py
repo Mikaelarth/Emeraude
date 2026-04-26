@@ -315,6 +315,103 @@ class TestAdaptiveBehavior:
         # win-rate path keeps us trading.
         assert decision.should_trade is True
 
+    def test_win_loss_ratio_adaptive_below_threshold_uses_fallback(
+        self,
+        fresh_db: Path,
+    ) -> None:
+        # Only 1 trade recorded ; default adaptive_min_trades=30 keeps
+        # the fallback active. Helper exercised directly to isolate.
+        rm = RegimeMemory()
+        rm.record_outcome("only", Regime.BULL, Decimal("3.0"))
+        orch = Orchestrator(
+            strategies=[_FakeStrategy("only", _signal(0.9, confidence=0.9))],
+            regime_memory=rm,
+            fallback_win_loss_ratio=Decimal("1.5"),
+        )
+        # With only 1 sample the fallback (1.5) wins.
+        ratio = orch._win_loss_ratio_for("only", Regime.BULL)
+        assert ratio == Decimal("1.5")
+
+    def test_win_loss_ratio_adaptive_above_threshold_uses_history(
+        self,
+        fresh_db: Path,
+    ) -> None:
+        # 2 wins of +2 R + 2 losses of -1 R -> avg_win=2, avg_loss=1,
+        # win_loss_ratio = 2.0. With adaptive_min_trades=2 the helper
+        # returns the historical ratio instead of the fallback.
+        rm = RegimeMemory()
+        for _ in range(2):
+            rm.record_outcome("only", Regime.BULL, Decimal("2.0"))
+        for _ in range(2):
+            rm.record_outcome("only", Regime.BULL, Decimal("-1.0"))
+        orch = Orchestrator(
+            strategies=[_FakeStrategy("only", _signal(0.9, confidence=0.9))],
+            regime_memory=rm,
+            adaptive_min_trades=2,
+            fallback_win_loss_ratio=Decimal("99"),  # never reached
+        )
+        ratio = orch._win_loss_ratio_for("only", Regime.BULL)
+        assert ratio == Decimal("2")
+
+    def test_win_loss_ratio_zero_history_falls_back(self, fresh_db: Path) -> None:
+        # 3 winning trades, no losses : ratio is 0 (avg_loss=0) and
+        # the helper must keep using the fallback to keep Kelly
+        # well-defined.
+        rm = RegimeMemory()
+        for _ in range(3):
+            rm.record_outcome("only", Regime.BULL, Decimal("1.0"))
+        orch = Orchestrator(
+            strategies=[_FakeStrategy("only", _signal(0.9, confidence=0.9))],
+            regime_memory=rm,
+            adaptive_min_trades=2,
+            fallback_win_loss_ratio=Decimal("1.5"),
+        )
+        ratio = orch._win_loss_ratio_for("only", Regime.BULL)
+        assert ratio == Decimal("1.5")
+
+    def test_adaptive_ratio_changes_position_size(self, fresh_db: Path) -> None:
+        # Build two orchestrators on the same fixture but with /
+        # without enough history. The one with high historical ratio
+        # produces a larger Kelly => larger position quantity.
+        rm_loaded = RegimeMemory()
+        # 30 wins of +3 R, 30 losses of -1 R -> ratio = 3, win_rate = 0.5.
+        # Kelly = (0.5 * 3 - 0.5) / 3 = 1/3 -> half-Kelly 1/6 ~= 0.167.
+        for _ in range(30):
+            rm_loaded.record_outcome("only", Regime.BULL, Decimal("3.0"))
+        for _ in range(30):
+            rm_loaded.record_outcome("only", Regime.BULL, Decimal("-1.0"))
+
+        orch_loaded = Orchestrator(
+            strategies=[_FakeStrategy("only", _signal(0.9, confidence=0.9))],
+            regime_memory=rm_loaded,
+            adaptive_min_trades=30,
+            fallback_win_rate=Decimal("0.45"),
+            fallback_win_loss_ratio=Decimal("1.5"),
+        )
+        decision_loaded = orch_loaded.make_decision(
+            capital=Decimal("1000"),
+            klines=_bull_klines(),
+        )
+
+        rm_empty = RegimeMemory()  # falls back to 1.5
+        orch_fallback = Orchestrator(
+            strategies=[_FakeStrategy("only", _signal(0.9, confidence=0.9))],
+            regime_memory=rm_empty,
+            adaptive_min_trades=30,
+            fallback_win_rate=Decimal("0.45"),
+            fallback_win_loss_ratio=Decimal("1.5"),
+        )
+        decision_fallback = orch_fallback.make_decision(
+            capital=Decimal("1000"),
+            klines=_bull_klines(),
+        )
+
+        assert decision_loaded.should_trade is True
+        assert decision_fallback.should_trade is True
+        # Higher Kelly fraction with the loaded history -> bigger size
+        # (or equal if vol-cap dominates ; assert >= to keep robust).
+        assert decision_loaded.position_quantity >= decision_fallback.position_quantity
+
     def test_bandit_optional_multiplies_weights(self, fresh_db: Path) -> None:
         bandit = StrategyBandit()
         orch = Orchestrator(

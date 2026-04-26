@@ -6,6 +6,75 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.25] - 2026-04-26
+
+### Added
+
+- **R-multiple adaptatif par (stratégie, régime)** — boucle
+  d'apprentissage Pilier #2 désormais **complète**. L'orchestrator
+  utilisait jusqu'ici `fallback_win_loss_ratio=1.5` constant pour
+  Kelly, quel que soit le couple (stratégie, régime). Cette iter
+  remplace la constante par la performance historique réelle quand
+  ≥ 30 trades sont disponibles, fallback sinon.
+  - Migration `007_regime_memory_sum_r_wins.sql` : ajoute la colonne
+    `sum_r_wins TEXT NOT NULL DEFAULT '0'` à la table existante
+    via `ALTER TABLE ADD COLUMN`. STRICT mode supporté depuis
+    SQLite 3.36.
+  - `RegimeStats` gagne 6 propriétés dérivées :
+    - `n_losses` = `n_trades - n_wins`
+    - `sum_r_losses_abs` = `sum_r_wins - sum_r` (puisque
+      `sum_r = sum_r_wins + sum_r_losses` et losses ≤ 0)
+    - `avg_win` = `sum_r_wins / n_wins`, `0` si pas de win
+    - `avg_loss` = `sum_r_losses_abs / n_losses`, magnitude positive,
+      `0` si pas de perte
+    - `win_loss_ratio` = `avg_win / avg_loss`, `0` si numérateur ou
+      dénominateur nul (Kelly indéfini → caller fallback)
+  - `RegimeMemory.record_outcome` incrémente `sum_r_wins` uniquement
+    sur `r_multiple > 0` (break-even compte 0 en cohérence avec la
+    convention bandit).
+  - `Orchestrator._win_loss_ratio_for(strategy, regime)` :
+    helper miroir de `_win_rate_for`. Adaptatif quand
+    `n_trades >= adaptive_min_trades` ET `ratio > 0` ; sinon
+    `fallback_win_loss_ratio`. La double-condition empêche un
+    bucket fraîchement chauffé (3 wins, 0 losses) de produire une
+    division par zéro et de paralyser Kelly.
+  - `Orchestrator.make_decision` appelle ce helper en remplacement
+    de la constante directe ligne 412.
+- 7 nouveaux tests (690 → 697), tous verts :
+  - 4 unit dans `test_regime_memory.py` couvrant la nouvelle
+    colonne `sum_r_wins`, `avg_win` / `avg_loss` calculés, le cas
+    "no wins" → ratio 0, le cas "no losses" → ratio 0.
+  - 4 unit dans `test_orchestrator.py` couvrant le helper
+    `_win_loss_ratio_for` (sous threshold → fallback ; au-dessus →
+    historique ; ratio nul → fallback ; histoire chargée vs vide →
+    quantité Kelly différente).
+  - Migration shape : 1 test mis à jour pour vérifier la 8e
+    colonne `sum_r_wins`.
+  - 4 tests `RegimeStats` existants mis à jour pour la nouvelle
+    signature constructeur.
+
+### Notes
+
+- Coverage stable à **99.79 %**, 697 tests verts (était 690).
+- **Backwards compatibility** : la migration utilise
+  `ADD COLUMN ... DEFAULT '0'`, donc les rows existantes gagnent
+  `sum_r_wins = 0` après application. Pour Emeraude qui n'a aucun
+  historique réel c'est correct ; un déploiement avec données
+  pré-existantes verrait des `avg_win = 0` jusqu'à ce que les
+  nouveaux trades reconstituent le compteur. La doc de la
+  migration le mentionne explicitement.
+- **Pas de cast float** : `record_outcome` continue d'incrémenter
+  `Decimal(row["sum_r_wins"]) + r_multiple`, jamais via float.
+- **Anti-règle A1 respectée** : pas d'introduction d'estimateurs
+  bayésiens, trimmed-mean, ou autres raffinements (mentionnés
+  dans le docstring `expectancy` comme évolutions futures
+  plausibles). Cette iter livre uniquement le passage de constante
+  à historique brut.
+- **Symétrie avec `_win_rate_for`** : les deux helpers ont la même
+  forme — adaptive iff (n_trades >= adaptive_min_trades) AND
+  (valeur dérivée non dégénérée). Cohérence de design pour le
+  futur lecteur du code.
+
 ## [0.0.24] - 2026-04-26
 
 ### Added

@@ -405,11 +405,12 @@ class Orchestrator:
 
         dominant = self._dominant_strategy(signals, weights)
         win_rate = self._win_rate_for(dominant, regime)
+        win_loss_ratio = self._win_loss_ratio_for(dominant, regime)
 
         quantity = position_size(
             capital=capital,
             win_rate=win_rate,
-            win_loss_ratio=self._fallback_win_loss_ratio,
+            win_loss_ratio=win_loss_ratio,
             price=last_price,
             atr=atr_value,
             kelly_multiplier=self._kelly_multiplier,
@@ -535,6 +536,22 @@ class Orchestrator:
         if stats.n_trades >= self._adaptive_min_trades:
             return stats.win_rate
         return self._fallback_win_rate
+
+    def _win_loss_ratio_for(self, strategy: str, regime: Regime) -> Decimal:
+        """Return the per-(strategy, regime) Kelly R-multiple.
+
+        Adaptive when (a) ``n_trades >= adaptive_min_trades`` AND
+        (b) the realized ratio is strictly positive (a freshly-warmed
+        bucket with zero losses yields ``0`` and is not Kelly-usable
+        — the caller must keep the fallback active until both wins
+        and losses have been observed).
+        """
+        stats = self._regime_memory.get_stats(strategy, regime)
+        if stats.n_trades >= self._adaptive_min_trades:
+            ratio = stats.win_loss_ratio
+            if ratio > _ZERO:
+                return ratio
+        return self._fallback_win_loss_ratio
 
     def _skip(
         self,

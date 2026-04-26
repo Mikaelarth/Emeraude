@@ -40,6 +40,7 @@ class TestMigration:
             "n_wins",
             "sum_r",
             "sum_r2",
+            "sum_r_wins",
             "last_updated",
         }
 
@@ -50,19 +51,83 @@ class TestMigration:
 @pytest.mark.unit
 class TestRegimeStats:
     def test_zero_trades_returns_zero_win_rate(self) -> None:
-        stats = RegimeStats(n_trades=0, n_wins=0, sum_r=Decimal("0"), sum_r2=Decimal("0"))
+        stats = RegimeStats(
+            n_trades=0,
+            n_wins=0,
+            sum_r=Decimal("0"),
+            sum_r2=Decimal("0"),
+            sum_r_wins=Decimal("0"),
+        )
         assert stats.win_rate == Decimal("0")
         assert stats.avg_r == Decimal("0")
         assert stats.expectancy == Decimal("0")
+        # Empty bucket -> all derived ratios are 0 too.
+        assert stats.avg_win == Decimal("0")
+        assert stats.avg_loss == Decimal("0")
+        assert stats.win_loss_ratio == Decimal("0")
+        assert stats.n_losses == 0
 
     def test_win_rate_basic(self) -> None:
-        stats = RegimeStats(n_trades=10, n_wins=6, sum_r=Decimal("4"), sum_r2=Decimal("10"))
+        stats = RegimeStats(
+            n_trades=10,
+            n_wins=6,
+            sum_r=Decimal("4"),
+            sum_r2=Decimal("10"),
+            sum_r_wins=Decimal("9"),
+        )
         assert stats.win_rate == Decimal("0.6")
 
     def test_avg_r_basic(self) -> None:
-        stats = RegimeStats(n_trades=4, n_wins=2, sum_r=Decimal("2"), sum_r2=Decimal("5"))
+        stats = RegimeStats(
+            n_trades=4,
+            n_wins=2,
+            sum_r=Decimal("2"),
+            sum_r2=Decimal("5"),
+            sum_r_wins=Decimal("3"),
+        )
         assert stats.avg_r == Decimal("0.5")
         assert stats.expectancy == Decimal("0.5")
+
+    def test_avg_win_basic(self) -> None:
+        # 2 wins of avg +1.5 R = sum_r_wins 3 ; 2 losses of avg -0.5 R
+        # (sum_r = 3 + (-1) = 2, sum_r_losses_abs = 3 - 2 = 1, /2 = 0.5).
+        stats = RegimeStats(
+            n_trades=4,
+            n_wins=2,
+            sum_r=Decimal("2"),
+            sum_r2=Decimal("5"),
+            sum_r_wins=Decimal("3"),
+        )
+        assert stats.avg_win == Decimal("1.5")
+        assert stats.avg_loss == Decimal("0.5")
+        assert stats.win_loss_ratio == Decimal("3")
+        assert stats.n_losses == 2
+
+    def test_no_wins_avg_win_zero(self) -> None:
+        # 3 losses, no wins -> avg_win = 0 (no division by zero).
+        stats = RegimeStats(
+            n_trades=3,
+            n_wins=0,
+            sum_r=Decimal("-3"),
+            sum_r2=Decimal("3"),
+            sum_r_wins=Decimal("0"),
+        )
+        assert stats.avg_win == Decimal("0")
+        assert stats.avg_loss == Decimal("1")  # abs(-3) / 3
+        assert stats.win_loss_ratio == Decimal("0")  # numerator zero
+
+    def test_no_losses_win_loss_ratio_zero(self) -> None:
+        # 3 wins, no losses -> avg_loss = 0 -> win_loss_ratio = 0
+        # (Kelly cannot bet on infinite ratio ; caller falls back).
+        stats = RegimeStats(
+            n_trades=3,
+            n_wins=3,
+            sum_r=Decimal("6"),
+            sum_r2=Decimal("12"),
+            sum_r_wins=Decimal("6"),
+        )
+        assert stats.avg_loss == Decimal("0")
+        assert stats.win_loss_ratio == Decimal("0")
 
 
 # ─── record_outcome ─────────────────────────────────────────────────────────
@@ -79,6 +144,8 @@ class TestRecordOutcome:
         assert stats.n_wins == 1
         assert stats.sum_r == Decimal("1.5")
         assert stats.sum_r2 == Decimal("2.25")
+        # The single win contributes its r_multiple to sum_r_wins.
+        assert stats.sum_r_wins == Decimal("1.5")
 
     def test_subsequent_records_update(self, fresh_db: Path) -> None:
         rm = RegimeMemory()
@@ -91,6 +158,12 @@ class TestRecordOutcome:
         assert stats.n_wins == 2  # 2.0 and 1.5 are wins ; -1.0 is loss
         assert stats.sum_r == Decimal("2.5")  # 2.0 - 1.0 + 1.5
         assert stats.sum_r2 == Decimal("7.25")  # 4 + 1 + 2.25
+        # Only the two positive outcomes contribute to sum_r_wins.
+        assert stats.sum_r_wins == Decimal("3.5")  # 2.0 + 1.5
+        # Derived avg_win / avg_loss / ratio.
+        assert stats.avg_win == Decimal("1.75")  # 3.5 / 2
+        assert stats.avg_loss == Decimal("1")  # |sum_r_wins - sum_r| / 1
+        assert stats.win_loss_ratio == Decimal("1.75")
 
     def test_zero_r_not_counted_as_win(self, fresh_db: Path) -> None:
         rm = RegimeMemory()
@@ -128,7 +201,13 @@ class TestGetStatsNoData:
     def test_returns_zero_stats_for_unseen_couple(self, fresh_db: Path) -> None:
         rm = RegimeMemory()
         stats = rm.get_stats("never_used", Regime.BULL)
-        assert stats == RegimeStats(n_trades=0, n_wins=0, sum_r=Decimal("0"), sum_r2=Decimal("0"))
+        assert stats == RegimeStats(
+            n_trades=0,
+            n_wins=0,
+            sum_r=Decimal("0"),
+            sum_r2=Decimal("0"),
+            sum_r_wins=Decimal("0"),
+        )
 
 
 # ─── get_adaptive_weights ───────────────────────────────────────────────────
