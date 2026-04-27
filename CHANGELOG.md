@@ -6,6 +6,79 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.30] - 2026-04-27
+
+### Added
+
+- **R4 Walk-forward windowing + aggregation primitives (doc 10 R4,
+  doc 06 P1.6)** — 7.5/15 innovations livrées (était 7/15 :
+  R3, R5, R9, R10, R11, R12, R13). Le critère P1.6 du Palier 1
+  ("Walk-forward Sharpe avg ≥ 0.5") est désormais checkable par
+  code. Module pure `agent/learning/walk_forward.py` avec :
+  - `WalkForwardConfig` `frozen+slots` (train_size, test_size,
+    step_size en kline counts ; interval-agnostic). Validation
+    à la construction.
+  - `WalkForwardWindow` `frozen+slots` (index + train/test
+    bounds Python-slice-compatible).
+  - `generate_windows(*, history_size, config) -> list[WalkForwardWindow]`
+    — pure index pagination. Premier window à `train_start = 0`,
+    pas de `step_size`, dernier window dont le test slice fitte
+    fully la history. Test slices non-overlapping (chaque kline
+    gradé out-of-sample au plus une fois).
+  - `WalkForwardSummary` `frozen+slots` : `n_windows`,
+    `n_positive_sharpe`, `avg_sharpe`, `avg_expectancy`,
+    `avg_win_rate`, `avg_profit_factor`, `worst_max_drawdown`,
+    `consistency` (= n_positive_sharpe / n_windows).
+  - `aggregate_walk_forward_metrics(reports)` — agrège une liste
+    de `PerformanceReport` (iter #27) en un summary. Empty-input
+    zero-padded. Profit factor `Decimal('Infinity')` propage
+    naturellement (caller's responsibility de garder).
+  - `is_walk_forward_consistent(summary, *, min_avg_sharpe=0.5,
+    min_consistency=0.5)` — gate booléen contre les seuils
+    doc 06 §"Palier 1" P1.6. Empty summary → False.
+- 29 nouveaux tests (805 → 834), tous verts :
+  - 4 unit `WalkForwardConfig` : validation rejets (zero
+    train/test/step), construction valide.
+  - 8 unit `generate_windows` : history trop petite → vide,
+    fit exact → 1 window, 3 windows avec step=5, test starts
+    at train_end, step==test → tile sans gap, history
+    négative rejetée, history zéro → vide, frozen.
+  - 7 unit `aggregate_walk_forward_metrics` : empty zero,
+    single window aggregate = input, consistency comptage
+    correct, zero-Sharpe ne compte pas comme positif, worst
+    drawdown = max, infinity profit factor propage, frozen.
+  - 8 unit `is_walk_forward_consistent` : default thresholds
+    = doc 06 (0.5, 0.5), clear both, low Sharpe fails, low
+    consistency fails (avg=1.0 mais consistency=0.25 → fails),
+    empty fails, custom thresholds, validation rejets
+    (negative + above-1 consistency).
+  - 2 scenarios doc-06 reference : 4/10 windows positifs avec
+    Sharpe avg=0.12 reproduit le "consistency 40 % vs seuil
+    50 %" actuel ; 7/10 windows à Sharpe 0.93 reproduit l'esprit
+    du champion validé.
+
+### Notes
+
+- Coverage stable à **99.82 %**. Module au **100 %**.
+- **Anti-règle A1 — partie "robustness perturbation" différée** :
+  doc 10 R4 a deux parties (walk-forward windowing + ±20 %
+  perturbation des params). Cette iter livre la 1re ; la 2nde
+  vient en iter dédiée quand un objectif/configuration concret
+  sera disponible à perturber.
+- **Anti-règle A1 — simulation in-window différée** : la harnais
+  livrée ne *simule* pas les trades dans chaque fenêtre — c'est
+  le rôle d'un AutoTrader-en-mode-replay (pas livré). Caller
+  fournit ses `PerformanceReport` per-window via son propre
+  backtester. Quand le simulator landera, le wiring sera de 1
+  appel : `aggregate_walk_forward_metrics([backtest(window)
+  for window in generate_windows(...)])`.
+- **Choix design** : `consistency` mesure les windows à Sharpe
+  *strictement* positif, par cohérence avec `is_walk_forward_consistent`
+  (un Sharpe nul est ambigu — soit single-trade, soit dégénéré).
+  Doc 06 actuel utilise la même convention.
+- **Reference** : López de Prado (2018), *Advances in Financial
+  Machine Learning*, ch. 11.
+
 ## [0.0.29] - 2026-04-27
 
 ### Added
