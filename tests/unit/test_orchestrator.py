@@ -12,6 +12,10 @@ from emeraude.agent.execution.circuit_breaker import CircuitBreakerState
 from emeraude.agent.learning.bandit import StrategyBandit
 from emeraude.agent.learning.regime_memory import RegimeMemory
 from emeraude.agent.perception.regime import Regime
+from emeraude.agent.perception.tradability import (
+    TradabilityReport,
+    compute_tradability,
+)
 from emeraude.agent.reasoning.ensemble import REGIME_WEIGHTS
 from emeraude.agent.reasoning.strategies import StrategySignal
 from emeraude.infra import database
@@ -22,6 +26,7 @@ from emeraude.services.orchestrator import (
     SKIP_EMPTY_KLINES,
     SKIP_ENSEMBLE_NOT_QUALIFIED,
     SKIP_INSUFFICIENT_DATA,
+    SKIP_LOW_TRADABILITY,
     SKIP_NO_CONTRIBUTORS,
     SKIP_POSITION_SIZE_ZERO,
     SKIP_RR_TOO_LOW,
@@ -732,3 +737,119 @@ class TestRiskManagerGate:
         decision = orch.make_decision(capital=Decimal("0"), klines=_bull_klines())
         assert decision.skip_reason == SKIP_POSITION_SIZE_ZERO
         assert decision.trade_levels is None
+
+
+# ─── Meta-gate (R8) integration ─────────────────────────────────────────────
+
+
+@pytest.mark.unit
+class TestMetaGateIntegration:
+    """Doc 10 R8 — orchestrator skips when the injected gate says
+    the market is untradable. Default behaviour (no gate) unchanged."""
+
+    def test_default_no_gate_keeps_behavior(self, fresh_db: Path) -> None:
+        # Without an injected gate, the orchestrator never raises
+        # SKIP_LOW_TRADABILITY ; happy path stays happy.
+        orch = Orchestrator(
+            strategies=[
+                _FakeStrategy("a", _signal(0.9, confidence=0.9)),
+                _FakeStrategy("b", _signal(0.9, confidence=0.9)),
+            ],
+        )
+        decision = orch.make_decision(capital=Decimal("1000"), klines=_bull_klines())
+        assert decision.should_trade is True
+        assert decision.skip_reason != SKIP_LOW_TRADABILITY
+
+    def test_gate_returning_untradable_fires_skip(self, fresh_db: Path) -> None:
+        # Stub gate : always says "not tradable".
+        def stub_gate(klines: list[Kline]) -> TradabilityReport:
+            del klines
+            return TradabilityReport(
+                volatility_score=Decimal("0"),
+                volume_score=Decimal("0"),
+                hour_score=Decimal("0"),
+                tradability=Decimal("0"),
+                is_tradable=False,
+            )
+
+        orch = Orchestrator(
+            strategies=[
+                _FakeStrategy("a", _signal(0.9, confidence=0.9)),
+                _FakeStrategy("b", _signal(0.9, confidence=0.9)),
+            ],
+            meta_gate=stub_gate,
+        )
+        decision = orch.make_decision(capital=Decimal("1000"), klines=_bull_klines())
+        assert decision.should_trade is False
+        assert decision.skip_reason == SKIP_LOW_TRADABILITY
+        # Regime detected before the gate fires -> set on the decision.
+        assert decision.regime is not None
+        # Gate fires before strategies vote -> ensemble vote None.
+        assert decision.ensemble_vote is None
+
+    def test_gate_returning_tradable_proceeds(self, fresh_db: Path) -> None:
+        def stub_gate(klines: list[Kline]) -> TradabilityReport:
+            del klines
+            return TradabilityReport(
+                volatility_score=Decimal("1"),
+                volume_score=Decimal("1"),
+                hour_score=Decimal("1"),
+                tradability=Decimal("1"),
+                is_tradable=True,
+            )
+
+        orch = Orchestrator(
+            strategies=[
+                _FakeStrategy("a", _signal(0.9, confidence=0.9)),
+                _FakeStrategy("b", _signal(0.9, confidence=0.9)),
+            ],
+            meta_gate=stub_gate,
+        )
+        decision = orch.make_decision(capital=Decimal("1000"), klines=_bull_klines())
+        assert decision.should_trade is True
+        assert decision.skip_reason is None
+
+    def test_real_compute_tradability_callable_works(self, fresh_db: Path) -> None:
+        # Wire the actual compute_tradability function (via a closure
+        # that captures default thresholds) — verifies the API is
+        # compatible without forcing the user to write a stub.
+        orch = Orchestrator(
+            strategies=[
+                _FakeStrategy("a", _signal(0.9, confidence=0.9)),
+                _FakeStrategy("b", _signal(0.9, confidence=0.9)),
+            ],
+            meta_gate=compute_tradability,
+        )
+        decision = orch.make_decision(capital=Decimal("1000"), klines=_bull_klines())
+        # _bull_klines builds a calm constant-volume series with
+        # default open_time=0 (epoch) -> hour 00:00 UTC = blackout.
+        # tradability score = (1 + 1 + 0) / 3 ≈ 0.667 -> still
+        # >= 0.4 default -> tradable.
+        assert decision.should_trade is True
+
+    def test_gate_skip_does_not_affect_audit_chain(self, fresh_db: Path) -> None:
+        # When the gate fires, regime is preserved (computed before)
+        # but downstream fields are None (not computed).
+        def stub_gate(klines: list[Kline]) -> TradabilityReport:
+            del klines
+            return TradabilityReport(
+                volatility_score=Decimal("0"),
+                volume_score=Decimal("0"),
+                hour_score=Decimal("0"),
+                tradability=Decimal("0"),
+                is_tradable=False,
+            )
+
+        orch = Orchestrator(
+            strategies=[
+                _FakeStrategy("a", _signal(0.9, confidence=0.9)),
+                _FakeStrategy("b", _signal(0.9, confidence=0.9)),
+            ],
+            meta_gate=stub_gate,
+        )
+        decision = orch.make_decision(capital=Decimal("1000"), klines=_bull_klines())
+        assert decision.regime is not None
+        assert decision.ensemble_vote is None
+        assert decision.dominant_strategy is None
+        assert decision.trade_levels is None
+        assert decision.position_quantity == Decimal("0")

@@ -95,9 +95,10 @@ from emeraude.agent.reasoning.strategies import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
 
     from emeraude.agent.learning.bandit import StrategyBandit
+    from emeraude.agent.perception.tradability import TradabilityReport
     from emeraude.agent.reasoning.strategies import StrategySignal
     from emeraude.infra.market_data import Kline
 
@@ -124,6 +125,9 @@ SKIP_POSITION_SIZE_ZERO: Final[str] = "position_size_zero"
 SKIP_RR_TOO_LOW: Final[str] = "rr_too_low"
 # Degenerate ATR=0 yields zero risk and zero reward — non-meaningful trade.
 SKIP_DEGENERATE_RISK: Final[str] = "degenerate_risk"
+# Doc 10 R8 : meta-gate says the current market state is untradable
+# (high volatility / low volume / blackout hour).
+SKIP_LOW_TRADABILITY: Final[str] = "low_tradability"
 
 
 # ─── Public types ───────────────────────────────────────────────────────────
@@ -226,6 +230,7 @@ class Orchestrator:
         strategies: list[Strategy] | None = None,
         regime_memory: RegimeMemory | None = None,
         bandit: StrategyBandit | None = None,
+        meta_gate: Callable[[list[Kline]], TradabilityReport] | None = None,
         regime_weights: Mapping[Regime, Mapping[str, Decimal]] | None = None,
         kelly_multiplier: Decimal = DEFAULT_KELLY_MULTIPLIER,
         max_pct_per_trade: Decimal = DEFAULT_MAX_PCT_PER_TRADE,
@@ -249,6 +254,15 @@ class Orchestrator:
             bandit: optional Thompson sampler. When ``None`` (default)
                 the orchestrator is fully deterministic given its
                 inputs and DB state.
+            meta_gate: optional callable that scores the current
+                market state's tradability (doc 10 R8). When ``None``
+                (default), no gate fires and behaviour is unchanged.
+                When injected, called after regime detection ; if
+                ``report.is_tradable`` is False, the cycle skips with
+                ``SKIP_LOW_TRADABILITY``. Typically wired with
+                :func:`emeraude.agent.perception.tradability.compute_tradability`
+                or a ``functools.partial`` of it with custom
+                thresholds.
             regime_weights: fallback weights when regime memory has
                 fewer than ``adaptive_min_trades`` observations for a
                 couple. Defaults to :data:`REGIME_WEIGHTS`.
@@ -298,6 +312,7 @@ class Orchestrator:
             regime_memory if regime_memory is not None else RegimeMemory()
         )
         self._bandit: StrategyBandit | None = bandit
+        self._meta_gate: Callable[[list[Kline]], TradabilityReport] | None = meta_gate
         self._regime_weights: Mapping[Regime, Mapping[str, Decimal]] = (
             regime_weights if regime_weights is not None else REGIME_WEIGHTS
         )
@@ -375,6 +390,29 @@ class Orchestrator:
                 reason=SKIP_INSUFFICIENT_DATA,
                 msg=f"insufficient klines ({len(klines)}) to detect regime",
             )
+
+        # Doc 10 R8 meta-gate : "should we trade now ?". Fired after
+        # regime detection so we only score a fully-warmed kline
+        # history. When the caller did not inject a gate, behaviour
+        # is unchanged.
+        if self._meta_gate is not None:
+            tradability = self._meta_gate(klines)
+            if not tradability.is_tradable:
+                return self._skip(
+                    regime=regime,
+                    vote_obj=None,
+                    qualified=False,
+                    price=last_price,
+                    atr_value=None,
+                    breaker_state=breaker_state,
+                    reason=SKIP_LOW_TRADABILITY,
+                    msg=(
+                        f"tradability {tradability.tradability:.3f} "
+                        f"(vol={tradability.volatility_score:.2f}, "
+                        f"vol={tradability.volume_score:.2f}, "
+                        f"hour={tradability.hour_score:.2f})"
+                    ),
+                )
 
         signals: dict[str, StrategySignal | None] = {
             s.name: s.compute_signal(klines, regime) for s in self._strategies

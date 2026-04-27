@@ -6,6 +6,95 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.32] - 2026-04-27
+
+### Added
+
+- **R8 Meta-gate "should we trade now?" (doc 10)** — 9/15 innovations
+  livrées (était 8/15 : R1, R3, R4 partie 1, R5, R9, R10, R11, R12,
+  R13, +R8). Le moteur a maintenant une **gate amont** qui filtre les
+  régimes intradables (haute volatilité + faible liquidité + heures
+  blackout) avant que les stratégies ne votent. Doc 10 R8 répond
+  à la lacune L8 (overtrading) : "99 % des bots se demandent quel
+  coin acheter ; la meilleure question est souvent faut-il acheter
+  quoi que ce soit aujourd'hui ?".
+  - Module pure `agent/perception/tradability.py` :
+    - `compute_volatility_score(klines, *, max_atr_pct=0.04)` :
+      `1 - clamp(ATR/price / max_atr_pct, 0, 1)`. ATR/price >= 4 %
+      → score 0 (vol extrême = bruit).
+    - `compute_volume_score(klines, *, ma_period=168)` :
+      `min(current_vol / ma_vol, 1)`. Volume écroulé sous la MA
+      7d → score < 1.
+    - `compute_hour_score(timestamp_ms, *, blackout_hours=(22,23,0,1,2,3))`
+      : 0 si heure UTC dans le blackout (vendredi soir crypto =
+      volatil), 1 sinon.
+    - `compute_tradability(klines, *, weights, threshold=0.4)` :
+      moyenne pondérée des 3 sub-scores ; `is_tradable = score >=
+      threshold` (default 0.4 per doc 10 R8).
+    - `TradabilityReport` `frozen+slots` audit-friendly :
+      `volatility_score`, `volume_score`, `hour_score`,
+      `tradability`, `is_tradable`.
+  - **Wiring Orchestrator** : nouveau paramètre constructeur
+    `meta_gate: Callable[[list[Kline]], TradabilityReport] | None`
+    (default None — comportement inchangé). Quand injecté, la
+    gate fire **après regime detection** et avant strategy vote.
+    Cycle skip via `SKIP_LOW_TRADABILITY` quand `is_tradable=False`.
+  - Skip reason `SKIP_LOW_TRADABILITY = "low_tradability"` ajoutée
+    aux constantes orchestrator (préserve regime + ATR pour audit ;
+    ensemble_vote, dominant_strategy, trade_levels restent None).
+- 36 nouveaux tests (866 → 902), tous verts :
+  - 31 unit dans `tests/unit/test_tradability.py` :
+    - 3 defaults (threshold doc 10, max_atr_pct, blackout_hours).
+    - 6 volatility_score : empty/warmup yield 1, calm/volatile,
+      bound `[0, 1]`, validation rejets.
+    - 7 volume_score : empty/warmup yield 1, ratio at average,
+      below average, above average clamped, zero-MA edge case,
+      validation rejets.
+    - 6 hour_score : outside/inside blackout, all default hours,
+      custom blackout, hour 24 + negative rejected.
+    - 9 compute_tradability (combiné) : calm midday high
+      tradability, blackout hour lowers but still tradable,
+      two-axes-fail blocks trading, custom threshold (loose +
+      strict + invalid), custom weights re-weight, validation
+      rejets, empty optimistic, frozen.
+  - 5 integration `TestMetaGateIntegration` dans
+    `tests/unit/test_orchestrator.py` : default no-gate preserves
+    behaviour (no SKIP_LOW_TRADABILITY), gate untradable fires
+    skip, gate tradable proceeds, real `compute_tradability` API
+    compatible, gate skip preserves regime + nullifies downstream
+    audit fields.
+
+### Notes
+
+- Coverage ratchets à **99.84 %** (était 99.83). Module au **100 %**.
+- **Anti-règle A1 — features manquantes différées** : doc 10 R8
+  liste aussi "régime + transition", "corrélation moyenne (R7)",
+  "distance au plus haut 30j", et une version ML (régression
+  logistique online). Cette iter livre la version **rules-based**
+  à 3 features extensibles via les `weight_*` paramètres ; les
+  axes manquants slot dans la même API quand leurs dépendances
+  arrivent (R7 pas livré, ML pas justifié pour le 1er cut).
+- **Critère mesurable I8** ("réduction du nombre de trades ≥ 30 %
+  sans réduction du PnL net") : non mesurable cette iter — pas
+  de simulateur AB-test. Module disponible ; validation runtime
+  palier ultérieur.
+- **Default behavior preservation** : `meta_gate: None` (default)
+  garde le comportement antérieur ; aucun test existant cassé. Le
+  user qui veut activer la gate fait `Orchestrator(meta_gate=
+  compute_tradability)`. Pattern injection cohérent avec `bandit`
+  et `breaker_monitor`.
+- **Pure Python** : aucune dépendance ajoutée. `datetime.UTC` +
+  `datetime.fromtimestamp(ms/1000, tz=UTC)` pour le décodage
+  d'heure ; `Decimal` partout ailleurs.
+- **Architecture** : module placé dans `agent/perception/` (analyse
+  de l'état du marché) — cohérent avec `regime.py` et
+  `indicators.py`. Pas dans `learning/` car il ne *learn* rien.
+
+### Référence
+
+- López de Prado (2018). *Advances in Financial Machine Learning*,
+  ch. 3 (Meta-Labeling).
+
 ## [0.0.31] - 2026-04-27
 
 ### Added
