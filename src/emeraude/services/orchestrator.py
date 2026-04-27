@@ -73,7 +73,11 @@ from typing import TYPE_CHECKING, Final, cast
 
 from emeraude.agent.execution import circuit_breaker
 from emeraude.agent.execution.circuit_breaker import CircuitBreakerState
-from emeraude.agent.learning.hoeffding import DEFAULT_DELTA, is_significant
+from emeraude.agent.learning.hoeffding import (
+    DEFAULT_DELTA,
+    HoeffdingDecision,
+    evaluate_hoeffding_gate,
+)
 from emeraude.agent.learning.regime_memory import RegimeMemory
 from emeraude.agent.perception.indicators import atr
 from emeraude.agent.perception.regime import Regime, detect_regime
@@ -104,6 +108,7 @@ from emeraude.agent.reasoning.strategies import (
     Strategy,
     TrendFollower,
 )
+from emeraude.infra import audit
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -148,6 +153,23 @@ SKIP_CORRELATION_STRESS: Final[str] = "correlation_stress"
 # Doc 10 R6 : post-signal microstructure filter rejected the trade
 # (wide spread, thin volume, or directional flow opposing the side).
 SKIP_LOW_MICROSTRUCTURE: Final[str] = "low_microstructure"
+
+
+# ─── Audit events ───────────────────────────────────────────────────────────
+
+
+# Doc 10 R11 observability : every adaptive override decision (win
+# rate or win/loss ratio) emits one of these so an audit replay can
+# explain why the orchestrator used the fallback vs. the empirical
+# estimate on any given cycle. Public so callers (and tests) can
+# query the audit log by event_type without importing a private name.
+AUDIT_HOEFFDING_DECISION: Final[str] = "HOEFFDING_DECISION"
+# Special reason : the W/L ratio short-circuits before the Hoeffding
+# gate when the realized ratio is non-positive (a fresh bucket with
+# zero wins or zero losses can't be Kelly-usable). Surfaced as a
+# distinct ``reason`` so audits don't mistake it for a sample-floor or
+# significance failure.
+GATE_RATIO_NON_POSITIVE: Final[str] = "ratio_non_positive"
 
 
 # ─── Public types ───────────────────────────────────────────────────────────
@@ -673,16 +695,26 @@ class Orchestrator:
         statistically distinguishable from the fallback at confidence
         ``1 - hoeffding_delta`` (doc 10 R11). Otherwise the gap could
         be sampling noise and the fallback stays.
+
+        Every call emits one ``HOEFFDING_DECISION`` audit event so the
+        audit trail can later answer "why did this cycle use the
+        fallback ?" / "from which trade was the override active ?".
         """
         stats = self._regime_memory.get_stats(strategy, regime)
-        if stats.n_trades >= self._adaptive_min_trades and is_significant(
+        decision = evaluate_hoeffding_gate(
             observed=stats.win_rate,
             prior=self._fallback_win_rate,
             n=stats.n_trades,
+            min_trades=self._adaptive_min_trades,
             delta=self._hoeffding_delta,
-        ):
-            return stats.win_rate
-        return self._fallback_win_rate
+        )
+        self._audit_hoeffding(
+            axis="win_rate",
+            strategy=strategy,
+            regime=regime,
+            decision=decision,
+        )
+        return stats.win_rate if decision.override else self._fallback_win_rate
 
     def _win_loss_ratio_for(self, strategy: str, regime: Regime) -> Decimal:
         """Return the per-(strategy, regime) Kelly R-multiple.
@@ -697,19 +729,84 @@ class Orchestrator:
         statistically distinguishable from the fallback at confidence
         ``1 - hoeffding_delta`` (doc 10 R11).
 
-        Otherwise the fallback stays active.
+        Otherwise the fallback stays active. One ``HOEFFDING_DECISION``
+        audit event is emitted per call for observability ; when (b)
+        short-circuits the event carries reason
+        ``ratio_non_positive`` rather than a Hoeffding-gate reason.
         """
         stats = self._regime_memory.get_stats(strategy, regime)
-        if stats.n_trades >= self._adaptive_min_trades:
-            ratio = stats.win_loss_ratio
-            if ratio > _ZERO and is_significant(
+        ratio = stats.win_loss_ratio
+
+        # Special short-circuit : a freshly-warmed bucket with zero
+        # losses or zero wins yields ratio == 0 (or negative if a
+        # downstream future change ever allows it). Surface as a
+        # distinct audit reason so replays can tell "we had data but
+        # it was lopsided" apart from "we did not have enough data".
+        if ratio <= _ZERO:
+            decision = HoeffdingDecision(
                 observed=ratio,
                 prior=self._fallback_win_loss_ratio,
                 n=stats.n_trades,
                 delta=self._hoeffding_delta,
-            ):
-                return ratio
-        return self._fallback_win_loss_ratio
+                epsilon=Decimal("Infinity"),
+                min_trades=self._adaptive_min_trades,
+                override=False,
+                reason=GATE_RATIO_NON_POSITIVE,
+            )
+            self._audit_hoeffding(
+                axis="win_loss_ratio",
+                strategy=strategy,
+                regime=regime,
+                decision=decision,
+            )
+            return self._fallback_win_loss_ratio
+
+        decision = evaluate_hoeffding_gate(
+            observed=ratio,
+            prior=self._fallback_win_loss_ratio,
+            n=stats.n_trades,
+            min_trades=self._adaptive_min_trades,
+            delta=self._hoeffding_delta,
+        )
+        self._audit_hoeffding(
+            axis="win_loss_ratio",
+            strategy=strategy,
+            regime=regime,
+            decision=decision,
+        )
+        return ratio if decision.override else self._fallback_win_loss_ratio
+
+    def _audit_hoeffding(
+        self,
+        *,
+        axis: str,
+        strategy: str,
+        regime: Regime,
+        decision: HoeffdingDecision,
+    ) -> None:
+        """Emit one ``HOEFFDING_DECISION`` audit event.
+
+        Decimal fields are stringified so the JSON payload round-trips
+        without precision loss. ``epsilon`` may be ``Infinity`` (n=0
+        or ratio short-circuit) ; ``str(Decimal("Infinity"))`` is
+        ``"Infinity"`` which is valid JSON via the audit logger.
+        """
+        audit.audit(
+            AUDIT_HOEFFDING_DECISION,
+            {
+                "axis": axis,
+                "strategy": strategy,
+                "regime": regime.value,
+                "n_trades": decision.n,
+                "min_trades": decision.min_trades,
+                "delta": str(decision.delta),
+                "observed": str(decision.observed),
+                "prior": str(decision.prior),
+                "epsilon": str(decision.epsilon),
+                "override": decision.override,
+                "reason": decision.reason,
+            },
+        )
 
     def _skip(
         self,

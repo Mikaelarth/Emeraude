@@ -8,6 +8,11 @@ import pytest
 
 from emeraude.agent.learning.hoeffding import (
     DEFAULT_DELTA,
+    GATE_BELOW_MIN_TRADES,
+    GATE_NOT_SIGNIFICANT,
+    GATE_OVERRIDE,
+    HoeffdingDecision,
+    evaluate_hoeffding_gate,
     hoeffding_epsilon,
     is_significant,
     min_samples_for_precision,
@@ -171,3 +176,125 @@ class TestMinSamples:
                 epsilon_target=Decimal("0.1"),
                 delta=Decimal("1.5"),
             )
+
+
+# ─── evaluate_hoeffding_gate (doc 10 R11 observability) ─────────────────────
+
+
+@pytest.mark.unit
+class TestEvaluateHoeffdingGate:
+    def test_below_min_trades_blocks_override(self) -> None:
+        # n=10 below min_trades=30 -> sample-floor short-circuit.
+        decision = evaluate_hoeffding_gate(
+            observed=Decimal("0.9"),
+            prior=Decimal("0.45"),
+            n=10,
+            min_trades=30,
+        )
+        assert decision.override is False
+        assert decision.reason == GATE_BELOW_MIN_TRADES
+        # epsilon still computed for the audit trail (n=10 >= 1).
+        assert decision.epsilon > Decimal("0")
+        assert decision.epsilon != Decimal("Infinity")
+
+    def test_n_zero_below_min_trades_yields_infinity_epsilon(self) -> None:
+        decision = evaluate_hoeffding_gate(
+            observed=Decimal("0.5"),
+            prior=Decimal("0.5"),
+            n=0,
+            min_trades=30,
+        )
+        assert decision.override is False
+        assert decision.reason == GATE_BELOW_MIN_TRADES
+        assert decision.epsilon == Decimal("Infinity")
+
+    def test_at_min_trades_with_significant_gap_overrides(self) -> None:
+        # n=200 >> 30 ; |0.55 - 0.45| = 0.10 > eps(200) approx 0.096.
+        decision = evaluate_hoeffding_gate(
+            observed=Decimal("0.55"),
+            prior=Decimal("0.45"),
+            n=200,
+            min_trades=30,
+        )
+        assert decision.override is True
+        assert decision.reason == GATE_OVERRIDE
+        assert decision.epsilon < Decimal("0.10")
+
+    def test_at_min_trades_with_small_gap_blocks(self) -> None:
+        # n=30 exactly : passes the floor, but |0.46 - 0.45| < eps(30).
+        decision = evaluate_hoeffding_gate(
+            observed=Decimal("0.46"),
+            prior=Decimal("0.45"),
+            n=30,
+            min_trades=30,
+        )
+        assert decision.override is False
+        assert decision.reason == GATE_NOT_SIGNIFICANT
+
+    def test_decision_carries_inputs_for_audit(self) -> None:
+        decision = evaluate_hoeffding_gate(
+            observed=Decimal("0.7"),
+            prior=Decimal("0.45"),
+            n=100,
+            min_trades=30,
+            delta=Decimal("0.01"),
+        )
+        assert decision.observed == Decimal("0.7")
+        assert decision.prior == Decimal("0.45")
+        assert decision.n == 100
+        assert decision.min_trades == 30
+        assert decision.delta == Decimal("0.01")
+
+    def test_decision_is_immutable(self) -> None:
+        decision = evaluate_hoeffding_gate(
+            observed=Decimal("0.5"),
+            prior=Decimal("0.5"),
+            n=30,
+            min_trades=30,
+        )
+        with pytest.raises((AttributeError, TypeError)):
+            decision.override = True  # type: ignore[misc]
+
+    def test_negative_n_rejected(self) -> None:
+        with pytest.raises(ValueError, match="n must be >= 0"):
+            evaluate_hoeffding_gate(
+                observed=Decimal("0.5"),
+                prior=Decimal("0.5"),
+                n=-1,
+                min_trades=30,
+            )
+
+    def test_negative_min_trades_rejected(self) -> None:
+        with pytest.raises(ValueError, match="min_trades must be >= 0"):
+            evaluate_hoeffding_gate(
+                observed=Decimal("0.5"),
+                prior=Decimal("0.5"),
+                n=30,
+                min_trades=-1,
+            )
+
+    def test_invalid_delta_rejected(self) -> None:
+        with pytest.raises(ValueError, match=r"delta must be in \(0, 1\)"):
+            evaluate_hoeffding_gate(
+                observed=Decimal("0.5"),
+                prior=Decimal("0.5"),
+                n=30,
+                min_trades=30,
+                delta=Decimal("1.5"),
+            )
+
+    def test_dataclass_is_frozen_with_slots(self) -> None:
+        # Direct construction without calling evaluate_* exercises the
+        # bare dataclass shape.
+        d = HoeffdingDecision(
+            observed=Decimal("0.5"),
+            prior=Decimal("0.45"),
+            n=30,
+            delta=Decimal("0.05"),
+            epsilon=Decimal("0.25"),
+            min_trades=30,
+            override=False,
+            reason=GATE_NOT_SIGNIFICANT,
+        )
+        with pytest.raises((AttributeError, TypeError)):
+            d.observed = Decimal("0")  # type: ignore[misc]

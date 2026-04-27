@@ -6,6 +6,96 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.43] - 2026-04-27
+
+### Added
+
+- **R11 Hoeffding observability** (doc 10 R11) — chaque décision
+  d'override empirical-vs-fallback de l'Orchestrator émet
+  désormais un événement audit structuré, permettant de répondre
+  par audit-replay à : "pourquoi ce cycle a utilisé le fallback ?"
+  / "à partir de quel trade le système est-il passé en mode
+  adaptatif ?".
+  - **`HoeffdingDecision` frozen dataclass** dans
+    `agent/learning/hoeffding.py` : container audit-friendly
+    portant `(observed, prior, n, delta, epsilon, min_trades,
+    override, reason)`. Sérialisable en JSON via stringification
+    des Decimals.
+  - **`evaluate_hoeffding_gate(*, observed, prior, n, min_trades,
+    delta) -> HoeffdingDecision`** : nouveau helper public, gate
+    en 2 étapes :
+    1. **Sample floor** : `n >= min_trades` (sinon
+       `reason="below_min_trades"`).
+    2. **Significance** : `|observed - prior| > epsilon` (sinon
+       `reason="not_significant"` ; sinon
+       `reason="override"`).
+  - **3 reason-constants exportés** :
+    `GATE_BELOW_MIN_TRADES`, `GATE_NOT_SIGNIFICANT`,
+    `GATE_OVERRIDE`. Stables pour usage en filtre audit-log.
+- **Orchestrator R11 audit events** :
+  - **Constante publique `AUDIT_HOEFFDING_DECISION =
+    "HOEFFDING_DECISION"`** dans `services/orchestrator.py`.
+  - **`_win_rate_for` et `_win_loss_ratio_for` refactorés** pour
+    consommer `evaluate_hoeffding_gate` et émettre un event
+    audit par appel via le nouveau `_audit_hoeffding(...)`.
+    Payload : `{axis, strategy, regime, n_trades, min_trades,
+    delta, observed, prior, epsilon, override, reason}`.
+  - **Constante `GATE_RATIO_NON_POSITIVE =
+    "ratio_non_positive"`** : reason spécifique au court-circuit
+    `ratio <= 0` du W/L ratio (frais de bucket sans wins/losses)
+    — distincte des reasons Hoeffding pour ne pas confondre les
+    cas dans les replays.
+  - **Comportement strictement préservé** : les valeurs retournées
+    (fallback ou empirical) sont identiques au pre-refactor ;
+    l'observabilité s'ajoute sans modifier la décision.
+- Tests ajoutés / étendus :
+  - `tests/unit/test_hoeffding.py` (+10 tests dans
+    `TestEvaluateHoeffdingGate`) : 3 reasons couverts, n=0 ->
+    epsilon=Infinity, immutability, validations entrées.
+  - `tests/unit/test_orchestrator.py` (+6 tests dans
+    `TestHoeffdingAuditEmission`) : 2 events par cycle qualifié,
+    payload cold-start, strategy/regime, no-event sur skip
+    précoce, no-duplicate par axis sur 2 cycles, constante
+    `GATE_RATIO_NON_POSITIVE` exposée.
+
+### Changed
+
+- `src/emeraude/agent/learning/hoeffding.py` : ajout
+  `HoeffdingDecision` + `evaluate_hoeffding_gate` + 3 reason
+  constants. `is_significant` reste exporté inchangé pour
+  backward compat.
+- `src/emeraude/services/orchestrator.py` : import remplace
+  `is_significant` par `evaluate_hoeffding_gate` +
+  `HoeffdingDecision` ; ajout import `audit` ; refactor
+  `_win_rate_for` + `_win_loss_ratio_for` ; nouvelle méthode
+  `_audit_hoeffding`.
+- `pyproject.toml` : version `0.0.42` -> `0.0.43`.
+
+### Notes
+
+- **Compatibilité descendante stricte** : les valeurs retournées
+  par `_win_rate_for` et `_win_loss_ratio_for` sont identiques au
+  pre-refactor (même branchement effectif). Les 1187 tests
+  v0.0.42 restent verts ; les 16 nouveaux tests valident
+  l'observabilité ajoutée.
+- **Coverage `orchestrator.py` : 100 %**. Tous les chemins
+  Hoeffding (override / not_significant / below_min_trades /
+  ratio_non_positive) couverts.
+- **Doc 06 — I11 status** : passe de 🟡 "module shippé sans
+  observabilité" à **🟢 prêt à mesurer** dès qu'un audit-replay
+  voudra reconstituer la sequence des décisions adaptatives.
+  Le critère formel "0 % updates de poids sur < 30 trades" reste
+  🟡 jusqu'à accumulation de cycles réels et inspection de
+  l'audit-log.
+- **Pattern composition pour dashboards** :
+  ```python
+  from emeraude.infra import audit
+  from emeraude.services.orchestrator import AUDIT_HOEFFDING_DECISION
+  events = audit.query_events(event_type=AUDIT_HOEFFDING_DECISION, limit=1000)
+  overrides = [e for e in events if e["payload"]["override"]]
+  by_reason = collections.Counter(e["payload"]["reason"] for e in events)
+  ```
+
 ## [0.0.42] - 2026-04-27
 
 ### Added

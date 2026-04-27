@@ -23,9 +23,11 @@ from emeraude.agent.perception.tradability import (
 )
 from emeraude.agent.reasoning.ensemble import REGIME_WEIGHTS
 from emeraude.agent.reasoning.strategies import StrategySignal
-from emeraude.infra import database
+from emeraude.infra import audit, database
 from emeraude.infra.market_data import Kline
 from emeraude.services.orchestrator import (
+    AUDIT_HOEFFDING_DECISION,
+    GATE_RATIO_NON_POSITIVE,
     SKIP_BREAKER_BLOCKED,
     SKIP_CORRELATION_STRESS,
     SKIP_DEGENERATE_RISK,
@@ -1132,3 +1134,104 @@ class TestAllGatesIntegration:
         )
         decision = orch.make_decision(capital=Decimal("1000"), klines=_bull_klines())
         assert decision.skip_reason == SKIP_LOW_MICROSTRUCTURE
+
+
+# ─── Hoeffding audit observability (doc 10 R11) ─────────────────────────────
+
+
+@pytest.mark.unit
+class TestHoeffdingAuditEmission:
+    def test_qualified_cycle_emits_two_hoeffding_events(self, fresh_db: Path) -> None:
+        # Happy-path cycle reaches position sizing -> _win_rate_for AND
+        # _win_loss_ratio_for both fire -> 2 audit events, one per axis.
+        orch = Orchestrator(
+            strategies=[
+                _FakeStrategy("a", _signal(0.9, confidence=0.9)),
+                _FakeStrategy("b", _signal(0.9, confidence=0.9)),
+            ],
+        )
+        decision = orch.make_decision(capital=Decimal("1000"), klines=_bull_klines())
+        assert decision.should_trade is True
+        assert audit.flush_default_logger(timeout=2.0)
+        events = audit.query_events(event_type=AUDIT_HOEFFDING_DECISION)
+        axes = {e["payload"]["axis"] for e in events}
+        assert axes == {"win_rate", "win_loss_ratio"}
+
+    def test_cold_start_payload_carries_expected_reasons(self, fresh_db: Path) -> None:
+        # Fresh DB cold-start :
+        # * win_rate axis : n=0 < 30 -> reason = "below_min_trades"
+        # * win_loss_ratio axis : ratio = 0 (no recorded W/L yet)
+        #   short-circuits BEFORE the sample-floor gate -> reason =
+        #   "ratio_non_positive". Both flag override=False.
+        orch = Orchestrator(
+            strategies=[
+                _FakeStrategy("a", _signal(0.9, confidence=0.9)),
+                _FakeStrategy("b", _signal(0.9, confidence=0.9)),
+            ],
+        )
+        orch.make_decision(capital=Decimal("1000"), klines=_bull_klines())
+        assert audit.flush_default_logger(timeout=2.0)
+        events = audit.query_events(event_type=AUDIT_HOEFFDING_DECISION)
+        events_by_axis = {ev["payload"]["axis"]: ev["payload"] for ev in events}
+
+        rate = events_by_axis["win_rate"]
+        assert rate["reason"] == "below_min_trades"
+        assert rate["override"] is False
+        assert rate["n_trades"] == 0
+        assert rate["min_trades"] == 30
+        assert rate["delta"] == "0.05"
+
+        ratio = events_by_axis["win_loss_ratio"]
+        assert ratio["reason"] == GATE_RATIO_NON_POSITIVE
+        assert ratio["override"] is False
+        # Short-circuit surfaces "Infinity" epsilon for the audit trail.
+        assert ratio["epsilon"] == "Infinity"
+
+    def test_payload_contains_strategy_and_regime(self, fresh_db: Path) -> None:
+        orch = Orchestrator(
+            strategies=[
+                _FakeStrategy("a", _signal(0.9, confidence=0.9)),
+                _FakeStrategy("b", _signal(0.9, confidence=0.9)),
+            ],
+        )
+        orch.make_decision(capital=Decimal("1000"), klines=_bull_klines())
+        assert audit.flush_default_logger(timeout=2.0)
+        events = audit.query_events(event_type=AUDIT_HOEFFDING_DECISION)
+        # Bull klines -> Regime.BULL ; dominant strategy is one of {a, b}.
+        for ev in events:
+            payload = ev["payload"]
+            assert payload["regime"] == "BULL"
+            assert payload["strategy"] in {"a", "b"}
+
+    def test_skipped_cycle_emits_no_hoeffding_events(self, fresh_db: Path) -> None:
+        # Empty klines short-circuits before ensemble qualification -> the
+        # Hoeffding gates never fire -> no audit events.
+        orch = Orchestrator(
+            strategies=[_FakeStrategy("a", _signal(0.9, confidence=0.9))],
+        )
+        decision = orch.make_decision(capital=Decimal("1000"), klines=[])
+        assert decision.skip_reason == SKIP_EMPTY_KLINES
+        assert audit.flush_default_logger(timeout=2.0)
+        events = audit.query_events(event_type=AUDIT_HOEFFDING_DECISION)
+        assert events == []
+
+    def test_event_per_call_no_duplicate_per_axis(self, fresh_db: Path) -> None:
+        # Each cycle that reaches sizing fires one event per axis, no
+        # more, no less. Two cycles -> 4 events.
+        orch = Orchestrator(
+            strategies=[
+                _FakeStrategy("a", _signal(0.9, confidence=0.9)),
+                _FakeStrategy("b", _signal(0.9, confidence=0.9)),
+            ],
+        )
+        orch.make_decision(capital=Decimal("1000"), klines=_bull_klines())
+        orch.make_decision(capital=Decimal("1000"), klines=_bull_klines())
+        assert audit.flush_default_logger(timeout=2.0)
+        events = audit.query_events(event_type=AUDIT_HOEFFDING_DECISION)
+        assert len(events) == 4
+
+    def test_gate_ratio_non_positive_constant_exposed(self) -> None:
+        # The constant must be importable and non-empty so callers
+        # building dashboards on the audit log can filter on it.
+        assert isinstance(GATE_RATIO_NON_POSITIVE, str)
+        assert GATE_RATIO_NON_POSITIVE != ""

@@ -41,6 +41,7 @@ References :
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from decimal import Decimal, getcontext
 from math import ceil
 from typing import Final
@@ -48,6 +49,13 @@ from typing import Final
 _ZERO: Final[Decimal] = Decimal("0")
 _ONE: Final[Decimal] = Decimal("1")
 _TWO: Final[Decimal] = Decimal("2")
+
+# Reasons surfaced by :func:`evaluate_hoeffding_gate`. Stable string
+# constants so audit-log queries can filter on them without
+# string-fragility.
+GATE_BELOW_MIN_TRADES: Final[str] = "below_min_trades"
+GATE_NOT_SIGNIFICANT: Final[str] = "not_significant"
+GATE_OVERRIDE: Final[str] = "override"
 
 # Default confidence level : 95 % (delta = 0.05). Chosen because it is
 # the de-facto standard in statistics and matches the threshold most
@@ -115,6 +123,136 @@ def is_significant(
     """
     epsilon = hoeffding_epsilon(n, delta=delta)
     return abs(observed - prior) > epsilon
+
+
+# ─── Audit-friendly two-step gate (doc 10 R11 observability) ───────────────
+
+
+@dataclass(frozen=True, slots=True)
+class HoeffdingDecision:
+    """Audit-friendly summary of one sample-floor + significance gate.
+
+    The orchestrator (and any future component using the same
+    pattern) consumes a binary verdict (``override``) but the audit
+    log needs the full context : which axis, what numbers fed the
+    decision, why the gate said yes/no. This dataclass is the
+    serializable container for that context.
+
+    Attributes:
+        observed: empirical estimate (e.g. realized win rate).
+        prior: reference value the override would replace
+            (e.g. ``fallback_win_rate``).
+        n: sample size that produced ``observed``.
+        delta: confidence risk level used to compute the bound.
+        epsilon: Hoeffding bound at ``(n, delta)``. ``Decimal("Infinity")``
+            when ``n == 0`` — there is no statistically-meaningful
+            bound on zero observations.
+        min_trades: sample floor required before the gate even
+            considers significance.
+        override: ``True`` iff the caller is authorized to switch
+            from prior to observed. ``False`` = keep prior.
+        reason: one of :data:`GATE_BELOW_MIN_TRADES`,
+            :data:`GATE_NOT_SIGNIFICANT`, :data:`GATE_OVERRIDE`.
+    """
+
+    observed: Decimal
+    prior: Decimal
+    n: int
+    delta: Decimal
+    epsilon: Decimal
+    min_trades: int
+    override: bool
+    reason: str
+
+
+def evaluate_hoeffding_gate(
+    *,
+    observed: Decimal,
+    prior: Decimal,
+    n: int,
+    min_trades: int,
+    delta: Decimal = DEFAULT_DELTA,
+) -> HoeffdingDecision:
+    """Two-step gate : sample-floor first, then statistical significance.
+
+    Step 1 — sample floor : ``n >= min_trades``. Below the floor the
+    gate refuses the override regardless of the observed-prior gap,
+    because a tiny sample's empirical mean is dominated by sampling
+    variance (this is what the doc 04 ``adaptive_min_trades = 30``
+    threshold protects against).
+
+    Step 2 — Hoeffding significance : ``|observed - prior| > epsilon``
+    where ``epsilon`` is from :func:`hoeffding_epsilon`. Only when the
+    gap exceeds the bound does the caller get authorization to switch.
+
+    Returns the full :class:`HoeffdingDecision` so the caller can both
+    branch on ``override`` and emit a structured audit event.
+
+    Args:
+        observed: empirical estimate.
+        prior: reference value to compare against.
+        n: sample size that produced ``observed``. Must be ``>= 0``.
+        min_trades: sample floor (``>= 0``). When ``n < min_trades``
+            the override is immediately rejected.
+        delta: confidence risk level in ``(0, 1)``.
+
+    Returns:
+        A :class:`HoeffdingDecision` with ``override`` set and
+        ``reason`` describing which gate fired.
+
+    Raises:
+        ValueError: on ``n < 0``, ``min_trades < 0``, or ``delta``
+            outside ``(0, 1)``.
+    """
+    if n < 0:
+        msg = f"n must be >= 0, got {n}"
+        raise ValueError(msg)
+    if min_trades < 0:
+        msg = f"min_trades must be >= 0, got {min_trades}"
+        raise ValueError(msg)
+    if not (_ZERO < delta < _ONE):
+        msg = f"delta must be in (0, 1), got {delta}"
+        raise ValueError(msg)
+
+    # Sample-floor short-circuit. We still compute epsilon for the
+    # audit trail when n >= 1 so the diagnostic shows what the bound
+    # *would have been* ; n == 0 has no meaningful bound, surface
+    # Infinity to make that explicit.
+    if n < min_trades:
+        epsilon = hoeffding_epsilon(n, delta=delta) if n >= 1 else Decimal("Infinity")
+        return HoeffdingDecision(
+            observed=observed,
+            prior=prior,
+            n=n,
+            delta=delta,
+            epsilon=epsilon,
+            min_trades=min_trades,
+            override=False,
+            reason=GATE_BELOW_MIN_TRADES,
+        )
+
+    epsilon = hoeffding_epsilon(n, delta=delta)
+    if abs(observed - prior) > epsilon:
+        return HoeffdingDecision(
+            observed=observed,
+            prior=prior,
+            n=n,
+            delta=delta,
+            epsilon=epsilon,
+            min_trades=min_trades,
+            override=True,
+            reason=GATE_OVERRIDE,
+        )
+    return HoeffdingDecision(
+        observed=observed,
+        prior=prior,
+        n=n,
+        delta=delta,
+        epsilon=epsilon,
+        min_trades=min_trades,
+        override=False,
+        reason=GATE_NOT_SIGNIFICANT,
+    )
 
 
 def min_samples_for_precision(
