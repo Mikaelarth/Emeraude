@@ -6,6 +6,90 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.28] - 2026-04-27
+
+### Added
+
+- **R13 Probabilistic + Deflated Sharpe Ratio (doc 10)** —
+  6/15 innovations livrées (était 5/15 : R5, R9, R10, R11, R12).
+  Module pure `agent/learning/sharpe_significance.py` corrige le
+  Sharpe nu pour la taille d'échantillon, les moments d'ordre
+  supérieur (skewness/kurtosis), et le multiple-testing inhérent
+  aux grid searches. Empêche de promouvoir un "champion" qui n'est
+  qu'un artefact statistique.
+  - `SharpeSignificance` `frozen+slots` dataclass : sharpe_ratio,
+    n_samples, skewness, kurtosis (full, Gaussienne=3),
+    benchmark_sharpe, psr.
+  - `compute_psr(*, sharpe_ratio, n_samples, skewness, kurtosis,
+    benchmark_sharpe=0)` — formule Bailey & López de Prado 2012 :
+    `PSR = Phi( (SR-SR*) * sqrt(N-1) / sqrt(1 - g3*SR + (g4-1)/4*SR²) )`.
+    Retourne probabilité dans `[0, 1]` que le vrai SR excède le
+    benchmark.
+  - `expected_max_sharpe(*, n_trials, sharpe_variance=1)` —
+    benchmark déflaté (Bailey & López de Prado 2014) :
+    `Z* = sqrt(V[SR]) * ((1-gEM) * Phi^(-1)(1-1/K) + gEM * Phi^(-1)(1-1/(K*e)))`.
+    Constante d'Euler-Mascheroni (0.5772...) hardcodée à 30
+    décimales pour la précision Decimal.
+  - `compute_dsr(*, sharpe_ratio, n_samples, skewness, kurtosis,
+    n_trials, sharpe_variance=1)` — `compute_psr` avec benchmark
+    déflaté pour K trials. Convention `sharpe_variance=1`
+    conservatrice quand la variance inter-trial est inconnue.
+  - `is_sharpe_significant(value, *, threshold=0.95)` — wrapper
+    nommé pour le critère doc 10 §"R13" (DSR ≥ 0.95 pour
+    promotion). Floor inclusive.
+  - Helpers `normal_cdf` / `normal_inv_cdf` pure stdlib
+    (`math.erf` + `statistics.NormalDist`). Pas de scipy. Decimal
+    précision préservée aux frontières (cast float uniquement
+    interne).
+  - Clamp `_MIN_PSR_VARIANCE = 1E-12` sur le dénominateur sous le
+    sqrt — empêche le crash sur entrées pathologiques (haute
+    skewness + faible kurtosis + haut SR).
+- 33 nouveaux tests (750 → 783), tous verts :
+  - 4 unit `normal_cdf` : Phi(0)=0.5, quantiles connus (Phi(1.96)
+    ≈ 0.975), monotone, valeurs extrêmes.
+  - 6 unit `normal_inv_cdf` : Phi^(-1)(0.5)=0, quantiles inverses,
+    round-trip Phi^(-1)(Phi(x))=x, validation rejets.
+  - 9 unit `compute_psr` : SR=benchmark→0.5, PSR ∈ [0,1], SR fort
+    → ≈1, plus de samples = plus de PSR, skew négatif réduit PSR,
+    kurtosis fat réduit PSR, validation rejets.
+  - 5 unit `expected_max_sharpe` : croît avec n_trials, croît avec
+    variance, valeur connue Z*(K=10)=1.5746 (Bailey-López de Prado
+    table reference), validation rejets.
+  - 3 unit `compute_dsr` : DSR ≤ PSR(benchmark=0), plus de trials
+    = DSR plus bas, SR fort + N grand peut clearer 0.95.
+  - 5 unit `is_sharpe_significant` : threshold doc 10 = 0.95,
+    above/at/below threshold, custom threshold, validation rejets.
+  - 1 unit denominator clamp : entrées pathologiques ne crashent pas.
+
+### Notes
+
+- Coverage ratchets à **99.81 %** (était 99.80). Module au **100 %**.
+- **Pure-stdlib** : `math.erf` (Python 3.4+) pour Phi, et
+  `statistics.NormalDist` (Python 3.8+) pour Phi^(-1). Aucune
+  dépendance ajoutée.
+- **Critère mesurable I13** ("DSR ≥ 0.95 pour le champion en prod") :
+  helper `is_sharpe_significant` exposé. Le ChampionLifecycle (iter
+  #17) pourra appeler ce helper dans une iter dédiée pour bloquer
+  les promotions non-significatives.
+- **Choix conservateur** : `sharpe_variance=1` par défaut dans
+  `expected_max_sharpe` quand l'inter-trial variance n'est pas
+  estimée. Surestime le benchmark déflaté Z*, donc rejette plus
+  agressivement. Préférable au cas où on sous-estime le risque
+  d'overfit.
+- **Anti-règle A1 respectée** : `compute_dsr` n'est pas branché à
+  `ChampionLifecycle.promote()` cette iter. Le wiring viendra dans
+  une iter dédiée quand on aura un grid search réel à valider —
+  aujourd'hui `champion_lifecycle` est utilisé en mode mono-
+  candidat sans multi-testing.
+
+### Références
+
+- Bailey & López de Prado (2012). *The Sharpe Ratio Efficient
+  Frontier*. Journal of Risk 15(2) : 3-44.
+- Bailey & López de Prado (2014). *The Deflated Sharpe Ratio :
+  Correcting for Selection Bias, Backtest Overfitting, and
+  Non-Normality*. Journal of Portfolio Management 40(5) : 94-107.
+
 ## [0.0.27] - 2026-04-26
 
 ### Added
