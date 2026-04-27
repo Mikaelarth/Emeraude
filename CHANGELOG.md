@@ -6,6 +6,89 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.33] - 2026-04-27
+
+### Added
+
+- **R15 Conformal Prediction (doc 10)** — 10/15 innovations livrées
+  (était 9/15 : R1, R3, R4 partie 1, R5, R8, R9, R10, R11, R12, R13,
+  +R15). Module pure `agent/learning/conformal.py` qui produit des
+  **intervalles de prédiction avec garantie de couverture finie**
+  ``P(y_real ∈ [ŷ - q, ŷ + q]) ≥ 1 - α`` sans hypothèse Gaussienne
+  ni stationnarité forte (échangeabilité asymptotique seulement).
+  Vovk, Gammerman, Shafer 2005.
+  - `compute_residuals(predictions, outcomes)` — résidus absolus
+    ``|y - ŷ|`` (non-conformity scores).
+  - `compute_quantile(residuals, *, alpha=0.10)` — `(1-α)` quantile
+    avec **correction finite-sample** :
+    ``k = ceil((n+1) * (1-α))`` puis clamp `[1, n]` puis index 0-based.
+    Empty residuals → `Decimal('Infinity')` (intervalle trivial).
+  - `compute_interval(*, prediction, calibration_residuals,
+    alpha=0.10)` — intervalle symétrique `[ŷ - q, ŷ + q]`.
+    Empty calibration → `(-∞, +∞)` qui couvre tout par définition.
+  - `is_within_interval(interval, realized) -> bool` — predicat
+    inclusive ``lower ≤ realized ≤ upper`` exprimant l'intent
+    "covered" au call site.
+  - `compute_coverage(intervals, outcomes) -> CoverageReport` —
+    couverture empirique sur une cohorte de prédictions.
+  - `is_coverage_valid(report, *, tolerance=0.05) -> bool` — gate
+    doc 10 I15 (`|empirical - target| ≤ tolerance`). Empty report
+    fails by design.
+  - `ConformalInterval` + `CoverageReport` `frozen+slots` dataclasses.
+- 39 nouveaux tests (902 → 941), tous verts :
+  - 2 unit defaults : DEFAULT_ALPHA = 0.10 (doc 10), tolerance = 0.05.
+  - 4 unit `compute_residuals` : empty, absolutes, perfect = 0,
+    mismatched lengths rejected.
+  - 9 unit `compute_quantile` : empty → Infinity, single sample,
+    known reference value (n=20, α=0.10 → q=0.9), tighter alpha
+    raises quantile, unsorted handled, validation rejets, output
+    non-negative.
+  - 5 unit `compute_interval` : symmetric around prediction,
+    empty → unbounded, alpha + n_calibration carried, validation,
+    frozen.
+  - 4 unit `is_within_interval` : inside, boundary inclusive,
+    outside, unbounded covers all.
+  - 7 unit `compute_coverage` : empty, full, partial, zero,
+    target taken from first alpha, mismatched lengths, frozen.
+  - 6 unit `is_coverage_valid` : at target, within tolerance,
+    outside tolerance, empty fails, custom tolerance, validation
+    rejects.
+  - 2 end-to-end smoke : self-consistent calibration holds target,
+    doc 10 I15 realistic 100-trade scenario.
+
+### Notes
+
+- Coverage stable à **99.84 %**. Module au **100 %**.
+- **Anti-règle A1 — Adaptive Conformal différée** : doc 10 R15
+  mentionne aussi la variante Gibbs & Candès 2021 (Adaptive
+  Conformal Inference Under Distribution Shift) en synergie avec
+  R3 drift detection. Cette iter livre le **split-conformal
+  statique** ; l'adaptive variant viendra dans une iter dédiée
+  quand le wiring AutoTrader↔drift sera en place.
+- **Critère mesurable I15** ("couverture empirique ∈ [85 %, 95 %]
+  sur 100 trades pour α=0.10") : helper `is_coverage_valid(report,
+  tolerance=0.05)` exposé. Validation runtime palier ultérieur
+  (nécessite 100 trades réels pour mesurer).
+- **Application Emeraude prévue** : à chaque signal qualifié
+  l'orchestrator pourra augmenter la décision avec un conformal
+  interval autour de l'expected R-multiple. Si l'intervalle franchit
+  majoritairement zéro → signal dégradé en HOLD (cohérent A4).
+  Wiring orchestrator différé (anti-règle A1) — module pur ici.
+- **Pure Python Decimal** : `Decimal('Infinity')` pour la dégénérescence
+  empty calibration. `math.ceil(float())` au boundary de l'index
+  computation (single Python int output, no precision issue).
+- **Convention** : interval inclusif des deux côtés. Cohérent avec
+  l'intuition "covered" (le boundary fait partie de l'interval).
+
+### Références
+
+- Vovk, Gammerman, Shafer (2005). *Algorithmic Learning in a Random
+  World*. Springer.
+- Angelopoulos & Bates (2021). *A Gentle Introduction to Conformal
+  Prediction and Distribution-Free Uncertainty Quantification*.
+- Gibbs & Candès (2021). *Adaptive Conformal Inference Under
+  Distribution Shift*. NeurIPS '21. (Variant deferred.)
+
 ## [0.0.32] - 2026-04-27
 
 ### Added
