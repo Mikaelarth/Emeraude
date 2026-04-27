@@ -6,6 +6,85 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.29] - 2026-04-27
+
+### Added
+
+- **R3 Concept-drift detection (doc 10)** — 7/15 innovations livrées
+  (était 6/15 : R5, R9, R10, R11, R12, R13, +R3). Module pure
+  `agent/learning/drift.py` avec **deux détecteurs en parallèle** sur
+  la série des R-multiples. L'un fire = drift déclaré. Empêche le bot
+  de continuer avec des paramètres obsolètes pendant qu'un régime de
+  marché change silencieusement.
+  - `PageHinkleyDetector` — variante CUSUM filtrée du test
+    Page-Hinkley (Page 1954). Track la moyenne courante,
+    accumule les déviations sous tolérance ``delta``, alarme
+    quand la cumsum dépasse ``threshold``. Reset à zéro sur
+    déviations positives (filtre CUSUM classique).
+    O(1) per update.
+  - `AdwinDetector` — Adaptive Windowing (Bifet & Gavaldà 2007).
+    Maintient une fenêtre glissante, scanne tous les splits
+    ``W = W0 | W1`` à chaque nouveau sample, alarme si
+    ``|mean(W0) - mean(W1)| > epsilon_cut`` où
+    ``epsilon_cut = sqrt(ln(4·|W|/delta) / (2·m))`` et
+    ``m = mean harmonique des sous-fenêtres``. Drop W0 sur
+    drift. **Implémentation O(|W|²)** suffisante pour
+    ``max_window=200`` ; la version exponential-histogram
+    O(log n) est différée (anti-règle A1).
+  - États `PageHinkleyState` + `AdwinState` `frozen+slots`
+    exposés via `state()`.
+  - API uniforme : `update(value) -> bool` (True iff drift
+    fires this step ; sticky via `detected` property), `reset()`,
+    `state()`.
+  - Defaults R-multiple-aware : Page-Hinkley `delta=0.005R`,
+    `threshold=5R` ; ADWIN `delta=0.002` (99.8 % confiance),
+    `max_window=200`.
+- 22 nouveaux tests (783 → 805), tous verts :
+  - 11 unit Page-Hinkley : default state clean, validation rejets
+    (zero/negative delta + threshold), constant stream → no drift,
+    win→loss stream triggers, sticky flag jusqu'à reset, alarme
+    `True` une seule fois (subsequent return False), running mean
+    correct, frozen state.
+  - 11 unit ADWIN : default state, validation rejets (delta hors
+    (0,1), max_window < 4), warmup no drift (n < 4), constant
+    stream no drift, abrupt change triggers, window truncated
+    après drift, reset clears, max_window borne mémoire, alarme
+    `True` une seule fois, frozen state, running mean correct.
+
+### Notes
+
+- Coverage ratchets à **99.82 %** (était 99.81). Module au **100 %**.
+- **Wiring `ChampionLifecycle.transition(SUSPECT)` différé** : doc 10
+  R3 demande "réduction immédiate du risk_pct à 50 % + notification
+  Telegram + reoptimize". Ce wiring nécessite (a) un scheduler
+  AutoTrader qui appelle `drift.update(r_realized)` après chaque
+  close, (b) un canal Telegram (pas livré), (c) le reoptimize
+  partiel (pas livré). Anti-règle A1 — module pur livré ici, le
+  wiring viendra dans une iter dédiée.
+- **Critère mesurable I3** ("drift détecté ≤ 72 h après début de la
+  dégradation") : non testable cette iter — pas de simulateur
+  d'injection synthétique structuré. Module disponible dès
+  maintenant ; validation runtime palier ultérieur.
+- **Mypy + warn-unreachable subtilité** : le test `sticky_until_reset`
+  a dû capturer un snapshot `state()` avant et après le reset au lieu
+  de double-asserting `d.detected` — sinon mypy narrowait
+  `d.detected` à `Literal[True]` après le premier assert et
+  considérait le second comme unreachable. Pattern documenté dans le
+  commentaire du test pour le futur lecteur.
+- **Page-Hinkley vs ADWIN** : complémentaires.
+  - Page-Hinkley = O(1), réactif aux drops *graduels* accumulés sur
+    de nombreux samples.
+  - ADWIN = O(|W|²), flexible (pas de magnitude pré-définie),
+    excellent sur changements *abrupts* avec adaptation automatique
+    de la taille de fenêtre.
+
+### Références
+
+- Page (1954). *Continuous Inspection Schemes*. Biometrika 41 :
+  100-115.
+- Bifet & Gavaldà (2007). *Learning from Time-Changing Data with
+  Adaptive Windowing*. SDM '07.
+
 ## [0.0.28] - 2026-04-27
 
 ### Added
