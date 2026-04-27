@@ -11,6 +11,11 @@ from emeraude.agent.execution import circuit_breaker
 from emeraude.agent.execution.circuit_breaker import CircuitBreakerState
 from emeraude.agent.learning.bandit import StrategyBandit
 from emeraude.agent.learning.regime_memory import RegimeMemory
+from emeraude.agent.perception.correlation import CorrelationReport
+from emeraude.agent.perception.microstructure import (
+    MicrostructureParams,
+    MicrostructureReport,
+)
 from emeraude.agent.perception.regime import Regime
 from emeraude.agent.perception.tradability import (
     TradabilityReport,
@@ -22,10 +27,12 @@ from emeraude.infra import database
 from emeraude.infra.market_data import Kline
 from emeraude.services.orchestrator import (
     SKIP_BREAKER_BLOCKED,
+    SKIP_CORRELATION_STRESS,
     SKIP_DEGENERATE_RISK,
     SKIP_EMPTY_KLINES,
     SKIP_ENSEMBLE_NOT_QUALIFIED,
     SKIP_INSUFFICIENT_DATA,
+    SKIP_LOW_MICROSTRUCTURE,
     SKIP_LOW_TRADABILITY,
     SKIP_NO_CONTRIBUTORS,
     SKIP_POSITION_SIZE_ZERO,
@@ -853,3 +860,275 @@ class TestMetaGateIntegration:
         assert decision.dominant_strategy is None
         assert decision.trade_levels is None
         assert decision.position_quantity == Decimal("0")
+
+
+# ─── Correlation gate (doc 10 R7) ────────────────────────────────────────────
+
+
+def _correlation_report(*, mean: Decimal, threshold: Decimal = Decimal("0.8")) -> CorrelationReport:
+    """Build a stub CorrelationReport with controllable mean/stress."""
+    return CorrelationReport(
+        n_symbols=3,
+        n_pairs=3,
+        mean_correlation=mean,
+        matrix={},
+        threshold=threshold,
+        is_stress=mean >= threshold,
+    )
+
+
+@pytest.mark.unit
+class TestCorrelationGateIntegration:
+    def test_no_gate_keeps_legacy_behaviour(self, fresh_db: Path) -> None:
+        # Without correlation_gate, decision must reach the happy path.
+        orch = Orchestrator(
+            strategies=[
+                _FakeStrategy("a", _signal(0.9, confidence=0.9)),
+                _FakeStrategy("b", _signal(0.9, confidence=0.9)),
+            ],
+        )
+        decision = orch.make_decision(capital=Decimal("1000"), klines=_bull_klines())
+        assert decision.should_trade is True
+        assert decision.skip_reason != SKIP_CORRELATION_STRESS
+
+    def test_stress_regime_fires_skip(self, fresh_db: Path) -> None:
+        def stub_gate() -> CorrelationReport:
+            return _correlation_report(mean=Decimal("0.95"))
+
+        orch = Orchestrator(
+            strategies=[
+                _FakeStrategy("a", _signal(0.9, confidence=0.9)),
+                _FakeStrategy("b", _signal(0.9, confidence=0.9)),
+            ],
+            correlation_gate=stub_gate,
+        )
+        decision = orch.make_decision(capital=Decimal("1000"), klines=_bull_klines())
+        assert decision.should_trade is False
+        assert decision.skip_reason == SKIP_CORRELATION_STRESS
+        # Regime detected before the gate ; ensemble not yet voted.
+        assert decision.regime is not None
+        assert decision.ensemble_vote is None
+        assert decision.dominant_strategy is None
+
+    def test_calm_correlation_proceeds(self, fresh_db: Path) -> None:
+        def stub_gate() -> CorrelationReport:
+            return _correlation_report(mean=Decimal("0.45"))
+
+        orch = Orchestrator(
+            strategies=[
+                _FakeStrategy("a", _signal(0.9, confidence=0.9)),
+                _FakeStrategy("b", _signal(0.9, confidence=0.9)),
+            ],
+            correlation_gate=stub_gate,
+        )
+        decision = orch.make_decision(capital=Decimal("1000"), klines=_bull_klines())
+        assert decision.should_trade is True
+        assert decision.skip_reason is None
+
+    def test_correlation_skip_includes_diagnostic(self, fresh_db: Path) -> None:
+        def stub_gate() -> CorrelationReport:
+            return _correlation_report(mean=Decimal("0.92"))
+
+        orch = Orchestrator(
+            strategies=[
+                _FakeStrategy("a", _signal(0.9, confidence=0.9)),
+                _FakeStrategy("b", _signal(0.9, confidence=0.9)),
+            ],
+            correlation_gate=stub_gate,
+        )
+        decision = orch.make_decision(capital=Decimal("1000"), klines=_bull_klines())
+        # Reasoning carries the diagnostic for audit.
+        assert "0.92" in decision.reasoning or "correlation stress" in decision.reasoning
+
+
+# ─── Microstructure gate (doc 10 R6) ─────────────────────────────────────────
+
+
+def _microstructure_report(
+    *,
+    accepted: bool,
+    reasons: tuple[str, ...] = (),
+) -> MicrostructureReport:
+    """Build a stub MicrostructureReport with controllable verdict."""
+    return MicrostructureReport(
+        spread_bps=Decimal("5"),
+        volume_ratio=Decimal("1"),
+        taker_buy_ratio=Decimal("0.6"),
+        direction=None,
+        accepted=accepted,
+        reasons=reasons,
+        params=MicrostructureParams(),
+    )
+
+
+@pytest.mark.unit
+class TestMicrostructureGateIntegration:
+    def test_no_gate_keeps_legacy_behaviour(self, fresh_db: Path) -> None:
+        orch = Orchestrator(
+            strategies=[
+                _FakeStrategy("a", _signal(0.9, confidence=0.9)),
+                _FakeStrategy("b", _signal(0.9, confidence=0.9)),
+            ],
+        )
+        decision = orch.make_decision(capital=Decimal("1000"), klines=_bull_klines())
+        assert decision.should_trade is True
+        assert decision.skip_reason != SKIP_LOW_MICROSTRUCTURE
+
+    def test_gate_rejection_fires_skip(self, fresh_db: Path) -> None:
+        captured: dict[str, TradeDirection] = {}
+
+        def stub_gate(direction: TradeDirection) -> MicrostructureReport:
+            captured["direction"] = direction
+            return _microstructure_report(
+                accepted=False,
+                reasons=("spread 50 bps > max 15 bps",),
+            )
+
+        orch = Orchestrator(
+            strategies=[
+                _FakeStrategy("a", _signal(0.9, confidence=0.9)),
+                _FakeStrategy("b", _signal(0.9, confidence=0.9)),
+            ],
+            microstructure_gate=stub_gate,
+        )
+        decision = orch.make_decision(capital=Decimal("1000"), klines=_bull_klines())
+        assert decision.should_trade is False
+        assert decision.skip_reason == SKIP_LOW_MICROSTRUCTURE
+        # Gate runs LAST -> all upstream context is preserved on the skip.
+        assert decision.regime is not None
+        assert decision.ensemble_vote is not None
+        assert decision.qualified is True
+        assert decision.dominant_strategy is not None
+        assert decision.trade_levels is not None
+        # Bull klines + positive ensemble -> LONG direction passed to gate.
+        assert captured["direction"] == TradeDirection.LONG
+
+    def test_gate_acceptance_proceeds(self, fresh_db: Path) -> None:
+        def stub_gate(direction: TradeDirection) -> MicrostructureReport:
+            del direction
+            return _microstructure_report(accepted=True)
+
+        orch = Orchestrator(
+            strategies=[
+                _FakeStrategy("a", _signal(0.9, confidence=0.9)),
+                _FakeStrategy("b", _signal(0.9, confidence=0.9)),
+            ],
+            microstructure_gate=stub_gate,
+        )
+        decision = orch.make_decision(capital=Decimal("1000"), klines=_bull_klines())
+        assert decision.should_trade is True
+        assert decision.skip_reason is None
+
+    def test_gate_rejection_includes_reasons_in_msg(self, fresh_db: Path) -> None:
+        def stub_gate(direction: TradeDirection) -> MicrostructureReport:
+            del direction
+            return _microstructure_report(
+                accepted=False,
+                reasons=("spread 50 bps > max 15 bps", "volume ratio 0.10 < min 0.30"),
+            )
+
+        orch = Orchestrator(
+            strategies=[
+                _FakeStrategy("a", _signal(0.9, confidence=0.9)),
+                _FakeStrategy("b", _signal(0.9, confidence=0.9)),
+            ],
+            microstructure_gate=stub_gate,
+        )
+        decision = orch.make_decision(capital=Decimal("1000"), klines=_bull_klines())
+        # Audit reasoning carries each rejection cause concatenated.
+        assert "spread" in decision.reasoning
+        assert "volume" in decision.reasoning
+
+
+# ─── All-gates-injected happy path ──────────────────────────────────────────
+
+
+@pytest.mark.unit
+class TestAllGatesIntegration:
+    def test_all_gates_pass_proceeds(self, fresh_db: Path) -> None:
+        # Every doc 10 gate is wired and lets the decision through.
+        def meta(klines: list[Kline]) -> TradabilityReport:
+            del klines
+            return TradabilityReport(
+                volatility_score=Decimal("1"),
+                volume_score=Decimal("1"),
+                hour_score=Decimal("1"),
+                tradability=Decimal("1"),
+                is_tradable=True,
+            )
+
+        def correlation() -> CorrelationReport:
+            return _correlation_report(mean=Decimal("0.40"))
+
+        def micro(direction: TradeDirection) -> MicrostructureReport:
+            del direction
+            return _microstructure_report(accepted=True)
+
+        orch = Orchestrator(
+            strategies=[
+                _FakeStrategy("a", _signal(0.9, confidence=0.9)),
+                _FakeStrategy("b", _signal(0.9, confidence=0.9)),
+            ],
+            meta_gate=meta,
+            correlation_gate=correlation,
+            microstructure_gate=micro,
+        )
+        decision = orch.make_decision(capital=Decimal("1000"), klines=_bull_klines())
+        assert decision.should_trade is True
+        assert decision.skip_reason is None
+        assert decision.direction == TradeDirection.LONG
+
+    def test_correlation_fires_before_microstructure(self, fresh_db: Path) -> None:
+        # Correlation runs early ; microstructure should not be called.
+        micro_called = {"called": False}
+
+        def correlation() -> CorrelationReport:
+            return _correlation_report(mean=Decimal("0.99"))
+
+        def micro(direction: TradeDirection) -> MicrostructureReport:
+            micro_called["called"] = True
+            del direction
+            return _microstructure_report(accepted=True)
+
+        orch = Orchestrator(
+            strategies=[
+                _FakeStrategy("a", _signal(0.9, confidence=0.9)),
+                _FakeStrategy("b", _signal(0.9, confidence=0.9)),
+            ],
+            correlation_gate=correlation,
+            microstructure_gate=micro,
+        )
+        decision = orch.make_decision(capital=Decimal("1000"), klines=_bull_klines())
+        assert decision.skip_reason == SKIP_CORRELATION_STRESS
+        assert micro_called["called"] is False
+
+    def test_microstructure_runs_only_when_other_gates_pass(self, fresh_db: Path) -> None:
+        # All early gates pass ; microstructure rejects -> SKIP_LOW_MICROSTRUCTURE.
+        def meta(klines: list[Kline]) -> TradabilityReport:
+            del klines
+            return TradabilityReport(
+                volatility_score=Decimal("1"),
+                volume_score=Decimal("1"),
+                hour_score=Decimal("1"),
+                tradability=Decimal("1"),
+                is_tradable=True,
+            )
+
+        def correlation() -> CorrelationReport:
+            return _correlation_report(mean=Decimal("0.40"))
+
+        def micro(direction: TradeDirection) -> MicrostructureReport:
+            del direction
+            return _microstructure_report(accepted=False, reasons=("spread too wide",))
+
+        orch = Orchestrator(
+            strategies=[
+                _FakeStrategy("a", _signal(0.9, confidence=0.9)),
+                _FakeStrategy("b", _signal(0.9, confidence=0.9)),
+            ],
+            meta_gate=meta,
+            correlation_gate=correlation,
+            microstructure_gate=micro,
+        )
+        decision = orch.make_decision(capital=Decimal("1000"), klines=_bull_klines())
+        assert decision.skip_reason == SKIP_LOW_MICROSTRUCTURE

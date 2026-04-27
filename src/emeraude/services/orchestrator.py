@@ -13,34 +13,45 @@ Pipeline (step by step) :
 2. **Klines guard** — empty input returns ``"empty_klines"`` skip.
 3. **Regime** — :func:`detect_regime`. ``None`` returns
    ``"insufficient_data"`` skip.
-4. **Per-strategy signals** — :meth:`Strategy.compute_signal` for each
+4. **Tradability meta-gate** *(optional, doc 10 R8)* — when injected,
+   skips with ``"low_tradability"`` if the current market state is
+   untradable (high vol / low volume / blackout hour).
+5. **Correlation stress gate** *(optional, doc 10 R7)* — when injected,
+   skips with ``"correlation_stress"`` if the average pairwise
+   correlation across tracked coins crossed the stress threshold
+   (default 0.8). Diversification illusoire ; no new entry.
+6. **Per-strategy signals** — :meth:`Strategy.compute_signal` for each
    strategy. ``None`` signals are silently dropped by the ensemble.
-5. **Adaptive weights** — :meth:`RegimeMemory.get_adaptive_weights`
+7. **Adaptive weights** — :meth:`RegimeMemory.get_adaptive_weights`
    produces a regime-specific weight per strategy, falling back to
    :data:`REGIME_WEIGHTS` for couples below 30 trades. Optional
    Thompson multiplier from :class:`StrategyBandit` when injected.
-6. **Ensemble vote** — :func:`vote`. ``None`` returns
+8. **Ensemble vote** — :func:`vote`. ``None`` returns
    ``"no_contributors"`` skip.
-7. **Quality gate** — :func:`is_qualified`. ``False`` returns
+9. **Quality gate** — :func:`is_qualified`. ``False`` returns
    ``"ensemble_not_qualified"`` skip.
-8. **Position size** — Kelly fractional + vol-targeting + abs cap.
-   Inputs : (a) the dominant strategy's win rate from
-   :class:`RegimeMemory` (with a ``0.4`` fallback below 30 trades, cf.
-   doc 04 walk-forward), (b) a ``1.5`` R-multiple default until
-   per-strategy R is tracked (next iteration).
-9. **WARNING sizing** — multiply quantity by ``warning_size_factor``
-   (default ``0.5``) when the breaker is in WARNING.
-10. **Zero-quantity guard** — return ``"position_size_zero"`` skip if
+10. **Position size** — Kelly fractional + vol-targeting + abs cap.
+    Inputs : (a) the dominant strategy's win rate from
+    :class:`RegimeMemory` (with a ``0.4`` fallback below 30 trades, cf.
+    doc 04 walk-forward), (b) a ``1.5`` R-multiple default until
+    per-strategy R is tracked (next iteration).
+11. **WARNING sizing** — multiply quantity by ``warning_size_factor``
+    (default ``0.5``) when the breaker is in WARNING.
+12. **Zero-quantity guard** — return ``"position_size_zero"`` skip if
     Kelly + caps collapse to zero.
-11. **Direction** — ``LONG`` if ensemble score > 0, ``SHORT`` otherwise.
-12. **Risk levels** — :func:`compute_levels` produces stop / target /
+13. **Direction** — ``LONG`` if ensemble score > 0, ``SHORT`` otherwise.
+14. **Risk levels** — :func:`compute_levels` produces stop / target /
     R-multiple from ATR. ``"degenerate_risk"`` skip if risk-per-unit
     is zero (ATR=0 + non-zero stop multiplier still yields zero risk).
-13. **R/R floor (anti-rule A4)** — :func:`is_acceptable_rr` rejects
+15. **R/R floor (anti-rule A4)** — :func:`is_acceptable_rr` rejects
     trades below ``min_rr`` (default ``1.5``). The full
     :class:`TradeLevels` is included in the skipped
     :class:`CycleDecision` so the audit can show *why* the trade was
     degraded to a skip.
+16. **Microstructure gate** *(optional, doc 10 R6)* — last gate before
+    commit. When injected, called with the intended
+    :class:`TradeDirection` ; skips with ``"low_microstructure"`` on
+    wide spread, thin volume, or directional flow opposing the side.
 
 This function is **pure** in the sense that doc 05 cares about : no
 network, no order placement, no scheduling. It still reads from the
@@ -98,6 +109,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
     from emeraude.agent.learning.bandit import StrategyBandit
+    from emeraude.agent.perception.correlation import CorrelationReport
+    from emeraude.agent.perception.microstructure import MicrostructureReport
     from emeraude.agent.perception.tradability import TradabilityReport
     from emeraude.agent.reasoning.strategies import StrategySignal
     from emeraude.infra.market_data import Kline
@@ -128,6 +141,13 @@ SKIP_DEGENERATE_RISK: Final[str] = "degenerate_risk"
 # Doc 10 R8 : meta-gate says the current market state is untradable
 # (high volatility / low volume / blackout hour).
 SKIP_LOW_TRADABILITY: Final[str] = "low_tradability"
+# Doc 10 R7 : average pairwise correlation across tracked coins crossed
+# the stress threshold (default 0.8). Diversification illusoire ; any
+# new entry would compound the same systemic exposure.
+SKIP_CORRELATION_STRESS: Final[str] = "correlation_stress"
+# Doc 10 R6 : post-signal microstructure filter rejected the trade
+# (wide spread, thin volume, or directional flow opposing the side).
+SKIP_LOW_MICROSTRUCTURE: Final[str] = "low_microstructure"
 
 
 # ─── Public types ───────────────────────────────────────────────────────────
@@ -231,6 +251,8 @@ class Orchestrator:
         regime_memory: RegimeMemory | None = None,
         bandit: StrategyBandit | None = None,
         meta_gate: Callable[[list[Kline]], TradabilityReport] | None = None,
+        correlation_gate: Callable[[], CorrelationReport] | None = None,
+        microstructure_gate: Callable[[TradeDirection], MicrostructureReport] | None = None,
         regime_weights: Mapping[Regime, Mapping[str, Decimal]] | None = None,
         kelly_multiplier: Decimal = DEFAULT_KELLY_MULTIPLIER,
         max_pct_per_trade: Decimal = DEFAULT_MAX_PCT_PER_TRADE,
@@ -263,6 +285,23 @@ class Orchestrator:
                 :func:`emeraude.agent.perception.tradability.compute_tradability`
                 or a ``functools.partial`` of it with custom
                 thresholds.
+            correlation_gate: optional callable that detects a
+                cross-coin correlation stress regime (doc 10 R7).
+                When ``None`` (default), no gate fires. When
+                injected, called after regime detection (and after
+                ``meta_gate``) ; if ``report.is_stress`` is True,
+                the cycle skips with ``SKIP_CORRELATION_STRESS``.
+                Takes no argument because the gate's closure owns
+                the multi-symbol kline history (the orchestrator
+                only sees the focal-symbol series).
+            microstructure_gate: optional callable that runs the
+                doc 10 R6 execution gate (spread + volume + taker
+                flow). When ``None`` (default), no gate fires.
+                When injected, called as the last gate before commit
+                with the orchestrator's intended :class:`TradeDirection`
+                so the gate can include the directional flow check ;
+                if ``report.accepted`` is False, the cycle skips
+                with ``SKIP_LOW_MICROSTRUCTURE``.
             regime_weights: fallback weights when regime memory has
                 fewer than ``adaptive_min_trades`` observations for a
                 couple. Defaults to :data:`REGIME_WEIGHTS`.
@@ -313,6 +352,10 @@ class Orchestrator:
         )
         self._bandit: StrategyBandit | None = bandit
         self._meta_gate: Callable[[list[Kline]], TradabilityReport] | None = meta_gate
+        self._correlation_gate: Callable[[], CorrelationReport] | None = correlation_gate
+        self._microstructure_gate: Callable[[TradeDirection], MicrostructureReport] | None = (
+            microstructure_gate
+        )
         self._regime_weights: Mapping[Regime, Mapping[str, Decimal]] = (
             regime_weights if regime_weights is not None else REGIME_WEIGHTS
         )
@@ -330,7 +373,7 @@ class Orchestrator:
 
     # ─── Public API ─────────────────────────────────────────────────────────
 
-    def make_decision(  # noqa: PLR0911  (one return per pipeline gate is the clearest form)
+    def make_decision(  # noqa: PLR0911, PLR0912  (one return per pipeline gate is the clearest form)
         self,
         *,
         capital: Decimal,
@@ -411,6 +454,30 @@ class Orchestrator:
                         f"(vol={tradability.volatility_score:.2f}, "
                         f"vol={tradability.volume_score:.2f}, "
                         f"hour={tradability.hour_score:.2f})"
+                    ),
+                )
+
+        # Doc 10 R7 correlation stress : if the average pairwise
+        # correlation across tracked coins crossed the stress
+        # threshold, diversification is illusoire — skip new entries.
+        # The gate's closure owns the multi-symbol kline cache ; the
+        # orchestrator only sees the focal symbol's klines.
+        if self._correlation_gate is not None:
+            correlation = self._correlation_gate()
+            if correlation.is_stress:
+                return self._skip(
+                    regime=regime,
+                    vote_obj=None,
+                    qualified=False,
+                    price=last_price,
+                    atr_value=None,
+                    breaker_state=breaker_state,
+                    reason=SKIP_CORRELATION_STRESS,
+                    msg=(
+                        f"correlation stress mean={correlation.mean_correlation:.3f} "
+                        f">= threshold {correlation.threshold} "
+                        f"(n_symbols={correlation.n_symbols}, "
+                        f"n_pairs={correlation.n_pairs})"
                     ),
                 )
 
@@ -519,6 +586,26 @@ class Orchestrator:
                 trade_levels=levels,
                 dominant_strategy=dominant,
             )
+
+        # Doc 10 R6 microstructure : last gate before commit. Runs
+        # after R/R floor so the cheaper gates filter first ; takes
+        # the intended :class:`TradeDirection` so the gate can
+        # include the directional taker-flow check.
+        if self._microstructure_gate is not None:
+            micro = self._microstructure_gate(direction)
+            if not micro.accepted:
+                return self._skip(
+                    regime=regime,
+                    vote_obj=ev,
+                    qualified=True,
+                    price=last_price,
+                    atr_value=atr_value,
+                    breaker_state=breaker_state,
+                    reason=SKIP_LOW_MICROSTRUCTURE,
+                    msg="microstructure gate rejected: " + " ; ".join(micro.reasons),
+                    trade_levels=levels,
+                    dominant_strategy=dominant,
+                )
 
         return CycleDecision(
             should_trade=True,

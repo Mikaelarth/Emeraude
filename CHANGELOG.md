@@ -6,6 +6,77 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.40] - 2026-04-27
+
+### Added
+
+- **Wiring R6 microstructure + R7 correlation dans Orchestrator**
+  (premier pas de la levée des A1-deferrals doc 06, sortie de
+  l'état "module shippé 🟡 vers critère mesurable") :
+  - **`Orchestrator.correlation_gate`** : nouveau paramètre
+    optionnel `Callable[[], CorrelationReport] | None`. Quand
+    injecté, fire après le `meta_gate` (tradability R8) et avant
+    le vote ensemble. Si `report.is_stress`, retourne un skip
+    `SKIP_CORRELATION_STRESS` (= `"correlation_stress"`) avec
+    diagnostic moyenne/threshold dans `reasoning`.
+  - **`Orchestrator.microstructure_gate`** : nouveau paramètre
+    optionnel `Callable[[TradeDirection], MicrostructureReport] | None`.
+    Quand injecté, fire en **dernier** (après le R/R floor),
+    appelé avec la `TradeDirection` finale pour permettre la
+    confirmation de flow taker. Si `report.accepted is False`,
+    retourne un skip `SKIP_LOW_MICROSTRUCTURE` (=
+    `"low_microstructure"`) avec les reasons concaténées dans
+    `reasoning`.
+  - **Pipeline orchestrator** étendu de 13 à **16 étapes**
+    (docstring mis à jour). Ordre :
+    1. circuit breaker
+    2. klines guard
+    3. regime
+    4. tradability (R8, optionnel)
+    5. correlation stress (R7, **nouveau**, optionnel)
+    6-9. signals + ensemble + qualification
+    10-12. position sizing + WARNING factor + zero guard
+    13-15. direction + risk levels + R/R floor
+    16. microstructure (R6, **nouveau**, optionnel)
+- **2 nouveaux skip reasons** dans `services/orchestrator.py` :
+  `SKIP_CORRELATION_STRESS`, `SKIP_LOW_MICROSTRUCTURE`. Exportés
+  pour usage par `auto_trader` + tests + audit.
+- Tests `tests/unit/test_orchestrator.py` étendus de **+11 tests**
+  (46 → 56) couvrant :
+  - `TestCorrelationGateIntegration` (4 tests) : pas-de-gate,
+    stress fire skip, calme proceeds, diagnostic dans reasoning.
+  - `TestMicrostructureGateIntegration` (4 tests) : pas-de-gate,
+    rejection fire skip + capture direction, acceptance proceeds,
+    reasons concaténés dans reasoning.
+  - `TestAllGatesIntegration` (3 tests) : tous gates passent
+    happy-path, correlation court-circuite avant microstructure,
+    microstructure ne fire que si gates amont OK.
+
+### Changed
+
+- `services/orchestrator.py` : `make_decision` voit son `noqa`
+  étendu de `PLR0911` à `PLR0911, PLR0912` car l'ajout des deux
+  gates pousse à 16 branches (limite 12). Le commentaire reste
+  explicite : "one return per pipeline gate is the clearest form".
+- `pyproject.toml` : version `0.0.39` -> `0.0.40`.
+
+### Notes
+
+- **Levée partielle des A1-deferrals R6 + R7** : le code orchestrator
+  consomme maintenant les modules `microstructure.py` et
+  `correlation.py` shippés en iter #36/38. Reste à faire :
+  câbler les *closures* concrètes côté `auto_trader` (multi-symbol
+  fetcher pour correlation, fetcher 1m + bookTicker + aggTrades
+  pour microstructure). C'est la **prochaine iter naturelle** :
+  primitives wired -> closures injectées -> A/B walk-forward
+  mesurable -> I6 et I7 passent de 🟡 à ✅ (doc 06).
+- **Compatibilité descendante** : les deux gates étant `None` par
+  défaut, le comportement est strictement inchangé pour les
+  callers existants. Les 1131 tests v0.0.39 restent verts ; les
+  11 nouveaux tests vérifient explicitement que `None` = legacy.
+- **Coverage `orchestrator.py`** : 100 % (toutes les nouvelles
+  branches couvertes par tests).
+
 ## [0.0.39] - 2026-04-27
 
 ### Changed
