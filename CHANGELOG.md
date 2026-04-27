@@ -6,6 +6,91 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.31] - 2026-04-27
+
+### Added
+
+- **R1 Calibration tracking — Brier score + ECE (doc 10 R1)** —
+  8/15 innovations livrées (était 7.5/15 : R3, R4 partie 1, R5,
+  R9, R10, R11, R12, R13, +R1). Le moteur produit des
+  ``confidence: Decimal in [0, 1]`` via `StrategySignal` et
+  `EnsembleVote`, mais rien ne mesurait jusqu'ici si ces confiances
+  étaient calibrées. Ce module ferme cette boucle diagnostique :
+  une stratégie qui prédit "90 % confiance" sur 100 trades et
+  réalise 50 % de wins est désormais **détectable**.
+  - `compute_brier_score(predictions, outcomes) -> Decimal` —
+    `mean((p - y)²)` où `y = 1` si win, `0` sinon. Plage
+    `[0, 1]`, 0 = parfait, 0.25 = uniform 0.5 confiance avec
+    outcomes random.
+  - `compute_ece(predictions, outcomes, *, n_bins=10) -> Decimal` —
+    Expected Calibration Error. Bins équidistribués sur
+    `[0, 1]` ; `Decimal('1')` lande dans le dernier bin
+    (inclusive boundary). Bin avec `n_b=0` contribue 0 à l'ECE.
+    `ECE = sum_b (n_b / N) * |conf_b - acc_b|`.
+  - `compute_calibration_report(...)` — combiné Brier + ECE +
+    `bins: list[CalibrationBinStat]` payload pour le futur écran
+    "IA / Apprentissage" (reliability diagram). Tous les `n_bins`
+    bins sont présents, même les vides (la UI peut tout afficher).
+  - `is_well_calibrated(report, *, threshold=0.05) -> bool` —
+    critère doc 10 I1 ("ECE < 5 % sur 100 trades"). Floor
+    inclusive (5 % exact passe). Empty report → False.
+  - `CalibrationBinStat` + `CalibrationReport` `frozen+slots`
+    dataclasses pour audit-friendly serialisation.
+- 32 nouveaux tests (834 → 866), tous verts :
+  - 2 unit defaults : DEFAULT_ECE_THRESHOLD = 0.05 (doc 10),
+    DEFAULT_N_BINS = 10 (standard).
+  - 7 unit Brier : empty zero, perfect predictions zero, worst
+    predictions one, uniform 0.5 random outcomes = 0.25,
+    bound `[0, 1]` toujours, validation rejets (mismatched
+    lengths, out-of-range predictions).
+  - 6 unit ECE : empty zero, perfect calibration zero,
+    overconfidence yields gap, bound `[0, 1]`, validation
+    `n_bins >= 1`, custom n_bins, edge case
+    `Decimal('1')` lande dans last bin (no overflow).
+  - 7 unit `compute_calibration_report` : empty bins zero
+    samples, bin bounds covering `[0, 1]`, payload consistent
+    with helpers, sample counts sum to total, bin stats
+    correct, validation, frozen.
+  - 6 unit `is_well_calibrated` : empty fails, perfect passes,
+    high ECE fails, boundary inclusive (5 % exact passes),
+    custom threshold, validation rejets.
+  - 2 end-to-end scenarios : overconfident strategy (100 trades
+    at 0.85 confidence with 70 % wins → ECE = 0.15, fails),
+    well-calibrated strategy (40 trades at 0.6 with 60 % wins
+    + 60 trades at 0.4 with 40 % wins → ECE = 0, passes).
+
+### Notes
+
+- Coverage ratchets à **99.83 %** (était 99.82). Module au **100 %**.
+- **Anti-règle A1 — correction différée** : doc 10 R1 mentionne
+  Platt scaling / isotonic regression pour *corriger* les
+  confiances mal calibrées. Cette iter livre uniquement le
+  *diagnostic* (Brier + ECE + bins). La correction viendra dans
+  une iter dédiée quand un pipeline concret consommera les
+  valeurs rescalées.
+- **Critère mesurable I1** ("ECE < 5 % sur 100 trades") :
+  helper `is_well_calibrated(report, threshold=0.05)` exposé.
+  Tracking automatique sur tracker.history() viendra avec un
+  AutoTrader scheduler (anti-règle A1).
+- **Pure Python Decimal** : aucun cast float dans le chemin
+  chaud. La précision Decimal est conservée pour les bin
+  averages (sommes Decimal puis division par Decimal(n_b)).
+- **Default n_bins=10** : matches the canonical ECE definition
+  in Niculescu-Mizil & Caruana 2005. Caller peut passer 5
+  ou 20 si l'analyse demande une résolution différente.
+- **Convention** : "win" = `r_realized > 0` (cohérent avec la
+  convention bandit + position_tracker). Break-even compte en
+  loss côté outcome.
+
+### Références
+
+- Brier (1950). *Verification of Forecasts Expressed in Terms of
+  Probability*. Monthly Weather Review 78(1) : 1-3.
+- Niculescu-Mizil & Caruana (2005). *Predicting Good Probabilities
+  with Supervised Learning*. ICML '05.
+- Naeini, Cooper & Hauskrecht (2015). *Obtaining Well Calibrated
+  Probabilities Using Bayesian Binning*. AAAI '15.
+
 ## [0.0.30] - 2026-04-27
 
 ### Added
