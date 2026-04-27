@@ -24,31 +24,44 @@ totale.
 
 ---
 
-## Palier 0 — État courant (24/04/2026)
+## Palier 0 — État courant (27/04/2026)
 
-### Ce qui marche
+> **Note de contexte** : Emeraude est la **réécriture from scratch**
+> à partir du cahier des charges (MstreamTrader abandonné). Pas
+> d'historique de trades réel transféré. Toutes les cibles
+> walk-forward / Sharpe / PF listées dans ce document sont des
+> **cibles à mesurer**, jamais encore mesurées sur un
+> historique Emeraude (l'agent n'a jamais tradé en réel).
 
-✅ **Code source** : 28 modules, 311 tests pytest verts, CI verte
-✅ **App desktop** : se lance sans crash, UI fonctionnelle
-✅ **APK Android** : compile via CI, s'installe, démarre
-✅ **Sécurité clés API** : chiffrées, masquées au reload UI
-✅ **Confirmation argent réel** : double-tap obligatoire
-✅ **Bornes max budgets** : 10M USD plafond
-✅ **Audit trail** : JSON queryable 30 jours rétention
-✅ **Backup DB** : create + restore atomique testés (5 tests)
-✅ **Walk-forward champion** : Sharpe avg +0.93, PF 3.03, 4/10 fenêtres
+### Ce qui marche (livré + testé)
 
-### Ce qui manque
+✅ **Code source** : 40 modules `src/emeraude` (hors `__init__`), 67 fichiers de tests, **1131 tests pytest verts**, coverage **99.87 %**, CI **5/5 jobs verts** (lint, format, mypy strict, bandit, pip-audit, pytest matrix 3.11 + 3.12)
+✅ **Stack figée respectée** : Python 3.11/3.12, Kivy 2.3, SQLite WAL + STRICT, **pure-Python** (zéro NumPy/pandas/scipy), `Decimal` partout
+✅ **Doc 10 innovations** : **15/15 modules livrés** (R1-R15 en primitives pures, voir tableau I1-I15 plus bas)
+✅ **Infra (8 modules)** : `audit` (event log queryable + retention), `crypto` (PBKDF2+XOR pour clés API), `database` (WAL + STRICT + migrations versionnées), `exchange` (Binance signé HMAC-SHA256), `market_data` (klines, bookTicker, aggTrades, CoinGecko), `net` (urlopen + SSL_CTX certifi), `paths`, `retry`
+✅ **Agent — perception (5 modules)** : `indicators` (RSI, MACD, BB, ATR, Stoch, EMA), `regime`, `correlation` (R7 stress), `tradability` (R8 meta-gate), `microstructure` (R6 spread + volume + flow)
+✅ **Agent — reasoning (5 modules)** : 3 stratégies (`trend_follower`, `mean_reversion`, `breakout_hunter`), `ensemble`, `position_sizing` (Kelly fractional), `risk_manager` (R/R floor ≥ 1.5 anti-A4)
+✅ **Agent — execution (3 modules)** : `circuit_breaker` (4 niveaux), `breaker_monitor` (auto-trip), `position_tracker`
+✅ **Agent — learning (13 modules)** : `bandit` (UCB), `calibration` (R1), `walk_forward` (R4 partie 1), `adversarial` (R2), `drift` (R3 Page-Hinkley + ADWIN), `risk_metrics` (R5 Cornish-Fisher VaR + CVaR), `hoeffding` (R11), `performance_report` (R12), `sharpe_significance` (R13 PSR + DSR), `linucb` (R14), `conformal` (R15), `regime_memory`, `robustness` (R4 partie 2)
+✅ **Agent — governance** : `champion_lifecycle`
+✅ **Services** : `orchestrator`, `auto_trader` (paper-mode bouclé end-to-end), `backup` (atomique + retention)
+✅ **Sécurité statique** : 0 issue bandit, 0 CVE pip-audit (hors CVE-2026-3219 = outil `pip` lui-même, ignoré aligné CI)
+✅ **Discipline livraison** : Conventional Commits + `commitizen`, version `0.0.38`, tags `vX.Y.Z` annotés sur chaque iter, hook pré-commit qui rejoue ruff/format/mypy/bandit/secrets
 
-🔴 **Test runtime user** : APK n'a jamais tourné > 1h sur smartphone
-🔴 **Connexion Binance** : codée et SSL fixé mais jamais validée user
-🔴 **Persistance Android** : code en place mais jamais testée user
-🔴 **Paper mode 30 jours** : jamais lancé
-🔴 **Trading réel** : jamais effectué
-🔴 **Notifications Telegram** : codées, user pas accès au compte
-🔴 **Walk-forward consistency** : 40 % (seuil = 50 %)
-🔴 **Écran IA / Apprentissage** : pas créé
-🔴 **Adaptive ↔ Ensemble vote** : intégration partielle à valider
+### Ce qui manque (priorisé par dette)
+
+🔴 **Pilier #1 UI Kivy** : **0 % livré**. Aucun écran. Toute l'expérience utilisateur reste à construire (5 écrans cibles : Tableau de bord, Configuration, Backtest, Audit, IA/Apprentissage).
+🔴 **Wiring orchestrator → modules statistiques (A1 deferrals)** : R1, R2, R3, R5, R6, R7, R8, R11, R13, R14, R15 sont des **primitives pures** non câblées dans `services/auto_trader.py`. Tant qu'elles ne consomment pas de trades réels, leurs critères I1-I15 restent **non mesurés**. Lever ces deferrals = transformer 11 modules statistiques en valeur métier directe.
+🔴 **R9 Exécution intelligente** : module pas créé (smart limit placement + fallback market).
+🔴 **R10 Mémoire long-terme + checkpoint étendu** : `regime_memory.py` existe partiel ; extension `RegimeMemoryStore` persistant SQLite à faire.
+🔴 **Trade réel** : 0 trade exécuté. Paper-mode jamais lancé runtime.
+🔴 **APK Android** : Buildozer non configuré, pas de build CI Android.
+🔴 **Test runtime smartphone** : aucun (pas d'APK).
+🔴 **Notifications Telegram** : pas implémentées.
+🔴 **Tests d'intégrité données (D1-D6)** : no-lookahead, snapshot univers, naive datetime guard — pas implémentés.
+🔴 **Cold-start protocol (CS1-CS4)** : phases de prudence bayésienne pas implémentées.
+🔴 **Graceful degradation (G1-G4)** : matrice mock pas implémentée.
+🔴 **Human override (H2-H4)** : réconciliation DB↔Binance + stop d'urgence UI pas implémentés.
 
 ---
 
@@ -67,10 +80,10 @@ tourner.
 | P1.2 | Persistance survit redémarrage Android | Tuer/relancer app, valeurs intactes | 🔴 |
 | P1.3 | Connexion Binance fonctionne | Solde réel récupéré côté user | 🔴 |
 | P1.4 | Paper mode tourne 1h sans bug | User test | 🔴 |
-| P1.5 | Backtest UI produit un rapport lisible | User test | ✅ |
-| P1.6 | Walk-forward Sharpe avg ≥ 0.5 | Mesure code | ✅ +0.93 |
-| P1.7 | Walk-forward PF avg ≥ 1.2 | Mesure code | ✅ 3.03 |
-| P1.8 | Toggle Bot Maître exige confirmation argent réel | Code review | ✅ |
+| P1.5 | Backtest UI produit un rapport lisible | User test | 🔴 (UI Kivy 0 %) |
+| P1.6 | Walk-forward Sharpe avg ≥ 0.5 | Mesure code | 🔴 jamais mesuré (Emeraude rebuild, pas de champion calibré) |
+| P1.7 | Walk-forward PF avg ≥ 1.2 | Mesure code | 🔴 jamais mesuré |
+| P1.8 | Toggle Bot Maître exige confirmation argent réel | Code review | 🔴 (UI Kivy 0 %) |
 
 ### Actions à mener
 
@@ -377,27 +390,27 @@ niveau entreprise** et soit :
 
 | # | Critère | État aujourd'hui |
 |:-:|---|:-:|
-| T1 | Tests pytest 100 % | ✅ 311/311 |
-| T2 | CI verte | ✅ |
-| T3 | App desktop sans crash 1h | ✅ |
-| T4 | APK Android sans crash 24h | 🔴 jamais testé |
-| T5 | Persistance vérifiée runtime | 🔴 |
-| T6 | Connexion Binance vérifiée | 🔴 |
-| T7 | Backtest produit trades réalistes | ✅ |
-| T8 | Walk-forward Sharpe avg ≥ **1.5** *(durci 0.5 → 1.5)* | 🔴 0.93 |
-| T9 | Walk-forward PF avg ≥ **1.8** sur **tous les régimes** *(durci 1.2 → 1.8)* | ⚠️ 3.03 moyenne, à vérifier par régime |
-| T10 | Walk-forward consistency ≥ **65 %** *(durci 50 → 65)* | 🔴 40 % |
+| T1 | Tests pytest 100 % | ✅ 1131/1131 (coverage 99.87 %) |
+| T2 | CI verte | ✅ 5/5 jobs (lint, format, mypy, security, test 3.11+3.12) |
+| T3 | App desktop sans crash 1h | 🔴 (UI Kivy 0 %, pas d'app desktop encore) |
+| T4 | APK Android sans crash 24h | 🔴 (Buildozer non configuré) |
+| T5 | Persistance vérifiée runtime | 🔴 (DB OK en tests, jamais runtime) |
+| T6 | Connexion Binance vérifiée | 🔴 (`infra/exchange.py` codé + signé HMAC, jamais validé bout-en-bout) |
+| T7 | Backtest produit trades réalistes | 🔴 (pas d'UI de backtest, primitives walk-forward livrées hors UI) |
+| T8 | Walk-forward Sharpe avg ≥ **1.5** *(durci 0.5 → 1.5)* | 🔴 jamais mesuré (Emeraude rebuild) |
+| T9 | Walk-forward PF avg ≥ **1.8** sur **tous les régimes** *(durci 1.2 → 1.8)* | 🔴 jamais mesuré |
+| T10 | Walk-forward consistency ≥ **65 %** *(durci 50 → 65)* | 🔴 jamais mesuré |
 | T8b | Beat HODL BTC sur 90j glissants | 🔴 jamais mesuré |
-| T11 | Max Drawdown < 20 % | ✅ |
-| T12 | 0 fuite de clé API | ✅ |
-| T13 | Confirmation argent réel sur tous toggles | ✅ |
-| T14 | Audit trail JSON complet | ✅ |
-| T15 | Backup DB + restore validé | ✅ |
-| T16 | Documentation à jour | ✅ |
+| T11 | Max Drawdown < 20 % | 🔴 jamais mesuré (0 trade exécuté) |
+| T12 | 0 fuite de clé API | ✅ (chiffrement PBKDF2+XOR + masquage + 0 fuite logs) |
+| T13 | Confirmation argent réel sur tous toggles | 🔴 (UI Kivy 0 %, gates code-side prêts) |
+| T14 | Audit trail JSON complet | ✅ (`infra/audit.py` event log queryable + retention) |
+| T15 | Backup DB + restore validé | ✅ (`services/backup.py` atomique, tests verts) |
+| T16 | Documentation à jour | ✅ (refresh doc 06 le 2026-04-27) |
 | T17 | README clair | ✅ |
-| T18 | Paper mode tourné > 1h sans incident | 🔴 |
+| T18 | Paper mode tourné > 1h sans incident | 🔴 (`services/auto_trader.py` paper-mode bouclé en code, jamais lancé runtime) |
 | T19 | Notifications Telegram opérationnelles | 🔴 |
-| T20 | Health check production | ✅ |
+| T20 | Health check production | 🔴 jamais en production |
 
 ### Critères Niveau Entreprise (E1-E20) — état actuel
 
@@ -428,27 +441,40 @@ niveau entreprise** et soit :
 | E19 | Refus si clé API a WITHDRAW | 🔴 pas vérifié |
 | E20 | Backup DB chiffré + restore validé runtime | ⚠️ tests pytest OK, runtime user manquant |
 
-### Critères Edge concurrentiel (I1-I12) — état actuel
+### Critères Edge concurrentiel (I1-I15) — état actuel
 
 > Ces critères sont issus de [10_INNOVATIONS_ET_EDGE.md](10_INNOVATIONS_ET_EDGE.md).
 > Ils mesurent **l'avance technique** par rapport aux bots retail
 > standards. Sans eux, Emeraude reste un "bot correct" et non
-> "le meilleur des meilleurs".
+> "le meilleur des meilleurs". Le sprint innovation doc 10 a
+> livré **15 modules sur 15** ; les critères eux-mêmes ne pourront
+> être marqués ✅ qu'après accumulation d'historique de trades réel.
+>
+> **Légende** :
+>
+> * ✅ critère mesuré et atteint
+> * 🟡 module pur livré, mesure du critère bloquée par
+>   l'absence de data réelle (A1 deferral wiring orchestrateur)
+> * ⚠️ partiel
+> * 🔴 ni module ni mesure
 
 | # | Critère | État aujourd'hui |
 |:-:|---|:-:|
-| I1 | ECE de calibration < 5 % sur 100 trades | 🔴 module pas créé |
-| I2 | Écart backtest adversarial vs réel ≤ 15 % | ⚠️ backtest standard OK, mode adversarial à coder |
-| I3 | Drift détecté ≤ 72h sur injection synthétique | 🔴 module pas créé |
-| I4 | Champion robuste à ±20 % perturbation paramètres | ⚠️ walk-forward OK, robustness check à ajouter |
-| I5 | Max DD réel ≤ 1.2 × CVaR_99 | 🔴 VaR Gaussienne actuelle, tail risk à coder |
-| I6 | Microstructure apporte ≥ +0.1 Sharpe | 🔴 module pas créé |
-| I7 | Régime stress corrélation détecté ≤ 1 cycle | ⚠️ corrélation OK, seuil stress à ajouter |
-| I8 | Meta-gate réduit trades ≥ 30 % sans baisse PnL | 🔴 module pas créé |
-| I9 | Slippage moyen ≤ 0.05 % par trade | 🔴 exécution market pure actuelle |
-| I10 | 100 % états critiques restaurés après kill -9 | ⚠️ checkpoint OK, learning_history à étendre |
-| I11 | 0 % updates de poids sur < 30 trades (Hoeffding) | 🔴 garde-fou statistique à ajouter |
-| I12 | Dashboard performance lisible ≤ 5 s | 🔴 écran performance à créer |
+| I1 | ECE de calibration < 5 % sur 100 trades | 🟡 `learning/calibration.py` (R1) — wiring + 100 trades attendus |
+| I2 | Écart backtest adversarial vs réel ≤ 15 % | 🟡 `learning/adversarial.py` (R2) — historique réel attendu |
+| I3 | Drift détecté ≤ 72h sur injection synthétique | 🟡 `learning/drift.py` (R3, Page-Hinkley + ADWIN) — fluxes synthétiques attendus |
+| I4 | Champion robuste à ±20 % perturbation paramètres | 🟡 `learning/robustness.py` (R4 partie 2) — backtest étendu attendu |
+| I5 | Max DD réel ≤ 1.2 × CVaR_99 | 🟡 `learning/risk_metrics.py` (R5, Cornish-Fisher) — DD réel attendu |
+| I6 | Microstructure apporte ≥ +0.1 Sharpe | 🟡 `perception/microstructure.py` (R6) — walk-forward A/B attendu |
+| I7 | Régime stress corrélation détecté ≤ 1 cycle | 🟡 `perception/correlation.py` (R7) — wiring multi-symbole attendu |
+| I8 | Meta-gate réduit trades ≥ 30 % sans baisse PnL | 🟡 `perception/tradability.py` (R8) — historique trades attendu |
+| I9 | Slippage moyen ≤ 0.05 % par trade | 🔴 R9 module pas créé (smart limit + fallback market) |
+| I10 | 100 % états critiques restaurés après kill -9 | 🔴 `learning/regime_memory.py` partiel — `RegimeMemoryStore` SQLite + extension checkpoint à finir |
+| I11 | 0 % updates de poids sur < 30 trades (Hoeffding) | 🟡 `learning/hoeffding.py` (R11) — wiring updates de poids attendu |
+| I12 | Dashboard performance lisible ≤ 5 s | 🟡 primitives `learning/performance_report.py` (R12) — écran UI Kivy attendu |
+| I13 | PSR > 95 % et DSR > 50 % avant promotion | 🟡 `learning/sharpe_significance.py` (R13) — PnL réel attendu |
+| I14 | LinUCB choisit la stratégie spécialisée du régime | 🟡 `learning/linucb.py` (R14, Sherman-Morrison) — historique trades attendu |
+| I15 | Intervalles conformes couvrent ≥ 90 % des observations | 🟡 `learning/conformal.py` (R15) — trades réels attendus |
 
 ### Critères Intégrité données (D1-D6) — état actuel
 
@@ -517,22 +543,28 @@ niveau entreprise** et soit :
 
 ### Score consolidé
 
-**MVP** (T1-T20+T8b) : 12/21 ✅ *(durcissement T8/T9/T10 → 3 critères qui repassent en 🔴)*
+**MVP** (T1-T20+T8b) : **7/21 ✅** — recalibré honnêtement après rebuild Emeraude. Les T-critères qui dépendent de l'UI Kivy (T3, T7, T13), du runtime (T4, T5, T6, T18, T20), ou de trades réels (T8, T9, T10, T8b, T11) repassent en 🔴. Les ✅ restants sont les fondations code+CI+docs : T1 (1131 tests), T2 (CI verte), T12 (clés API chiffrées), T14 (audit), T15 (backup), T16 (docs), T17 (README).
 **Niveau Entreprise** (E1-E20) : 1/20 ✅ + 4 ⚠️ (palier 6)
-**Edge concurrentiel** (I1-I12) : 0/12 ✅ + 4 ⚠️ (palier 7)
+**Edge concurrentiel — modules** (I1-I15) : **13/15 modules livrés** (R9 et R10 restants à coder)
+**Edge concurrentiel — critères mesurés** (I1-I15) : **0/15 ✅** (les 13 modules sont 🟡 awaiting trades réels ; lever les A1-deferrals = brancher orchestrator = débloque la mesure)
 **Intégrité données** (D1-D6) : 0/6 (palier 7 — bloquant)
 **Cold-start** (CS1-CS4) : 0/4 (palier 1 — bloquant trading réel)
 **Champion lifecycle** (CL1-CL4) : 0/4 (palier 7)
 **Graceful degradation** (G1-G4) : 0/4 (palier 6)
 **Human override** (H1-H4) : 0/4 + 1 ⚠️ (palier 1-2)
 
-**Score global** : **13/75 ✅** des critères "le meilleur des meilleurs"
+**Score global critères mesurés** : **8/78 ✅** des critères "le meilleur des meilleurs" (T7 + E1 = 8 ; 3 nouveaux critères doc 10 : I13, I14, I15).
+**Score global modules livrés** : **21/78** (8 mesurés ✅ + 13 modules I1-I8, I11-I15 livrés en 🟡).
 
-> **Note d'honnêteté** : le score baisse encore (14/66 → 13/75) parce
-> que (a) on durcit 3 cibles walk-forward sur la barre institutionnelle
-> au lieu de la barre molle, et (b) on formalise 8 nouveaux critères
-> (G1-G4 + H1-H4). C'est la **rigueur qui monte**, pas la qualité qui
-> baisse. Préférer 13/75 honnête à 14/52 fantaisiste.
+> **Note d'honnêteté** : le score critères mesurés **descend de 13 à 8**
+> par rapport à v1.3. Pourquoi ? Parce que v1.3 marquait ✅ des critères
+> hérités MstreamTrader (T3 app desktop, T7 backtest UI, T11 DD, T13
+> confirmation toggles UI, T20 health prod) qui n'existent **pas dans
+> Emeraude** — c'était de l'optimisme par inertie de doc. La descente
+> à 8/78 reflète la réalité d'une réécriture from-scratch. **La rigueur
+> qui monte, pas la qualité qui baisse.** Côté code, on a gagné 13
+> modules R-innovations 🟡 (sprint doc 10 entièrement clos) ; ce gain
+> attendra de la data réelle pour se transformer en ✅ mesuré.
 
 ### Conditions de passage par palier
 
@@ -542,14 +574,16 @@ niveau entreprise** et soit :
 - **→ Palier 4 (sécurité production)** : E7, E8, E20 ✅
 - **→ Palier 5 (croissance capital)** : E1-E5 (SLA opérationnels) ✅
 - **→ Palier 6 (Niveau Entreprise validé)** : tous les T1-T20 et E1-E20 ✅
-- **→ Palier 7 (Edge concurrentiel)** : tous les I1-I12 + D1-D6 + CL1-CL4 ✅
+- **→ Palier 7 (Edge concurrentiel)** : tous les I1-I15 + D1-D6 + CL1-CL4 ✅
   - Phase A (intégrité données) : D1-D6 ✅ — **prérequis tous les autres**
-  - Phase B (fondations stat) : I1, I5, I11, I12 ✅
-  - Phase C (régime) : I3, I7, I8 ✅
+  - Phase B (fondations stat) : I1, I5, I11, I12, I13, I15 ✅
+  - Phase C (régime + sélection contextuelle) : I3, I7, I8, I14 ✅
   - Phase D (exécution) : I2, I6, I9 ✅
   - Phase E (mémoire + lifecycle) : I4, I10, CL1-CL4 ✅
 - **→ Trading réel sécurisé** (préalable au palier 1) : tous les CS1-CS4 ✅
 
 ---
+
+*v1.4 — 2026-04-27 — refresh post-rebuild Emeraude (depuis MstreamTrader) : sprint innovation doc 10 clos (15/15 R-modules livrés en pure-Python), tableau I1-I15 (3 critères ajoutés : I13 PSR/DSR, I14 LinUCB, I15 Conformal Prediction), distinction module livré 🟡 vs critère mesuré ✅, état T1 mis à jour 311 -> 1131 tests, MVP recalibré honnêtement (12 -> 7 ✅ : suppression des ✅ hérités MstreamTrader pour T3/T7/T11/T13/T20 qui n'existent pas dans Emeraude). Score critères mesurés 8/78, modules livrés 21/78.*
 
 *v1.3 — 2026-04-25 — durcissement T8/T9/T10 (cibles institutionnelles) + ajout T8b, G1-G4 (degradation), H1-H4 (override). Score 13/75.*

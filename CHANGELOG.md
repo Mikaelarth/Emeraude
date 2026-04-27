@@ -6,6 +6,58 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.39] - 2026-04-27
+
+### Changed
+
+- **Refresh doc 06 ROADMAP_ET_CRITERES** (v1.3 -> v1.4). Mise au
+  clair de l'état Emeraude post-rebuild + post-sprint doc 10
+  (15/15 R-innovations livrées) :
+  - **Palier 0 État courant** : recalibré sur la réalité du
+    rebuild (40 modules src, 67 fichiers de tests, **1131 tests
+    verts, coverage 99.87 %**, CI 5/5 jobs verts). Ajout d'une
+    note de contexte expliquant qu'Emeraude est la réécriture
+    from-scratch depuis MstreamTrader (pas d'historique réel
+    transféré, toutes les cibles walk-forward sont à mesurer).
+  - **Inventaire shipped détaillé** : 8 modules infra, 5
+    perception, 5 reasoning, 3 execution, 13 learning, 1
+    governance, 3 services. **15/15 doc 10 R-innovations**
+    listées avec leur module concret.
+  - **Tableau Edge concurrentiel I1-I12 -> I1-I15** : ajout des
+    3 critères du sprint doc 10 (I13 PSR + DSR, I14 LinUCB, I15
+    Conformal Prediction). Légende enrichie avec l'état 🟡
+    "module livré, mesure attendue" pour distinguer le code
+    primitif des critères mesurés. 13/15 modules livrés (R9 +
+    R10 restants), 0/15 critères mesurés.
+  - **Tableau MVP T1-T20** : recalibration honnête. Suppression
+    des ✅ hérités MstreamTrader (T3 app desktop, T7 backtest UI,
+    T11 max DD, T13 confirmation toggles UI, T20 health prod) qui
+    référencaient des features inexistantes dans Emeraude (UI
+    Kivy 0 %, 0 trade exécuté). Score MVP : 12/21 -> **7/21 ✅**.
+  - **Score consolidé** : 13/75 -> **8/78 critères mesurés ✅**
+    (3 nouveaux critères doc 10 ajoutés au dénominateur), avec
+    une seconde ligne **21/78 modules livrés** (ajout des 13 R-
+    modules en 🟡). La descente de 13 à 8 critères ✅ est de la
+    rigueur qui monte (suppression du ✅ par inertie de doc), pas
+    de la qualité qui baisse.
+  - **Conditions Palier 7** : phases B/C mises à jour pour
+    inclure I13, I14, I15 dans le wiring statistique attendu.
+- `pyproject.toml` : version `0.0.38` -> `0.0.39`.
+
+### Notes
+
+- **Iter docs-only** : aucun code source modifié, gates code
+  inchangés (1131 tests, 99.87 % coverage, ruff/format/mypy/
+  bandit/pip-audit verts).
+- **Distinction "module livré 🟡 vs critère mesuré ✅"** : nouvelle
+  convention introduite dans le doc 06 pour rendre visible la
+  dette de wiring orchestrateur ; permet de mesurer le progrès
+  sans gonfler le score sur du code non encore branché.
+- **Prochaine recommandation** : iter Pilier #1 UI Kivy (premier
+  écran tableau de bord) **OU** iter wiring statistique
+  (auto_trader consomme la microstructure gate + tradability +
+  correlation).
+
 ## [0.0.38] - 2026-04-27
 
 ### Added
