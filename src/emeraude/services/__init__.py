@@ -26,6 +26,10 @@ from emeraude.services.backup import (
     BackupRecord,
     BackupService,
 )
+from emeraude.services.gate_factories import (
+    make_correlation_gate,
+    make_microstructure_gate,
+)
 from emeraude.services.orchestrator import (
     CycleDecision,
     Orchestrator,
@@ -40,4 +44,6 @@ __all__ = [
     "CycleReport",
     "Orchestrator",
     "TradeDirection",
+    "make_correlation_gate",
+    "make_microstructure_gate",
 ]

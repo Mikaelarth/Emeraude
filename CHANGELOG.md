@@ -6,6 +6,87 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.41] - 2026-04-27
+
+### Added
+
+- **Closures concrètes pour les gates Orchestrator R6 + R7** —
+  pas suivant logique de l'iter #40 : l'Orchestrator avait été
+  rendu **capable** de consommer `correlation_gate` et
+  `microstructure_gate`, cette iter livre les **factories** qui
+  fabriquent ces closures depuis `infra/market_data`. Les deux
+  modules R6 et R7 sortent du brouillard 🟡 et deviennent prêts
+  à mesurer dès qu'un paper-mode tournera.
+  - **Module `src/emeraude/services/gate_factories.py`** (~210
+    LOC) — pur, factories sans I/O à la construction.
+  - **`make_correlation_gate(symbols, *, fetch_klines, interval,
+    limit, threshold)`** : retourne `Callable[[], CorrelationReport]`.
+    Cohort snapshot au temps de la factory (immune aux mutations
+    post-construction de la liste). Wrap par défaut
+    `market_data.get_klines` quand pas de fetcher custom. Lève
+    `ValueError` sur < 2 symbols (cohort dégénéré).
+  - **`make_microstructure_gate(symbol, *, fetch_book,
+    fetch_klines_1m, fetch_trades, klines_limit, trades_limit,
+    params)`** : retourne `Callable[[TradeDirection],
+    MicrostructureReport]`. Wrap par défaut
+    `market_data.get_book_ticker`, `get_klines(interval="1m")`
+    et `get_agg_trades`. Mappe `TradeDirection` enum vers le
+    `Literal["long", "short"]` que `evaluate_microstructure`
+    attend (couplage à la couture, pas dans la couche perception).
+- **Re-exports dans `services/__init__.py`** :
+  `make_correlation_gate`, `make_microstructure_gate` ajoutés
+  à `__all__` pour `from emeraude.services import ...`.
+- Tests `tests/unit/test_gate_factories.py` : **23 tests** dans
+  3 classes :
+  - `TestMakeCorrelationGate` (9 tests) : rejet < 2 symbols,
+    callable retournée, perfectly correlated -> stress, threshold
+    forwardé, default = doc 10, snapshot cohort, default fetcher
+    invoque `market_data.get_klines` avec interval+limit
+    configurés, custom fetcher ignore interval/limit.
+  - `TestMakeMicrostructureGate` (10 tests) : callable retournée,
+    long+buying = accept, long+selling = reject, short+selling =
+    accept, wide spread = reject, thin volume = reject, custom
+    params override, default params = doc 10, symbol passé à
+    chaque fetcher, default fetchers invoquent les 3 endpoints
+    Binance via `net.urlopen`.
+  - `TestFactoriesWireIntoOrchestrator` (2 tests) : signatures
+    correlation_gate `() -> CorrelationReport` et
+    microstructure_gate `(TradeDirection) -> MicrostructureReport`
+    matchent les paramètres `Orchestrator(...)` côté types.
+
+### Changed
+
+- `pyproject.toml` : version `0.0.40` -> `0.0.41`.
+
+### Notes
+
+- **Pattern de composition production** :
+  ```python
+  from emeraude.services import (
+      Orchestrator,
+      make_correlation_gate,
+      make_microstructure_gate,
+  )
+  orch = Orchestrator(
+      correlation_gate=make_correlation_gate(["BTCUSDT", "ETHUSDT", "SOLUSDT"]),
+      microstructure_gate=make_microstructure_gate("BTCUSDT"),
+  )
+  ```
+  AutoTrader inchangé : il accepte un `orchestrator` injecté ;
+  le caller final décide quels gates wirer.
+- **Compatibilité descendante stricte** : aucune API existante
+  modifiée. Les 1142 tests v0.0.40 restent verts ; les 23 nouveaux
+  tests valident les factories en isolation + l'intégration avec
+  les signatures attendues par `Orchestrator`.
+- **Coverage `gate_factories.py` : 100 %** (tous les chemins
+  default-fetcher / custom-fetcher / paramètres explicites
+  couverts).
+- **Doc 06 — boucle R6/R7 fermée** : I6 et I7 passent du statut
+  "🟡 module shippé sans wiring" à "🟢 prêt à mesurer dès paper-mode".
+  Critère mesurable formel reste 🟡 jusqu'à accumulation de
+  trades réels (anti-règle A1 strictement respectée : ne pas
+  tagger ✅ tant que le paper-mode n'a pas tourné).
+
 ## [0.0.40] - 2026-04-27
 
 ### Added
