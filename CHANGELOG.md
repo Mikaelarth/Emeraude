@@ -6,6 +6,79 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.38] - 2026-04-27
+
+### Added
+
+- **R6 Microstructure : order flow + spread (doc 10)** —
+  **15/15 innovations livrées** (R1-R15 complet). Le sprint
+  innovation doc 10 est intégralement clos.
+  - Module `src/emeraude/agent/perception/microstructure.py`
+    (~210 LOC) : trois primitives pures + gate combiné.
+  - **`spread_bps(book)`** : spread bid-ask relatif en basis
+    points. `(ask - bid) / mid * 10000`. Lève `ValueError` sur
+    book inversé ou côté négatif. `Decimal("Infinity")` quand
+    le mid est zéro (défensif).
+  - **`volume_ratio(klines, period=20)`** : volume du bar
+    courant / moyenne des `period` bars précédents (excluant
+    le bar courant pour ne pas biaiser). `Decimal("Infinity")`
+    quand l'historique est plat à zéro et le courant > 0.
+  - **`taker_buy_ratio(trades)`** : fraction du volume taker
+    en buy agressif. Convention Binance `is_buyer_maker=False`
+    -> taker buy. Volume-pondéré (pas count-pondéré). Retourne
+    `Decimal("0.5")` neutre quand pas de trades (le défaut
+    directionnel 0.55 rejette sous neutre).
+  - **`evaluate_microstructure(book, klines_1m, trades, direction, params)`** :
+    gate combinant spread (rejet > 15 bps), volume (rejet < 30 %)
+    et — optionnel quand `direction="long"|"short"` est passé —
+    confirmation directionnelle (rejet si taker ratio côté < 55 %).
+    Retourne un `MicrostructureReport` (frozen) listant chaque
+    raison de rejet pour audit.
+  - **Seuils par défaut alignés doc 10 R6** : `max_spread_bps=15`
+    (0.15 %), `min_volume_ratio=0.30`, `volume_ma_period=20`.
+- **Domain types Binance pour la microstructure** dans
+  `src/emeraude/infra/market_data.py` :
+  - `AggTrade` (frozen, slots) : id, price, quantity,
+    timestamp_ms, is_buyer_maker. Parser
+    `from_binance_dict(payload)`.
+  - `BookTicker` (frozen, slots) : symbol, bid_price, bid_qty,
+    ask_price, ask_qty. Parser `from_binance_dict(payload)`.
+- **Endpoints Binance public read-only** (mêmes patterns que
+  `get_klines`/`get_current_price` : `@retry.retry()`,
+  `net.urlopen`, errors propagés) :
+  - `get_book_ticker(symbol)` -> `BookTicker`.
+  - `get_agg_trades(symbol, limit=500)` -> `list[AggTrade]`.
+- Tests `tests/unit/test_microstructure.py` (37 tests) couvrant :
+  defaults, `spread_bps` (zéro, 1 bps, 15 bps doc-10, inverted,
+  négatif, mid zéro), `volume_ratio` (constant, half, sous-30 %,
+  exclusion bar courant, dégénérés, period custom),
+  `taker_buy_ratio` (1, 0, 0.5, volume-weighted, empty),
+  `evaluate_microstructure` (12 scénarios de filtrage incluant
+  multi-rejets), narrative R6 (calme liquide passe, news spike
+  rejette le chase, dead market rejette).
+- Tests `tests/unit/test_market_data.py` étendus (16 nouveaux
+  tests) pour `BookTicker`, `AggTrade`, `get_book_ticker`,
+  `get_agg_trades`.
+
+### Changed
+
+- `pyproject.toml` : version `0.0.37` -> `0.0.38`.
+
+### Notes
+
+- **Anti-règle A1 — wiring orchestrateur reporté** : le gate est
+  prêt à être branché en post-signal dans
+  `services/auto_trader.py` (call `evaluate_microstructure(...)`
+  avant `place_order`). Pas câblé ici car le signal multi-stratégies
+  actuel ne consomme pas encore les résultats du gate ; câblage à
+  faire dans une iter dédiée pour pouvoir mesurer le `+0.1 Sharpe`
+  doc 10 R6 en walk-forward A/B (avec/sans gate).
+- **Coverage stable record** : 99.87 % (1131 tests passés vs 1078
+  iter #37, +53 tests).
+- **Sprint innovation doc 10 clos** : R1-R15 tous livrés (R6 dernier
+  en date). Prochaine étape recommandée : refresh doc 06 (paliers
+  Emeraude vs MstreamTrader), puis pivot pilier #1 UI Kivy.
+
 ## [0.0.37] - 2026-04-27
 
 ### Added

@@ -195,6 +195,124 @@ class TestGetCurrentPrice:
             assert "symbol=ETHUSDT" in url
 
 
+# ─── BookTicker + AggTrade (doc 10 R6) ─────────────────────────────────────
+
+
+_SAMPLE_BOOK_TICKER: dict[str, Any] = {
+    "symbol": "BTCUSDT",
+    "bidPrice": "99950.50",
+    "bidQty": "1.23456",
+    "askPrice": "99951.00",
+    "askQty": "0.89012",
+}
+
+_SAMPLE_AGG_TRADE: dict[str, Any] = {
+    "a": 12345,
+    "p": "99950.75",
+    "q": "0.001",
+    "f": 100,
+    "l": 105,
+    "T": 1_700_000_000_000,
+    "m": False,
+    "M": True,
+}
+
+
+@pytest.mark.unit
+class TestBookTicker:
+    def test_from_binance_dict_parses_all_fields(self) -> None:
+        b = market_data.BookTicker.from_binance_dict(_SAMPLE_BOOK_TICKER)
+        assert b.symbol == "BTCUSDT"
+        assert b.bid_price == Decimal("99950.50")
+        assert b.bid_qty == Decimal("1.23456")
+        assert b.ask_price == Decimal("99951.00")
+        assert b.ask_qty == Decimal("0.89012")
+
+    def test_book_ticker_is_immutable(self) -> None:
+        b = market_data.BookTicker.from_binance_dict(_SAMPLE_BOOK_TICKER)
+        with pytest.raises((AttributeError, TypeError)):
+            b.bid_price = Decimal("0")  # type: ignore[misc]
+
+
+@pytest.mark.unit
+class TestAggTrade:
+    def test_from_binance_dict_parses_all_fields(self) -> None:
+        t = market_data.AggTrade.from_binance_dict(_SAMPLE_AGG_TRADE)
+        assert t.agg_trade_id == 12345
+        assert t.price == Decimal("99950.75")
+        assert t.quantity == Decimal("0.001")
+        assert t.timestamp_ms == 1_700_000_000_000
+        assert t.is_buyer_maker is False
+
+    def test_buyer_maker_true_parsed(self) -> None:
+        payload = {**_SAMPLE_AGG_TRADE, "m": True}
+        t = market_data.AggTrade.from_binance_dict(payload)
+        assert t.is_buyer_maker is True
+
+    def test_agg_trade_is_immutable(self) -> None:
+        t = market_data.AggTrade.from_binance_dict(_SAMPLE_AGG_TRADE)
+        with pytest.raises((AttributeError, TypeError)):
+            t.price = Decimal("0")  # type: ignore[misc]
+
+
+@pytest.mark.unit
+class TestGetBookTicker:
+    def test_returns_parsed_book_ticker(self, no_sleep: MagicMock) -> None:
+        with patch("emeraude.infra.net.urlopen") as mock_urlopen:
+            mock_urlopen.return_value = _fake_response(_SAMPLE_BOOK_TICKER)
+            book = market_data.get_book_ticker("BTCUSDT")
+            assert isinstance(book, market_data.BookTicker)
+            assert book.bid_price == Decimal("99950.50")
+            assert book.ask_price == Decimal("99951.00")
+
+    def test_url_targets_book_ticker(self, no_sleep: MagicMock) -> None:
+        with patch("emeraude.infra.net.urlopen") as mock_urlopen:
+            mock_urlopen.return_value = _fake_response(_SAMPLE_BOOK_TICKER)
+            market_data.get_book_ticker("ETHUSDT")
+            url = mock_urlopen.call_args.args[0]
+            assert "/api/v3/ticker/bookTicker" in url
+            assert "symbol=ETHUSDT" in url
+
+
+@pytest.mark.unit
+class TestGetAggTrades:
+    def test_returns_parsed_trades(self, no_sleep: MagicMock) -> None:
+        with patch("emeraude.infra.net.urlopen") as mock_urlopen:
+            mock_urlopen.return_value = _fake_response([_SAMPLE_AGG_TRADE, _SAMPLE_AGG_TRADE])
+            trades = market_data.get_agg_trades("BTCUSDT")
+            assert len(trades) == 2
+            assert all(isinstance(t, market_data.AggTrade) for t in trades)
+
+    def test_url_contains_correct_params(self, no_sleep: MagicMock) -> None:
+        with patch("emeraude.infra.net.urlopen") as mock_urlopen:
+            mock_urlopen.return_value = _fake_response([])
+            market_data.get_agg_trades("BTCUSDT", limit=200)
+            url = mock_urlopen.call_args.args[0]
+            parsed = urllib.parse.urlparse(url)
+            params = urllib.parse.parse_qs(parsed.query)
+            assert params["symbol"] == ["BTCUSDT"]
+            assert params["limit"] == ["200"]
+
+    def test_default_limit_is_500(self, no_sleep: MagicMock) -> None:
+        with patch("emeraude.infra.net.urlopen") as mock_urlopen:
+            mock_urlopen.return_value = _fake_response([])
+            market_data.get_agg_trades("BTCUSDT")
+            url = mock_urlopen.call_args.args[0]
+            assert "limit=500" in url
+
+    def test_uses_binance_base_url(self, no_sleep: MagicMock) -> None:
+        with patch("emeraude.infra.net.urlopen") as mock_urlopen:
+            mock_urlopen.return_value = _fake_response([])
+            market_data.get_agg_trades("BTCUSDT")
+            url = mock_urlopen.call_args.args[0]
+            assert url.startswith("https://api.binance.com/api/v3/aggTrades")
+
+    def test_empty_response_returns_empty_list(self, no_sleep: MagicMock) -> None:
+        with patch("emeraude.infra.net.urlopen") as mock_urlopen:
+            mock_urlopen.return_value = _fake_response([])
+            assert market_data.get_agg_trades("BTCUSDT") == []
+
+
 # ─── get_top_coins_market_data ──────────────────────────────────────────────
 
 
