@@ -6,6 +6,94 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.37] - 2026-04-27
+
+### Added
+
+- **R14 Contextual bandit (LinUCB) avec Sherman-Morrison
+  (doc 10)** — 14/15 innovations livrées (était 13/15 : R1, R2,
+  R3, R4, R5, R7, R8, R9, R10, R11, R12, R13, R15, +R14). Module
+  pur `agent/learning/linucb.py` qui unifie le choix de stratégie
+  + paramètre en un **bandit linéaire contextuel** Li, Chu,
+  Langford, Schapire 2010 :
+  ``E[r_t | a, x_t] = θ_a^T · x_t``,
+  score sélection ``= θ_a^T x + α · sqrt(x^T A_a^{-1} x)``.
+  - Iter #11 (Thompson bandit) + iter #25 (RegimeMemory adaptatif)
+    factorisaient grossièrement le problème en `argmax_strategy(régime)`
+    puis `argmax_param(stratégie)`. LinUCB généralise : **un seul**
+    estimateur linéaire par bras conditionné sur un context vector
+    (régime, vol, heure UTC, distance ATH, corrélation R7, ...).
+  - **Sherman-Morrison rank-1** : update O(d²) de `A^{-1}` au lieu
+    d'inversion full O(d³). Init `A = λ·I` → `A^{-1} = (1/λ)·I`,
+    inverse persistant.
+  - `LinUCBBandit` avec API `select(context) -> arm_name` +
+    `update(*, arm, context, reward)` + `state() -> dict[str,
+    LinUCBArmState]`.
+  - **Tie-breaking déterministe** : ordre alphabétique sur le nom
+    du bras quand scores égaux. Première sélection sur priors
+    uniformes → bras le plus tôt dans l'alphabet. Bandit
+    déterministe given context history.
+  - **Defaults Li et al. 2010** : `alpha=1.0`, `lambda_reg=1.0`.
+- 6 algebra helpers pure Python Decimal :
+  - `_eye(d, *, scale)` — `scale·I` matrice identité.
+  - `_matvec(M, v)` — produit matrice-vecteur.
+  - `_dot(u, v)` — produit scalaire.
+  - `_outer(u, v)` — produit extérieur `u v^T`.
+  - `_scalar_mat(s, M)` — produit scalaire-matrice.
+  - `_mat_sub(A, B)` — soustraction matricielle.
+  - `_sherman_morrison_update(A_inv, x)` — rank-1 update inverse.
+- 36 nouveaux tests (1042 → **1078**), tous verts :
+  - 2 defaults match doc 10 / Li et al. 2010.
+  - 11 algebra helpers : `_eye` (3 cas), `_matvec` (2), `_dot` (2),
+    `_outer` (1), `_scalar_mat` (2), `_sherman_morrison` (2 :
+    inverse correct sur 2x2 + general non-diagonal).
+  - 7 construction validation : empty/dup arms, zero context_dim,
+    zero/negative alpha/lambda.
+  - 3 select : tie-break alphabétique, dim mismatch, history wins.
+  - 4 update : unknown arm, n_updates increments, dim mismatch,
+    theta changes.
+  - 3 convergence : single arm recovers linear signal (theta ≈ [2,0]),
+    arms specialize to opposite rewards.
+  - 2 exploration : under-explored arm wins via UCB bonus, alpha→0
+    disables bonus.
+  - 3 state : one entry per arm, frozen, zero-vector init.
+  - 1 doc 10 R14 narrative : 2 stratégies × 2 régimes (bull/bear),
+    bandit apprend `trend_follower` gagne en bull, `mean_reversion`
+    en bear.
+
+### Notes
+
+- Coverage stable à **99.86 %**. Module au **100 %**.
+- **Anti-règle A1 — orchestrator wiring différé** : doc 10 R14
+  cite "+0.15 Sharpe minimum vs UCB1+RegimeMemory en walk-forward
+  90 j" comme critère mesurable. Le wiring qui remplace ou blend
+  `StrategyBandit` (Thompson) avec `LinUCBBandit` doit être validé
+  par mesure différentielle sur trade history réel — anti-règle
+  A1 dit pas de remplacement sans gain mesuré. Module pur livré ;
+  intégration quand un walk-forward AB-test produira la métrique.
+- **Pure Python pas de NumPy** : algèbre matricielle implémentée
+  manuellement avec `list[list[Decimal]]`. Sherman-Morrison évite
+  le coût O(d³) de l'inversion. Pour `d ≤ 20` (typique du context
+  vector trading), O(d²) = 400 ops par update — négligeable
+  comparé au bottleneck I/O HTTP/DB du cycle 60-min.
+- **Tie-breaking** : la convention alphabétique élimine la
+  non-déterminisme. Tests sont déterministes given seed=irrelevant.
+  Production : si tous les bras sont égaux (cycle 1 ou contexte
+  jamais vu), le bras "le plus tôt dans l'alphabet" est joué — pas
+  de randomisation. Si l'utilisateur veut explorer randomly, il
+  peut wrapper avec un Thompson-style perturbation côté caller.
+- **Critère mesurable I14** ("+0.15 Sharpe min vs UCB1+RegimeMemory
+  en walk-forward 90 j") : non testable cette iter, validation
+  runtime palier ultérieur.
+
+### Références
+
+- Li, Chu, Langford, Schapire (2010). *A Contextual-Bandit
+  Approach to Personalized News Article Recommendation*. WWW '10.
+- Sherman & Morrison (1950). *Adjustment of an Inverse Matrix
+  Corresponding to a Change in One Element of a Given Matrix*.
+  Annals of Mathematical Statistics 21(1).
+
 ## [0.0.36] - 2026-04-27
 
 ### Added
