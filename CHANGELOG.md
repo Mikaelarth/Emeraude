@@ -6,6 +6,93 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.34] - 2026-04-27
+
+### Added
+
+- **R2 Backtest adversarial (doc 10)** — 11/15 innovations livrées
+  (était 10/15 : R1, R3, R4 partie 1, R5, R8, R9, R10, R11, R12,
+  R13, R15, +R2). Module pure `agent/learning/adversarial.py` qui
+  applique les 4 pessimismes déterministes de R2 à chaque fill de
+  backtest, transformant un simulateur "optimiste par défaut" en
+  "défendable vis-à-vis d'un audit".
+  - `AdversarialParams` `frozen+slots` configurable :
+    - `slippage_pct = 0.001` (0.1 %, soit 2x les 0.05 % théoriques
+      par doc 10 R2).
+    - `fee_pct = 0.0011` (0.11 %, soit 1.1x les 0.10 % Binance
+      taker pour couvrir réseau + conversions).
+    - `latency_bars = 1` (le fill arrive 1 bar après le signal).
+    - Validation à la construction : tous ≥ 0.
+  - `apply_adversarial_fill(*, signal_price, side, execution_bar,
+    quantity, params=None)` applique les 4 pessimismes :
+    1. **Worst-of-bar** : BUY → `execution_bar.high`, SELL →
+       `execution_bar.low`.
+    2. **Slippage** multiplicatif : `fill = worst * (1 ± slippage_pct)`,
+       toujours dans le sens adverse.
+    3. **Fees** absolus : `fee = fill * quantity * fee_pct`.
+    4. **Latency** : `execution_bar` est le bar à
+       `signal_index + latency_bars` (caller-side responsibility).
+  - `AdversarialFill` `frozen+slots` audit-friendly : side,
+    signal_price, worst_bar_price, fill_price, quantity, fee,
+    slippage_cost (carved out), `total_notional` + `cash_flow`
+    properties.
+  - `compute_realized_pnl(*, entry, exit_fill) -> Decimal` —
+    PnL net après round-trip avec les conventions :
+    - LONG : `(exit.fill - entry.fill) * qty - entry.fee - exit.fee`
+    - SHORT : `(entry.fill - exit.fill) * qty - entry.fee - exit.fee`
+    Validation : sides opposés + quantities matchent.
+- 31 nouveaux tests (941 → 972), tous verts :
+  - 3 unit defaults : doc 10 R2 valeurs (0.001, 0.0011, 1).
+  - 6 unit `AdversarialParams` : defaults, custom, validation
+    rejets (négatifs), zéros acceptés.
+  - 4 unit BUY fills : worst-of-bar = high, slippage augmente
+    fill, fee proportionnel notional, cash_flow négatif.
+  - 3 unit SELL fills : worst-of-bar = low, slippage diminue
+    fill, cash_flow positif.
+  - 6 unit edge cases : default params via None, validation
+    rejets (zero signal_price, zero quantity, degenerate bar),
+    frozen, total_notional property.
+  - 3 unit LONG round-trip : winner, loser, breakeven minus fees.
+  - 2 unit SHORT round-trip : winner, loser.
+  - 2 unit PnL validation : same-side rejected, qty mismatch
+    rejected.
+  - 2 unit end-to-end : full roundtrip with defaults shows ~3.4
+    USD pessimism cost on a +10 USD nominal trade ; pessimisms
+    strictly worse than ideal.
+
+### Notes
+
+- Coverage ratchets à **99.85 %** (était 99.84). Module au **100 %**.
+- **Anti-règle A1 — gap-risk Monte-Carlo différé** : doc 10 R2 liste
+  un 5e pessimisme — sampler les gaps depuis une distribution
+  empirique. Pour un backtester qui *replay* l'histoire, les gaps
+  sont déjà réalisés dans les données. La variante Monte-Carlo a
+  du sens uniquement pour des projections forward sous régime
+  synthétique, qui requièrent un simulateur stochastique pas
+  livré (et anti-règle A1).
+- **Critère mesurable I2** ("écart backtest_adversarial vs trading
+  réel ≤ 15 % sur 30 jours") : non-mesurable cette iter — pas de
+  comparaison live disponible. Module + helpers exposés ;
+  validation runtime palier ultérieur.
+- **Compagnon R4 partie 1** : la harnais walk-forward (iter #30)
+  consomme désormais l'output de `apply_adversarial_fill` au lieu
+  d'un fill idéal. Wiring orchestrator-backtester quand le
+  service backtester sera livré (anti-règle A1).
+- **Conventions** :
+  - Slippage **toujours adverse** (BUY pays plus, SELL receives
+    moins) — modélise le worst-case réaliste, pas le random.
+  - Fees toujours **soustraits** (entry et exit), jamais ajoutés
+    au PnL.
+  - `cash_flow` property explicite : -notional-fee à l'achat,
+    +notional-fee à la vente. Cohérent avec une comptabilité
+    rigoureuse pour le futur module de tracking de capital.
+
+### Référence
+
+- Bailey, Borwein, López de Prado (2014). *The Probability of
+  Backtest Overfitting*. Journal of Computational Finance 20(4) :
+  39-69.
+
 ## [0.0.33] - 2026-04-27
 
 ### Added
