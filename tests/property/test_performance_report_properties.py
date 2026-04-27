@@ -25,6 +25,7 @@ def _position(*, pid: int, r: Decimal) -> Position:
         target=Decimal("104"),
         quantity=Decimal("0.1"),
         risk_per_unit=Decimal("2"),
+        confidence=None,
         opened_at=0,
         closed_at=1,
         exit_price=Decimal("100"),

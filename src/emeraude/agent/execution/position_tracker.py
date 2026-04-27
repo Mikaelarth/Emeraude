@@ -85,6 +85,13 @@ class Position:
     Attributes set at open time : everything except the four
     close-related fields (``closed_at``, ``exit_price``, ``exit_reason``,
     ``r_realized``), which are ``None`` until closure.
+
+    The ``confidence`` field carries the ensemble-vote confidence
+    emitted by the orchestrator at open time. ``None`` for legacy
+    positions opened before migration 008 ; new positions opened
+    through :class:`AutoTrader` always populate it. The doc 10 R1
+    calibration loop reads ``(confidence, won)`` from this column
+    to compute Brier + ECE.
     """
 
     id: int
@@ -96,6 +103,7 @@ class Position:
     target: Decimal
     quantity: Decimal
     risk_per_unit: Decimal
+    confidence: Decimal | None
     opened_at: int
     closed_at: int | None
     exit_price: Decimal | None
@@ -127,6 +135,7 @@ def _row_to_position(row: sqlite3.Row) -> Position:
         target=Decimal(row["target"]),
         quantity=Decimal(row["quantity"]),
         risk_per_unit=Decimal(row["risk_per_unit"]),
+        confidence=Decimal(row["confidence"]) if row["confidence"] is not None else None,
         opened_at=int(row["opened_at"]),
         closed_at=int(row["closed_at"]) if row["closed_at"] is not None else None,
         exit_price=Decimal(row["exit_price"]) if row["exit_price"] is not None else None,
@@ -202,6 +211,7 @@ class PositionTracker:
         target: Decimal,
         quantity: Decimal,
         risk_per_unit: Decimal,
+        confidence: Decimal | None = None,
         opened_at: int | None = None,
     ) -> Position:
         """Insert a new open position.
@@ -217,6 +227,13 @@ class PositionTracker:
             quantity: base-asset units.
             risk_per_unit: ``|entry - stop|`` from the risk manager.
                 Used to compute the realized R on close.
+            confidence: ensemble-vote confidence at open-time, in
+                ``[0, 1]``. Persisted alongside the trade so the
+                doc 10 R1 calibration loop can later compute Brier +
+                ECE from ``(confidence, won)`` pairs. ``None``
+                (default) keeps backward compatibility for legacy
+                callers that did not surface confidence ; production
+                callers (e.g. :class:`AutoTrader`) should pass it.
             opened_at: epoch-second timestamp. Defaults to ``time.time()``.
 
         Returns:
@@ -224,8 +241,9 @@ class PositionTracker:
 
         Raises:
             ValueError: if a position is already open (doc 04
-                ``max_positions = 1``), or if any numeric input is
-                non-positive.
+                ``max_positions = 1``), if any numeric input is
+                non-positive, or if ``confidence`` is outside
+                ``[0, 1]``.
         """
         if entry_price <= _ZERO:
             msg = f"entry_price must be > 0, got {entry_price}"
@@ -236,8 +254,12 @@ class PositionTracker:
         if risk_per_unit <= _ZERO:
             msg = f"risk_per_unit must be > 0, got {risk_per_unit}"
             raise ValueError(msg)
+        if confidence is not None and not (_ZERO <= confidence <= Decimal("1")):
+            msg = f"confidence must be in [0, 1], got {confidence}"
+            raise ValueError(msg)
 
         ts = opened_at if opened_at is not None else int(time.time())
+        confidence_str = str(confidence) if confidence is not None else None
 
         with database.transaction() as conn:
             existing = conn.execute(
@@ -254,8 +276,8 @@ class PositionTracker:
                 "INSERT INTO positions ("
                 "  strategy, regime, side, "
                 "  entry_price, stop, target, quantity, risk_per_unit, "
-                "  opened_at"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "  confidence, opened_at"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     strategy,
                     regime.value,
@@ -265,6 +287,7 @@ class PositionTracker:
                     str(target),
                     str(quantity),
                     str(risk_per_unit),
+                    confidence_str,
                     ts,
                 ),
             )
@@ -287,6 +310,9 @@ class PositionTracker:
                 "target": str(position.target),
                 "quantity": str(position.quantity),
                 "risk_per_unit": str(position.risk_per_unit),
+                "confidence": (
+                    str(position.confidence) if position.confidence is not None else None
+                ),
             },
         )
         return position

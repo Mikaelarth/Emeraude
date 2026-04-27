@@ -26,6 +26,11 @@ from emeraude.services.backup import (
     BackupRecord,
     BackupService,
 )
+from emeraude.services.calibration_tracker import (
+    compute_calibration_from_positions,
+    extract_predictions_outcomes,
+    is_well_calibrated_history,
+)
 from emeraude.services.gate_factories import (
     make_correlation_gate,
     make_microstructure_gate,
@@ -44,6 +49,9 @@ __all__ = [
     "CycleReport",
     "Orchestrator",
     "TradeDirection",
+    "compute_calibration_from_positions",
+    "extract_predictions_outcomes",
+    "is_well_calibrated_history",
     "make_correlation_gate",
     "make_microstructure_gate",
 ]

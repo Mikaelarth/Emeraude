@@ -6,6 +6,112 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.42] - 2026-04-27
+
+### Added
+
+- **Wiring R1 calibration loop end-to-end** (doc 10 R1) — pas
+  suivant la levée des A1-deferrals : la **confidence** émise par
+  l'ensemble vote au moment du trade est désormais **persistée**
+  dans la base, puis consommée par un nouveau service de
+  calibration. Boucle prédiction -> outcome -> ECE/Brier fermée.
+  - **Migration 008 `008_positions_confidence.sql`** : ajoute la
+    colonne `confidence TEXT` (nullable) à `positions`. Les rows
+    legacy (avant migration) ont `NULL` ; le service de
+    calibration les filtre (NULL = pas d'observation, ne pas
+    polluer l'ECE).
+  - **`Position.confidence: Decimal | None`** : nouveau champ
+    dans le dataclass frozen. Pas de défaut côté Position
+    (cohérence : tous les champs sont explicitement positionnés).
+  - **`PositionTracker.open_position(..., confidence=None, ...)`** :
+    nouveau paramètre keyword-only optionnel. Persisté dans la
+    DB. Validation `confidence in [0, 1]`. Audit event élargi.
+    Backward compatible : caller existants qui n'ont pas surface
+    de confidence continuent de fonctionner avec `confidence=None`.
+  - **`AutoTrader._maybe_open`** : extrait
+    `decision.ensemble_vote.confidence` et le passe au tracker.
+- **Module `src/emeraude/services/calibration_tracker.py`** (~140
+  LOC) — bridge pur sans I/O ni état :
+  - **`extract_predictions_outcomes(positions)`** : pull
+    `(confidence, won)` pairs depuis l'historique. Filtre les
+    rows sans `confidence` (legacy) et sans `r_realized` (open).
+    `won = r_realized > 0` (cohérent avec `StrategyBandit`).
+  - **`compute_calibration_from_positions(positions, *, n_bins=10)`** :
+    appelle `compute_calibration_report` du module pur R1 sur
+    les paires extraites. `n_samples=0` quand pas d'éligibles.
+  - **`is_well_calibrated_history(report, *, threshold=0.05,
+    min_samples=100)`** : enforce les 2 moitiés de doc 10 I1
+    ("ECE < 5 % sur **100 trades**"). Retourne `False` sous
+    `min_samples` même si l'ECE est faible.
+- **Re-exports services/__init__.py** :
+  `compute_calibration_from_positions`,
+  `extract_predictions_outcomes`, `is_well_calibrated_history`.
+- Tests `tests/unit/test_calibration_tracker.py` : **22 tests**
+  dans 4 classes :
+  - `TestExtractPredictionsOutcomes` (6) : empty, drop legacy,
+    drop open, eligible, won-from-r-sign, mixed.
+  - `TestComputeCalibrationFromPositions` (5) : empty -> zero,
+    perfect calibration -> ECE 0, overconfidence -> ECE 0.4,
+    legacy filtered, n_bins forwardé.
+  - `TestIsWellCalibratedHistory` (7) : sous min_samples ->
+    False, au-dessus + ECE bas -> True, ECE haut -> False,
+    custom thresholds, default = doc 10.
+  - `TestEndToEndTrackerLoop` (4) : confidence round-trip via
+    DB, backward compat (None default), validation [0,1],
+    intégration tracker -> calibration loop sur 10 vrais trades.
+
+### Changed
+
+- `src/emeraude/agent/execution/position_tracker.py` :
+  `Position` dataclass étendu avec `confidence: Decimal | None`.
+  `_row_to_position` parse la nouvelle colonne. `open_position`
+  validate + persiste. Audit event `POSITION_OPENED` carrie le
+  champ confidence (str ou None).
+- `src/emeraude/services/auto_trader.py` : `_maybe_open` extrait
+  et propage la confidence vers le tracker.
+- `tests/unit/test_position_tracker.py` : test
+  `test_table_columns` mis à jour pour inclure `confidence` dans
+  l'ensemble de colonnes attendues.
+- `tests/unit/test_performance_report.py` +
+  `tests/property/test_performance_report_properties.py` :
+  helpers `_position(...)` mis à jour avec `confidence=None`
+  (champ obligatoire dans le dataclass).
+- `pyproject.toml` : version `0.0.41` -> `0.0.42`.
+
+### Notes
+
+- **Boucle R1 fermée — I1 du doc 06 passe de 🟡 à 🟢 prêt à
+  mesurer** dès que 100 trades fermés auront accumulé une
+  `confidence` non-nulle. Le critère formel "ECE < 5 % sur 100
+  trades" reste 🟡 jusqu'à génération de cette historique en
+  paper-mode (anti-règle A1 strictement respectée).
+- **R11 wiring déjà en place** : `Orchestrator._win_rate_for` /
+  `_win_loss_ratio_for` consomment déjà `is_significant()`
+  (Hoeffding) pour gater les overrides empirical-vs-fallback.
+  L'observabilité (surface des décisions de gate dans l'audit)
+  est candidate iter #43.
+- **Compatibilité descendante** : aucun caller existant cassé.
+  `PositionTracker.open_position` accepte `confidence` en
+  keyword-only optionnel, défaut `None`. Tests legacy
+  `test_performance_report.py` mis à jour pour le champ
+  obligatoire dans le dataclass (1 ligne de plus par helper).
+- **Coverage `calibration_tracker.py` : 100 %** (tous chemins
+  couverts incluant les filtres legacy/open et le double-test
+  ECE+min_samples).
+- **Pattern composition production** :
+  ```python
+  from emeraude.services import (
+      compute_calibration_from_positions,
+      is_well_calibrated_history,
+  )
+  history = tracker.history(limit=200)
+  report = compute_calibration_from_positions(history)
+  if not is_well_calibrated_history(report):
+      # ECE trop élevé sur >= 100 trades : surfacer en UI / freezer
+      # le sizing adaptatif / log un calibration_drift event.
+      ...
+  ```
+
 ## [0.0.41] - 2026-04-27
 
 ### Added

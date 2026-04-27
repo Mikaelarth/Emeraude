@@ -52,6 +52,7 @@ def _position(
         target=Decimal("104"),
         quantity=Decimal("0.1"),
         risk_per_unit=Decimal("2"),
+        confidence=None,
         opened_at=0,
         closed_at=closed_at,
         exit_price=Decimal("101"),

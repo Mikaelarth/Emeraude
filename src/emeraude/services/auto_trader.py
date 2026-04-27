@@ -287,6 +287,13 @@ class AutoTrader:
             return None  # pragma: no cover
 
         side = Side.LONG if decision.direction is TradeDirection.LONG else Side.SHORT
+        # Doc 10 R1 wiring : surface the ensemble confidence so the
+        # tracker can persist it for the calibration loop. ``ensemble_vote``
+        # is guaranteed non-None when ``should_trade`` is True (the
+        # orchestrator's qualification gate runs upstream).
+        confidence = (
+            decision.ensemble_vote.confidence if decision.ensemble_vote is not None else None
+        )
         return self._tracker.open_position(
             strategy=decision.dominant_strategy,
             regime=decision.regime,
@@ -296,6 +303,7 @@ class AutoTrader:
             target=decision.trade_levels.target,
             quantity=decision.position_quantity,
             risk_per_unit=decision.trade_levels.risk_per_unit,
+            confidence=confidence,
             opened_at=ts,
         )
 

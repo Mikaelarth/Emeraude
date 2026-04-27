@@ -76,6 +76,7 @@ class TestMigration:
             "target",
             "quantity",
             "risk_per_unit",
+            "confidence",  # added by migration 008 (doc 10 R1 wiring)
             "opened_at",
             "closed_at",
             "exit_price",
