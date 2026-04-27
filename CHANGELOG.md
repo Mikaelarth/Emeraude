@@ -6,6 +6,89 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.35] - 2026-04-27
+
+### Added
+
+- **R4 partie 2 — Parameter robustness check (doc 10)** —
+  12/15 innovations livrées (était 11/15 : R1, R2, R3, R4 partie 1,
+  R5, R8, R9, R10, R11, R12, R13, R15, +R4 partie 2).
+  Iter #30 a livré la validation **temporelle** (walk-forward
+  windowing) ; cette iter livre la validation **paramétrique** —
+  tester si un champion résiste à une perturbation ±20 % de chaque
+  paramètre individuellement.
+  - Module pure `agent/learning/robustness.py` :
+    - `compute_robustness_report(*, baseline_score, baseline_params,
+      objective_fn, perturbation_pct=0.20, n_per_side=2,
+      destruction_threshold=0.30)` — sweep chaque param ±pct,
+      appelle `objective_fn(perturbed_params)`, agrège.
+    - `_safe_objective` — catch des exceptions de l'objective ;
+      perturbation qui crash → score 0 → comptée destructive
+      (interprétation pessimiste, anti-règle A8 : visibility sur
+      les failures).
+    - `_generate_offsets` — sweep symétrique excluant 0. Avec
+      `n_per_side=2` et `pct=0.20` → `[-0.20, -0.10, +0.10, +0.20]`.
+    - `is_robust(report, *, max_destructive_fraction=0.25) -> bool`
+      — gate doc 10 I4 ("fraction destructives ≤ 25 % pour
+      champion publié"). Inclusive at boundary.
+  - 3 dataclasses `frozen+slots` pour audit + UI heatmap :
+    - `PerturbationResult` : 1 (param, perturbed_value) eval
+      complet.
+    - `ParamStability` : ligne du heatmap (param_name,
+      n_destructive/n_perturbations, worst_degradation).
+    - `RobustnessReport` : agrégat cohort (baseline, totals,
+      destructive_fraction) + per_param + perturbations
+      complètes.
+- 32 nouveaux tests (972 → **1004 — premier kilomètre franchi**),
+  tous verts :
+  - 4 unit defaults : valeurs doc 10 (0.20, 0.30, 0.25, 2).
+  - 3 happy paths : objective stable → 0 dest, overfit → 100 %
+    dest, partial → 50 %.
+  - 2 per-param breakdown : 1 fragile + 1 robuste, worst_degradation
+    correctement tracké.
+  - 2 objective exceptions : crash global → 100 % dest, crash
+    sélectif → 25 %.
+  - 7 validation rejets : zero/negative baseline, empty params,
+    perturbation_pct hors (0,1), n_per_side < 1, destruction_threshold
+    hors (0,1).
+  - 4 sweep mechanics : n=2 → 4 perturbations, n=1 → 2 perturbations,
+    seul le param testé bouge, custom perturbation_pct.
+  - 5 `is_robust` : below/at/above threshold, custom threshold,
+    invalid threshold rejects.
+  - 3 result types frozen.
+  - 2 doc 10 I4 scenarios : champion smooth passe, champion overfit
+    bloqué.
+
+### Notes
+
+- Coverage stable à **99.85 %**. Module au **100 %**.
+- **Suite "validation champion"** désormais complète : R4 partie 1
+  (temporal walk-forward) + R4 partie 2 (parametric robustness) +
+  R2 (adversarial fills) + R13 (PSR/DSR). Un champion publishable
+  doit passer les 4.
+- **Anti-règle A8 — exception swallowing** : `_safe_objective`
+  catch `Exception` mais le converti en degradation maximale (pas
+  silencieux). Une perturbation qui crash montre clairement
+  `is_destructive=True` dans le report ; le caller voit la
+  fragilité.
+- **Convention** : `objective_fn` doit être *déterministe* pour un
+  même input. Le module appelle exactement une fois par
+  perturbation. Si l'objective dépend de RNG, le caller doit
+  passer un seed fixe.
+- **Critère mesurable I4** ("fraction destructives ≤ 25 %") :
+  helper `is_robust(report, max=0.25)` exposé. Le caller cohérent
+  est le futur ChampionLifecycle.promote() qui validera la
+  promotion via cette gate (différé anti-règle A1 — wiring quand
+  un grid search réel sera disponible).
+- **Critère mesurable atteint** : tests 1004, premier passage du
+  millier — milestone informelle mais signal d'une codebase
+  consistante.
+
+### Référence
+
+- López de Prado (2018). *Advances in Financial Machine Learning*,
+  ch. 11 (Backtesting through Cross-Validation).
+
 ## [0.0.34] - 2026-04-27
 
 ### Added
