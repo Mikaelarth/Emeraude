@@ -6,6 +6,87 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.36] - 2026-04-27
+
+### Added
+
+- **R7 Correlation stress detection (doc 10)** — 13/15 innovations
+  livrées (était 12/15 : R1, R2, R3, R4, R5, R8, R9, R10, R11, R12,
+  R13, R15, +R7). Module pure `agent/perception/correlation.py`
+  qui détecte le régime de stress crypto (BTC/ETH/SOL passant
+  d'une corrélation ρ~0.5 à ρ~0.95+ en crash) — diversification
+  illusoire, doc 10 R7 / Forbes & Rigobon 2002.
+  - `compute_returns(klines)` — retours simples
+    `(close_i - close_{i-1}) / close_{i-1}`. Validation prix > 0.
+  - `pearson_correlation(x, y)` — coefficient avec forme déviation
+    numériquement stable :
+    `rho = Σ(x-x̄)(y-ȳ) / sqrt(Σ(x-x̄)² · Σ(y-ȳ)²)`. Edge cases :
+    constant series → 0, len < 2 → 0, mismatched lengths → reject.
+    Clamp défensif `[-1, 1]` sur dérive Decimal precision.
+  - `compute_correlation_matrix(returns_by_symbol)` — pairs
+    triés lexicographiquement `(a, b)` avec `a < b`. Validation
+    longueurs alignées.
+  - `mean_pairwise_correlation(matrix)` — agrégat off-diagonal.
+  - `compute_correlation_report(klines_by_symbol, *, threshold=0.8)
+    -> CorrelationReport` — combiné. Threshold inclusive (`mean >=`).
+  - `is_stress_regime(report) -> bool` — predicate convention
+    pour intent au call site.
+- 38 nouveaux tests (1004 → **1042**), tous verts :
+  - 1 default doc 10 (threshold 0.8).
+  - 5 unit `compute_returns` : empty, single kline, valeurs
+    connues, constant, zero rejet.
+  - 10 unit `pearson_correlation` : perfect ±1, constant series
+    yields 0 (variantes x/y/both), empty/single, in [-1, 1],
+    mismatched lengths, valeur connue computée à la main (rho=0.8
+    sur [1,2,3,4]/[2,3,5,4]).
+  - 5 unit `compute_correlation_matrix` : single/empty, 2-symbol
+    one-pair, 3-symbol three-pairs, misaligned, lex sort.
+  - 4 unit `mean_pairwise_correlation` : empty, average, single
+    pair, negatives.
+  - 8 unit `compute_correlation_report` : single symbol, calm
+    market, stress regime, at-threshold inclusive, custom
+    threshold, validation rejets (above 1, below -1), frozen.
+  - 2 unit `is_stress_regime` : matches report.is_stress field.
+  - 2 doc 10 R7 scenarios : calm-then-crash correlation jump,
+    3-coin basket clears 0.8 threshold.
+
+### Notes
+
+- Coverage ratchets à **99.86 %** (était 99.85). Module au **100 %**
+  (2 lines de clamp défensif marquées `# pragma: no cover` —
+  Cauchy-Schwarz garantit `|rho| <= 1` mathématiquement, le clamp
+  protège contre dérive Decimal precision sur inputs near-perfect,
+  jamais déclenché sur le corpus de tests).
+- **Anti-règle A1 — orchestrator wiring différé** : doc 10 R7
+  prescrit "réduction max_positions 3→1 + bloquer nouvelles
+  entrées" en cas de stress. Ce wiring nécessite que
+  `auto_trader.run_cycle` fetche les klines de **plusieurs**
+  symbols (BTC + ETH + SOL...) — pour l'instant l'AutoTrader
+  opère sur un seul symbol. Module pur livré ; intégration quand
+  l'infra multi-symbol arrive.
+- **Anti-règle A1 — log returns différés** : la version actuelle
+  utilise des **retours simples** (suffisants pour 1h Pearson).
+  Les log returns ont des propriétés statistiques plus propres
+  mais ne changent pas la détection à `mean > 0.8` ; déférés
+  jusqu'à mesure montrant un gain.
+- **Critère mesurable I7** ("détection ≤ 1 cycle après
+  franchissement du seuil") : trivialement satisfait — le compute
+  est synchrone, la gate fire le même cycle que la breach. Helper
+  `is_stress_regime(report)` exposé pour intent clarté au call
+  site.
+- **Compagnon R8** : R8 meta-gate (livré iter #32) cite "corrélation
+  moyenne (R7)" comme feature future. R7 est désormais disponible
+  pour intégration future dans le score de tradability — extension
+  naturelle de la `weight_*` API existante.
+- **Pure Python Decimal** : `getcontext().sqrt()` natif (cohérent
+  avec hoeffding/sharpe_significance/conformal/performance_report).
+  Pas de NumPy.
+
+### Référence
+
+- Forbes & Rigobon (2002). *No Contagion, Only Interdependence:
+  Measuring Stock Market Co-Movements*. Journal of Finance 57(5).
+
 ## [0.0.35] - 2026-04-27
 
 ### Added
