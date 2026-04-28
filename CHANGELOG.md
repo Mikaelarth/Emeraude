@@ -6,6 +6,102 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.49] - 2026-04-28
+
+### Added
+
+- **AutoTrader auto-construit les gates R6 / R7 / R8** opt-in
+  (doc 10) — iter #41 a livré les factories + iter #40 a wired
+  les gates dans Orchestrator, mais aucun caller default-construit
+  ces gates. Cette iter ferme la boucle composabilité : 3 flags
+  opt-in sur `AutoTrader(...)` et la chaîne complète s'active
+  (factory → gate → orchestrator → audit).
+  - **`AutoTrader.__init__(..., enable_tradability_gate=False,
+    correlation_symbols=None, enable_microstructure_gate=False,
+    ...)`** : 3 nouveaux paramètres keyword-only optionnels.
+  - **`enable_tradability_gate=True`** : auto-wire
+    `compute_tradability` (doc 10 R8) comme `meta_gate` de
+    l'Orchestrator par défaut. Thresholds doc 10 R8 (0.4 floor,
+    7d MA volume, 22-04 UTC blackout).
+  - **`correlation_symbols=["BTCUSDT", "ETHUSDT", "SOLUSDT"]`** :
+    auto-wire `make_correlation_gate(symbols)` comme
+    `correlation_gate` de l'Orchestrator par défaut. Threshold
+    doc 10 R7 (0.8 mean correlation stress). Lève `ValueError`
+    propagée du factory si < 2 symbols.
+  - **`enable_microstructure_gate=True`** : auto-wire
+    `make_microstructure_gate(self._symbol)` comme
+    `microstructure_gate` de l'Orchestrator par défaut.
+    Thresholds doc 10 R6 (15 bps spread cap, 30 % volume floor,
+    0.55 directional taker ratio). La closure capture
+    `self._symbol` pour fetcher book / trades / 1m klines sur
+    le même trading pair que l'AutoTrader.
+  - **Mutual exclusivity stricte** : si `orchestrator` est passé
+    ET un des flags est non-default, `ValueError` levée à la
+    construction. Évite le silent-ignore : la config gates =
+    config Orchestrator ; un caller qui passe son propre
+    orchestrator est responsable du wiring complet.
+  - **Méthode privée `_build_default_orchestrator(...)`** :
+    isole la construction conditionnelle pour clarté + testabilité.
+- Tests `tests/unit/test_auto_trader.py` : **+8 tests** (34 → 42)
+  dans nouvelle classe `TestGateAutoConstruction` :
+  - `test_default_no_flags_no_gates_wired` : backward compat
+    strict (3 gates None par défaut).
+  - `test_enable_tradability_gate_wires_meta_gate` : compute_tradability
+    devient le meta_gate.
+  - `test_correlation_symbols_wires_correlation_gate` : closure
+    callable wired.
+  - `test_correlation_symbols_below_two_raises` : factory error
+    propagée.
+  - `test_enable_microstructure_gate_wires_with_self_symbol` :
+    closure construite avec le bon symbole.
+  - `test_all_three_flags_together` : composabilité.
+  - `test_custom_orchestrator_with_flags_raises` : 3 cas de
+    conflit explicite.
+  - `test_custom_orchestrator_alone_works` : legacy path
+    inchangé.
+
+### Changed
+
+- `src/emeraude/services/auto_trader.py` : import
+  `compute_tradability` + `make_correlation_gate`,
+  `make_microstructure_gate`. `__init__` étendu, nouvelle méthode
+  `_build_default_orchestrator`.
+- `pyproject.toml` : version `0.0.48` -> `0.0.49`.
+
+### Notes
+
+- **Compatibilité descendante stricte** : tous les flags par
+  défaut = comportement strictement identique au pre-iter-#49.
+  Les 34 tests AutoTrader v0.0.48 restent verts sans modification.
+- **Doc 06 — I6, I7, I8 status** : passent de 🟡 "modules + gates
+  + factories shippés sans wiring AutoTrader" à **🟢 surveillance
+  active opt-in**. Les critères formels (`+0.1 Sharpe` doc 10 R6,
+  `détection ≤ 1 cycle` doc 10 R7, `réduction trades ≥ 30 %`
+  doc 10 R8) restent 🟡 jusqu'à exécution paper-mode runtime A/B
+  (anti-règle A1 stricte).
+- **Coverage `auto_trader.py` : 100 %**. Tous les chemins
+  (default, single flag, all flags, mutual exclusivity).
+- **Pattern composition production** :
+  ```python
+  from emeraude.services import AutoTrader, DriftMonitor, RiskMonitor
+  from emeraude.agent.execution.position_tracker import PositionTracker
+
+  tracker = PositionTracker()
+  trader = AutoTrader(
+      symbol="BTCUSDT",
+      tracker=tracker,
+      drift_monitor=DriftMonitor(tracker=tracker),
+      risk_monitor=RiskMonitor(tracker=tracker),
+      # Doc 10 R6/R7/R8 surveillance pre-trade :
+      enable_tradability_gate=True,
+      correlation_symbols=["BTCUSDT", "ETHUSDT", "SOLUSDT"],
+      enable_microstructure_gate=True,
+  )
+  while True:
+      report = trader.run_cycle()
+      ...
+  ```
+
 ## [0.0.48] - 2026-04-28
 
 ### Added

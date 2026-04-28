@@ -60,8 +60,13 @@ from emeraude.agent.execution.breaker_monitor import (
     BreakerMonitor,
 )
 from emeraude.agent.execution.position_tracker import Position, PositionTracker
+from emeraude.agent.perception.tradability import compute_tradability
 from emeraude.agent.reasoning.risk_manager import Side
 from emeraude.infra import audit, market_data
+from emeraude.services.gate_factories import (
+    make_correlation_gate,
+    make_microstructure_gate,
+)
 from emeraude.services.orchestrator import (
     CycleDecision,
     Orchestrator,
@@ -162,6 +167,9 @@ class AutoTrader:
         breaker_monitor: BreakerMonitor | None = None,
         drift_monitor: DriftMonitor | None = None,
         risk_monitor: RiskMonitor | None = None,
+        enable_tradability_gate: bool = False,
+        correlation_symbols: list[str] | None = None,
+        enable_microstructure_gate: bool = False,
         fetch_klines: Callable[[str, str, int], list[Kline]] | None = None,
         fetch_current_price: Callable[[str], Decimal] | None = None,
     ) -> None:
@@ -208,6 +216,28 @@ class AutoTrader:
                 Evaluates the I5 criterion ``max DD <= 1.2 *
                 |CVaR_99|`` and escalates the breaker to ``WARNING``
                 on breach. Sticky semantics like the drift monitor.
+            enable_tradability_gate: opt-in for the doc 10 R8
+                meta-gate. When ``True`` AND ``orchestrator is None``,
+                AutoTrader auto-builds the orchestrator with
+                :func:`compute_tradability` as ``meta_gate``. Doc 10
+                R8 default thresholds. Mutually exclusive with a
+                custom ``orchestrator`` (raises ``ValueError`` if
+                both are provided).
+            correlation_symbols: opt-in for the doc 10 R7 correlation
+                stress gate. When non-``None`` AND ``orchestrator is
+                None``, AutoTrader auto-builds the orchestrator with
+                :func:`make_correlation_gate(correlation_symbols)`.
+                Pass at least 2 symbols (e.g. ``["BTCUSDT",
+                "ETHUSDT", "SOLUSDT"]``). Mutually exclusive with
+                a custom ``orchestrator``.
+            enable_microstructure_gate: opt-in for the doc 10 R6
+                spread + volume + flow gate. When ``True`` AND
+                ``orchestrator is None``, AutoTrader auto-builds the
+                orchestrator with
+                :func:`make_microstructure_gate(self._symbol)` so
+                the gate fetches book / trades / 1m klines for the
+                same trading pair the auto-trader operates on.
+                Mutually exclusive with a custom ``orchestrator``.
             fetch_klines: HTTP fetcher for klines, signature
                 ``(symbol, interval, limit) -> list[Kline]``. Defaults
                 to :func:`market_data.get_klines`.
@@ -221,9 +251,29 @@ class AutoTrader:
         self._capital_provider: Callable[[], Decimal] = (
             capital_provider if capital_provider is not None else _default_capital_provider
         )
-        self._orchestrator: Orchestrator = (
-            orchestrator if orchestrator is not None else Orchestrator()
+        # Doc 10 R6/R7/R8 opt-in gates (iter #49). When the caller
+        # passes their own orchestrator, gate-config flags would be
+        # silently ignored — better to fail loudly so the conflict
+        # is visible at construction time.
+        gate_flags_set = (
+            enable_tradability_gate or correlation_symbols is not None or enable_microstructure_gate
         )
+        if orchestrator is not None and gate_flags_set:
+            msg = (
+                "gate auto-construction flags (enable_tradability_gate, "
+                "correlation_symbols, enable_microstructure_gate) cannot "
+                "be combined with a custom orchestrator ; pass the gates "
+                "to your Orchestrator(...) constructor instead"
+            )
+            raise ValueError(msg)
+        if orchestrator is not None:
+            self._orchestrator: Orchestrator = orchestrator
+        else:
+            self._orchestrator = self._build_default_orchestrator(
+                enable_tradability_gate=enable_tradability_gate,
+                correlation_symbols=correlation_symbols,
+                enable_microstructure_gate=enable_microstructure_gate,
+            )
         self._tracker: PositionTracker = tracker if tracker is not None else PositionTracker()
         # Wire a default monitor against the same tracker — its check
         # is a single DB read so the cost is trivial. Tests that want
@@ -260,6 +310,38 @@ class AutoTrader:
     def interval(self) -> str:
         """The kline interval this auto-trader operates on."""
         return self._interval
+
+    # ─── Internals : default-orchestrator factory ───────────────────────────
+
+    def _build_default_orchestrator(
+        self,
+        *,
+        enable_tradability_gate: bool,
+        correlation_symbols: list[str] | None,
+        enable_microstructure_gate: bool,
+    ) -> Orchestrator:
+        """Build the default :class:`Orchestrator` with opt-in gates.
+
+        Each gate is wired only when the corresponding flag asks for
+        it. Defaults match doc 10 R6/R7/R8 (15 bps spread cap, 30 %
+        volume floor, 0.55 directional taker ratio for R6 ; 0.8 mean
+        correlation stress threshold for R7 ; 0.4 tradability floor
+        for R8). Callers wanting custom thresholds construct their
+        own :class:`Orchestrator` and inject it via the
+        ``orchestrator`` parameter.
+        """
+        meta_gate = compute_tradability if enable_tradability_gate else None
+        correlation_gate = (
+            make_correlation_gate(correlation_symbols) if correlation_symbols is not None else None
+        )
+        microstructure_gate = (
+            make_microstructure_gate(self._symbol) if enable_microstructure_gate else None
+        )
+        return Orchestrator(
+            meta_gate=meta_gate,
+            correlation_gate=correlation_gate,
+            microstructure_gate=microstructure_gate,
+        )
 
     # ─── Public API ─────────────────────────────────────────────────────────
 

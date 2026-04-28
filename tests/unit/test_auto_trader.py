@@ -15,6 +15,7 @@ from emeraude.agent.execution.position_tracker import (
     PositionTracker,
 )
 from emeraude.agent.perception.regime import Regime
+from emeraude.agent.perception.tradability import compute_tradability
 from emeraude.agent.reasoning.risk_manager import Side
 from emeraude.agent.reasoning.strategies import StrategySignal
 from emeraude.infra import audit, database
@@ -800,3 +801,75 @@ class TestRiskMonitorWiring:
         assert report.risk_check is not None
         assert report.drift_check.triggered is False
         assert report.risk_check.triggered is False
+
+
+# ─── Gate auto-construction (doc 10 R6/R7/R8, iter #49) ─────────────────────
+
+
+@pytest.mark.unit
+class TestGateAutoConstruction:
+    def test_default_no_flags_no_gates_wired(self, fresh_db: Path) -> None:
+        # Backward compat : no opt-in flags = no gates on the default
+        # Orchestrator. _meta_gate, _correlation_gate,
+        # _microstructure_gate are all None.
+        at = AutoTrader()
+        assert at._orchestrator._meta_gate is None
+        assert at._orchestrator._correlation_gate is None
+        assert at._orchestrator._microstructure_gate is None
+
+    def test_enable_tradability_gate_wires_meta_gate(self, fresh_db: Path) -> None:
+        at = AutoTrader(enable_tradability_gate=True)
+        # The orchestrator's meta_gate is the canonical
+        # compute_tradability function.
+        assert at._orchestrator._meta_gate is compute_tradability
+
+    def test_correlation_symbols_wires_correlation_gate(self, fresh_db: Path) -> None:
+        at = AutoTrader(correlation_symbols=["BTCUSDT", "ETHUSDT"])
+        # A closure was built (callable, not None).
+        assert at._orchestrator._correlation_gate is not None
+        assert callable(at._orchestrator._correlation_gate)
+
+    def test_correlation_symbols_below_two_raises(self, fresh_db: Path) -> None:
+        # The factory enforces >= 2 symbols ; the error propagates.
+        with pytest.raises(ValueError, match="need >= 2 symbols"):
+            AutoTrader(correlation_symbols=["BTCUSDT"])
+
+    def test_enable_microstructure_gate_wires_with_self_symbol(self, fresh_db: Path) -> None:
+        # The auto-built gate captures self._symbol and uses
+        # market_data fetchers by default ; we just verify the
+        # closure exists. (Calling it would require patching the full
+        # 3-fetcher set ; the gate-factory module already covers that
+        # in test_gate_factories.py.)
+        at = AutoTrader(symbol="ETHUSDT", enable_microstructure_gate=True)
+        assert at._orchestrator._microstructure_gate is not None
+
+    def test_all_three_flags_together(self, fresh_db: Path) -> None:
+        at = AutoTrader(
+            enable_tradability_gate=True,
+            correlation_symbols=["BTCUSDT", "ETHUSDT", "SOLUSDT"],
+            enable_microstructure_gate=True,
+        )
+        assert at._orchestrator._meta_gate is compute_tradability
+        assert at._orchestrator._correlation_gate is not None
+        assert at._orchestrator._microstructure_gate is not None
+
+    def test_custom_orchestrator_with_flags_raises(self, fresh_db: Path) -> None:
+        # Mutual exclusivity : passing a custom orchestrator AND a
+        # gate flag is a configuration error (the flags would be
+        # silently ignored otherwise).
+        custom = Orchestrator()
+        with pytest.raises(ValueError, match="cannot be combined"):
+            AutoTrader(orchestrator=custom, enable_tradability_gate=True)
+        with pytest.raises(ValueError, match="cannot be combined"):
+            AutoTrader(
+                orchestrator=custom,
+                correlation_symbols=["BTCUSDT", "ETHUSDT"],
+            )
+        with pytest.raises(ValueError, match="cannot be combined"):
+            AutoTrader(orchestrator=custom, enable_microstructure_gate=True)
+
+    def test_custom_orchestrator_alone_works(self, fresh_db: Path) -> None:
+        # Custom orchestrator without gate flags = legacy path, still works.
+        custom = Orchestrator()
+        at = AutoTrader(orchestrator=custom)
+        assert at._orchestrator is custom
