@@ -6,6 +6,109 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.52] - 2026-04-28
+
+### Added
+
+- **R9 Smart-limit execution plan** (doc 10 R9) — dernier
+  module statistique manquant du sprint doc 10. Pure module
+  avec primitives de placement passive-side / aggressive-cross
+  + planificateur combiné qui recommande limit ou market selon
+  l'état du book. **15/15 modules R-innovations livrés**.
+  - **Module `agent/execution/smart_limit.py`** (~280 LOC) —
+    pure, no I/O, Decimal everywhere :
+    - **`passive_side_price(book, side)`** : LONG → bid,
+      SHORT → ask. Pose le limit côté favorable, capture le
+      half-spread quand un counter-party arrive.
+    - **`cross_spread_price(book, side)`** : LONG → ask,
+      SHORT → bid. Prix de fill immédiat (market-equivalent).
+    - **`expected_market_slippage_bps(book)`** : half-spread
+      relatif au mid en basis points.
+      `(ask - bid) / 2 / mid * 10000`. Symétrique pour LONG /
+      SHORT (magnitude). `Decimal("Infinity")` si mid==0
+      (défensif).
+    - **`compute_realized_slippage_bps(*, expected_price,
+      actual_price, side)`** : signed slippage post-fill.
+      LONG → positif si payé plus que prévu, négatif si payé
+      moins (passive limit a capturé la spread). Inversé pour
+      SHORT. La moyenne sur many trades est le critère doc 10
+      I9 ("slippage moyen ≤ 0.05 % par trade" = 5 bps).
+    - **`decide_execution_plan(*, book, side, params)`** :
+      retourne un `ExecutionPlan` avec limit_price + market_price
+      + spread_bps + expected_market_slippage_bps + use_limit.
+      `use_limit=True` quand `spread_bps <= max_spread_bps_for_limit`
+      (default 50 bps doc 10). Au-delà → fallback market
+      immédiat (patience cost dominates).
+  - **`SmartLimitParams` frozen dataclass** : `max_spread_bps_for_limit`
+    (default 50 bps), `limit_timeout_seconds` (default 30 s
+    pour la future fill-loop, pas consommé par le pure module).
+  - **`ExecutionPlan` frozen dataclass** : full diagnostic
+    audit-friendly (side, both prices, spread, expected
+    slippage, use_limit verdict, params).
+  - **Validation entrées** : negative bid/ask ou inverted book
+    → `ValueError`. expected_price <= 0 → `ValueError`.
+- Tests `tests/unit/test_smart_limit.py` : **36 tests** dans
+  7 classes :
+  - `TestDefaults` (2) : doc 10 R9 thresholds, params match.
+  - `TestPassiveSidePrice` (4) : LONG bid, SHORT ask, inverted,
+    negative.
+  - `TestCrossSpreadPrice` (3) : LONG ask, SHORT bid, inverted.
+  - `TestExpectedMarketSlippageBps` (6) : zero spread, 1 bps,
+    50 bps, symmetric, zero mid Infinity, inverted raises.
+  - `TestComputeRealizedSlippage` (7) : LONG/SHORT adverse +
+    favourable cases, exact fill, validation.
+  - `TestDecideExecutionPlan` (10) : returns instance, tight
+    spread → limit, wide spread → market, at-cap inclusive,
+    LONG/SHORT prices, spread + slippage, custom params, audit
+    params, immutable, inverted raises.
+  - `TestDoc10R9Narrative` (3) : passive limit captures
+    half-spread (LONG), market fallback pays half-spread
+    (LONG), I9 threshold = 5 bps sanity check.
+
+### Changed
+
+- `pyproject.toml` : version `0.0.51` -> `0.0.52`.
+
+### Notes
+
+- **Sprint doc 10 R-innovations entièrement clos** : R1-R15
+  tous shippés en pure-Python primitives. Doc 06 inventaire
+  modules : **15/15 modules I-criteria livrés**.
+- **Doc 06 — I9 status** : passe de 🔴 "module pas créé" à
+  **🟡 module shippé**. Critère formel "slippage moyen ≤ 0.05 %
+  par trade" reste à mesurer en paper-mode runtime quand le
+  caller branchera réellement le smart-limit dans le flow
+  d'exécution (anti-règle A1).
+- **A1-deferral résiduel** : la fill-loop temps-réel (post
+  limit, wait, cancel + market on timeout) est **non-livrée
+  ici** par anti-règle A1 — elle nécessite `infra/exchange`
+  signed-order endpoints + paper-mode hookup. Candidate iter
+  #53+ une fois le live-trading path est démarré.
+- **Coverage `smart_limit.py` : 100 %**. Tous les chemins
+  (passive, cross, slippage formula, decision branches,
+  validations) couverts.
+- **Pattern composition production** :
+  ```python
+  from emeraude.agent.execution.smart_limit import (
+      decide_execution_plan,
+      compute_realized_slippage_bps,
+  )
+  from emeraude.agent.reasoning.risk_manager import Side
+  from emeraude.infra.market_data import get_book_ticker
+
+  book = get_book_ticker("BTCUSDT")
+  plan = decide_execution_plan(book=book, side=Side.LONG)
+  if plan.use_limit:
+      # Post limit at plan.limit_price ; on timeout, market at plan.market_price.
+      ...
+  # Post-fill measurement :
+  slippage = compute_realized_slippage_bps(
+      expected_price=mid,
+      actual_price=actual_fill,
+      side=Side.LONG,
+  )
+  ```
+
 ## [0.0.51] - 2026-04-28
 
 ### Added
