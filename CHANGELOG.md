@@ -6,6 +6,92 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.50] - 2026-04-28
+
+### Added
+
+- **R13 Champion promotion gate** (doc 10 R13 wiring) — les
+  primitives `compute_psr` + `compute_dsr` (livrées iter #28) sont
+  désormais consommées par un service de pré-promotion qui décide
+  si un candidat champion clears le critère doc 10 I13
+  (`DSR >= 0.95`). Pattern observabilité identique à iter #43
+  (Hoeffding) : décision dataclass + audit event.
+  - **Module `src/emeraude/services/champion_promotion.py`**
+    (~210 LOC) — service pur sans état :
+    - **`evaluate_promotion(*, positions, n_trials, ...,
+      emit_audit=True)`** : pull r_realized depuis la position
+      history, compute SR/skewness/kurtosis via
+      `compute_performance_report` + `compute_tail_metrics`,
+      compute PSR + DSR, compare DSR vs threshold (default 0.95
+      doc 10 R13).
+    - **Sample floor** : `min_samples >= 30` par défaut (matche
+      drift_monitor / risk_monitor / orchestrator). En dessous,
+      reason = `"below_min_samples"`, allow_promotion=False.
+    - **`PromotionDecision`** frozen dataclass : `sharpe_ratio`,
+      `n_samples`, `skewness`, `kurtosis`, `psr`, `dsr`,
+      `n_trials`, `threshold`, `allow_promotion`, `reason`.
+    - **3 reason constants** publics :
+      `REASON_BELOW_MIN_SAMPLES`, `REASON_DSR_TOO_LOW`,
+      `REASON_APPROVED`. Stables pour filtres audit-log.
+  - **`AUDIT_CHAMPION_PROMOTION_DECISION =
+    "CHAMPION_PROMOTION_DECISION"`** constante publique pour
+    `audit.query_events(event_type=...)`.
+  - **Pattern composition production** :
+    ```python
+    from emeraude.services import evaluate_promotion
+    decision = evaluate_promotion(
+        positions=tracker.history(limit=200),
+        n_trials=10,  # grid-search trials behind the candidate
+    )
+    if decision.allow_promotion:
+        lifecycle.promote(...)
+    ```
+  - **Découplage governance / services** : `ChampionLifecycle`
+    reste pure state machine (agent/governance) ; le gate R13
+    sit au-dessus dans services/ — même pattern que iter #43
+    (Hoeffding) qui ne modifie pas l'Orchestrator pour ajouter
+    de l'observabilité.
+- **Re-exports `services/__init__.py`** :
+  `evaluate_promotion`, `PromotionDecision`,
+  `AUDIT_CHAMPION_PROMOTION_DECISION`.
+- Tests `tests/unit/test_champion_promotion.py` : **19 tests**
+  dans 6 classes :
+  - `TestValidation` (4) : min_samples < 2, threshold hors
+    [0,1] (haut + bas), n_trials < 2 propagé du primitive DSR.
+  - `TestBelowSampleFloor` (3) : empty, sous min_samples bloque
+    même avec excellent record, open positions filtered.
+  - `TestVerdict` (6) : strong_record (80 % wins) passe DSR ≥
+    0.95, weak_record (50/50 high-var) bloque, full diagnostic
+    exposé, more_trials harder to clear, threshold relax flips,
+    dataclass immutable.
+  - `TestAuditEmission` (4) : default emits, emit_audit=False
+    silent, below_min_samples emits anyway (audit "we tried"),
+    Decimal stringifiés (lossless round-trip).
+  - `TestAuditConstant` (1) : nom stable.
+  - `TestEndToEndWithRealTracker` (1) : 50 trades via vrai
+    `PositionTracker` -> verdict cohérent.
+
+### Changed
+
+- `pyproject.toml` : version `0.0.49` -> `0.0.50`.
+
+### Notes
+
+- **Doc 06 — I13 status** : passe de 🟡 "module shippé sans
+  caller production" à **🟢 surveillance active**. Critère
+  formel "DSR > 95 % avant promotion" reste 🟡 jusqu'à
+  exécution paper-mode runtime (anti-règle A1 stricte).
+- **Compatibilité descendante stricte** : aucun module modifié
+  hors re-export `__init__.py`. Tests v0.0.49 (1281) + 19
+  nouveaux = 1300.
+- **Coverage `champion_promotion.py` : 100 %** — tous chemins
+  couverts (validations, sample floor, approved, dsr_too_low,
+  audit emission, audit silencieux).
+- **A1-deferral résiduel** : caller automatique de
+  `evaluate_promotion` dans une boucle de promotion automatique
+  candidate iter #51+. Pour l'instant, opérateur invoque le
+  gate manuellement avant `lifecycle.promote(...)`.
+
 ## [0.0.49] - 2026-04-28
 
 ### Added

@@ -31,6 +31,11 @@ from emeraude.services.calibration_tracker import (
     extract_predictions_outcomes,
     is_well_calibrated_history,
 )
+from emeraude.services.champion_promotion import (
+    AUDIT_CHAMPION_PROMOTION_DECISION,
+    PromotionDecision,
+    evaluate_promotion,
+)
 from emeraude.services.drift_monitor import (
     AUDIT_DRIFT_DETECTED,
     DriftCheckResult,
@@ -58,6 +63,7 @@ from emeraude.services.risk_monitor import (
 )
 
 __all__ = [
+    "AUDIT_CHAMPION_PROMOTION_DECISION",
     "AUDIT_DRIFT_DETECTED",
     "AUDIT_TAIL_RISK_BREACH",
     "AutoTrader",
@@ -68,10 +74,12 @@ __all__ = [
     "DriftCheckResult",
     "DriftMonitor",
     "Orchestrator",
+    "PromotionDecision",
     "RiskCheckResult",
     "RiskMonitor",
     "TradeDirection",
     "compute_calibration_from_positions",
+    "evaluate_promotion",
     "export_from_positions",
     "extract_predictions_outcomes",
     "is_well_calibrated_history",
