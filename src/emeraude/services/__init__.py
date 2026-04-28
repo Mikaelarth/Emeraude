@@ -76,11 +76,17 @@ from emeraude.services.risk_monitor import (
     RiskCheckResult,
     RiskMonitor,
 )
+from emeraude.services.robustness_validator import (
+    AUDIT_ROBUSTNESS_VALIDATION,
+    RobustnessValidationDecision,
+    validate_robustness,
+)
 
 __all__ = [
     "AUDIT_CHAMPION_PROMOTION_DECISION",
     "AUDIT_COVERAGE_VALIDATION",
     "AUDIT_DRIFT_DETECTED",
+    "AUDIT_ROBUSTNESS_VALIDATION",
     "AUDIT_TAIL_RISK_BREACH",
     "AutoTrader",
     "BackupRecord",
@@ -96,6 +102,7 @@ __all__ = [
     "PromotionDecision",
     "RiskCheckResult",
     "RiskMonitor",
+    "RobustnessValidationDecision",
     "TradeDirection",
     "build_regime_context",
     "clear_triggered",
@@ -112,4 +119,5 @@ __all__ = [
     "report_to_markdown",
     "save_triggered",
     "validate_coverage",
+    "validate_robustness",
 ]

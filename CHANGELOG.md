@@ -6,6 +6,87 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.55] - 2026-04-28
+
+### Added
+
+- **R4 Robustness validation gate** (doc 10 R4 wiring) — la
+  primitive `compute_robustness_report` (livrée iter #35) est
+  désormais consommée par un service de validation qui décide
+  si un champion clears le critère doc 10 I4
+  (`destructive_fraction <= 25 %` sur ±20 % perturbation).
+  Pattern décision-gate one-shot identique à iter #50/54.
+  - **Module `src/emeraude/services/robustness_validator.py`**
+    (~210 LOC) — pur sans état :
+    - **`validate_robustness(*, report, max_destructive_fraction,
+      emit_audit=True)`** : prend un `RobustnessReport`
+      pré-calculé (caller responsable du `objective_fn` callback),
+      compare `destructive_fraction` vs `max_destructive_fraction`
+      (default 0.25 doc 10 R4), retourne une décision dataclass.
+    - **Pourquoi pré-calculé ?** `compute_robustness_report` a
+      besoin d'un `objective_fn` (Sharpe, walk-forward...) ; le
+      garder à l'extérieur du service garde la couche cohésive
+      et évite de coupler à un choix de métrique.
+  - **`RobustnessValidationDecision`** frozen dataclass :
+    `baseline_score`, `n_params`, `total_perturbations`,
+    `total_destructive`, `destructive_fraction`,
+    `max_destructive_fraction`, `is_robust`, `reason`.
+  - **2 reason constants** publics : `REASON_ROBUST`,
+    `REASON_FRAGILE`. Stables pour filtres audit-log.
+  - **`AUDIT_ROBUSTNESS_VALIDATION = "ROBUSTNESS_VALIDATION"`**
+    constante publique.
+  - **Audit payload** carrie le **per-parameter heatmap** flat-encodé
+    (`alpha=0.0;beta=0.5`) pour identifier le knob fragile sans
+    re-courir le sweep.
+- **Re-exports `services/__init__.py`** : `validate_robustness`,
+  `RobustnessValidationDecision`, `AUDIT_ROBUSTNESS_VALIDATION`.
+- Tests `tests/unit/test_robustness_validator.py` : **15 tests**
+  dans 5 classes :
+  - `TestValidation` (4) : threshold > 1, < 0, = 0, = 1.
+  - `TestVerdict` (5) : robust passes, fragile blocks, full
+    diagnostic, threshold relax flips, dataclass immutable.
+  - `TestAuditEmission` (4) : default emits, silent option,
+    per-param heatmap in payload, Decimal stringifiés.
+  - `TestAuditConstants` (2) : stable names.
+
+### Changed
+
+- `pyproject.toml` : version `0.0.54` -> `0.0.55`.
+
+### Notes
+
+- **Doc 06 — I4 status** : passe de 🟡 "module shippé sans wiring"
+  à **🟢 surveillance active**. Critère formel "champion robuste
+  à ±20 % perturbation paramètres" reste 🟡 jusqu'à exécution
+  paper-mode runtime avec un objective_fn câblé (Sharpe,
+  walk-forward).
+- **Composition pattern production** :
+  ```python
+  from emeraude.agent.learning.robustness import compute_robustness_report
+  from emeraude.services import validate_robustness
+
+  def my_objective(params):
+      return run_walk_forward(params).sharpe
+
+  report = compute_robustness_report(
+      baseline_score=current_sharpe,
+      baseline_params=champion_params,
+      objective_fn=my_objective,
+  )
+  decision = validate_robustness(report=report)
+  if decision.is_robust:
+      lifecycle.promote(...)
+  ```
+- **Coverage `robustness_validator.py` : 100 %**.
+- **Compatibilité descendante stricte** : aucun module modifié
+  hors re-export. Tests v0.0.54 (1403) + 15 nouveaux = 1418.
+
+### Bilan global doc 10 — surveillance active 14/15
+
+* 🟢 active (14) : I1, I3, I4 **(cette iter)**, I5, I6, I7, I8,
+  I10, I11, I12, I13, I14, I15. + I9 module shippé sans fill-loop.
+* 🟡 wiring restant (1) : I2 (adversarial promotion gate).
+
 ## [0.0.54] - 2026-04-28
 
 ### Added
