@@ -18,6 +18,11 @@ Future modules (cf. CLAUDE.md) :
 * ``health``       — liveness + readiness checks for the niveau-entreprise SLA.
 """
 
+from emeraude.services.adversarial_validator import (
+    AUDIT_ADVERSARIAL_VALIDATION,
+    AdversarialValidationDecision,
+    validate_adversarial,
+)
 from emeraude.services.auto_trader import (
     AutoTrader,
     CycleReport,
@@ -83,11 +88,13 @@ from emeraude.services.robustness_validator import (
 )
 
 __all__ = [
+    "AUDIT_ADVERSARIAL_VALIDATION",
     "AUDIT_CHAMPION_PROMOTION_DECISION",
     "AUDIT_COVERAGE_VALIDATION",
     "AUDIT_DRIFT_DETECTED",
     "AUDIT_ROBUSTNESS_VALIDATION",
     "AUDIT_TAIL_RISK_BREACH",
+    "AdversarialValidationDecision",
     "AutoTrader",
     "BackupRecord",
     "BackupService",
@@ -118,6 +125,7 @@ __all__ = [
     "report_to_json",
     "report_to_markdown",
     "save_triggered",
+    "validate_adversarial",
     "validate_coverage",
     "validate_robustness",
 ]

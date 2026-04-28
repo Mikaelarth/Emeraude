@@ -6,6 +6,100 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.56] - 2026-04-28
+
+### Added
+
+- **R2 Adversarial backtest validation gate** (doc 10 R2 wiring) —
+  les primitives `apply_adversarial_fill` + `compute_realized_pnl`
+  (livrées iter #34) sont désormais consommées par un service de
+  validation qui décide si une stratégie clears le critère doc 10 I2
+  (`backtest_adversarial_gap <= 15 %`). Pattern décision-gate
+  one-shot identique à iter #50/54/55. **Closes 15/15 surveillance
+  active** sur le catalogue doc 10 (R9 fill-loop reste A1 par
+  design — nécessite le live-trading path).
+  - **Module `src/emeraude/services/adversarial_validator.py`**
+    (~280 LOC) — pur sans état :
+    - **`validate_adversarial(*, positions, params=None, max_gap,
+      min_samples=30, emit_audit=True)`** : prend un historique de
+      positions fermées (typiquement `tracker.history(limit=200)`),
+      re-simule chaque trade avec les pessimismes adversariaux
+      (slippage + fees), aggrège un `gap_fraction` cumulatif vs le
+      PnL réel, compare au seuil doc 10 I2 (default 0.15).
+    - **Pourquoi positions et pas un report pré-calculé ?** Les
+      primitives R2 opèrent par-fill (pas par-cohorte) ; le service
+      orchestre la boucle pour assurer la décomposition slippage +
+      fees correcte sur l'aller-retour.
+    - **Synthetic kline pattern** : on n'a pas la kline d'exécution
+      historique, donc `high = low = entry_price` (resp.
+      `exit_price`) — la composante worst-of-bar se réduit au prix
+      réalisé, le `slippage_pct` reste seul actif sur l'axe prix.
+      Le full re-run kline-driven viendra avec la rétention
+      historique (anti-règle A1).
+    - **3-step decision gate** :
+      1. **Sample floor** : `n_trades >= min_samples` (default 30) ;
+         sinon `REASON_BELOW_MIN_SAMPLES` (gap dominé par bruit
+         d'échantillonnage).
+      2. **Non-zero baseline** : `|actual_pnl_total| > 0` ; sinon
+         `REASON_ZERO_BASELINE` (gap relatif indéfini, surface une
+         raison distincte).
+      3. **Gap check** : `|gap_fraction| <= max_gap` -> `REASON_ROBUST`
+         sinon `REASON_FRAGILE`.
+  - **`AdversarialValidationDecision`** frozen dataclass :
+    `n_trades`, `actual_pnl`, `adversarial_pnl`, `gap_fraction`,
+    `max_gap`, `is_robust`, `reason`.
+  - **4 reason constants** publics : `REASON_BELOW_MIN_SAMPLES`,
+    `REASON_ZERO_BASELINE`, `REASON_ROBUST`, `REASON_FRAGILE`.
+    Stables pour filtres audit-log.
+  - **`AUDIT_ADVERSARIAL_VALIDATION = "ADVERSARIAL_VALIDATION"`**
+    constante publique.
+  - **`DEFAULT_MAX_GAP = 0.15`** : seuil doc 10 I2 publishable.
+- **Re-exports `services/__init__.py`** : `validate_adversarial`,
+  `AdversarialValidationDecision`, `AUDIT_ADVERSARIAL_VALIDATION`.
+- Tests `tests/unit/test_adversarial_validator.py` : **25 tests**
+  dans 6 classes :
+  - `TestValidation` (5) : `max_gap > 1`, `< 0`, `= 0`, `= 1`,
+    `min_samples < 1`.
+  - `TestBelowSampleFloor` (3) : empty, below floor, open positions
+    filtrées.
+  - `TestVerdict` (8) : winning history passes, losing blocks,
+    zero_baseline, threshold relax flips, full diagnostic,
+    immutable, custom params widen gap, short side handled.
+  - `TestAuditEmission` (5) : default emits, silent option,
+    below_min_samples payload, zero_baseline payload, Decimal
+    stringifiés.
+  - `TestAuditConstants` (3) : event name + reasons + DEFAULT_MAX_GAP.
+  - `TestEndToEndWithRealTracker` (1) : round-trip avec vrai
+    PositionTracker driving 30 trades mixed outcomes.
+
+### Changed
+
+- `pyproject.toml` : version `0.0.55` -> `0.0.56`.
+
+### Notes
+
+- **Doc 06 — I2 status** : passe de 🟡 "module shippé sans wiring"
+  à **🟢 surveillance active**. Critère formel "écart backtest
+  adversarial vs réel <= 15 %" est désormais mesurable end-to-end
+  via `validate_adversarial(positions=tracker.history())`.
+- **Surveillance active count** : **14/15 -> 15/15**. R9 fill-loop
+  temps-réel reste 🟡 par design (nécessite le live-trading path,
+  anti-règle A1 jusqu'à là).
+- **Composition pattern production** :
+  ```python
+  from emeraude.services import validate_adversarial
+
+  decision = validate_adversarial(
+      positions=tracker.history(limit=200),
+  )
+  if not decision.is_robust:
+      notify_operator(
+          f"adversarial gap {decision.gap_fraction} > "
+          f"{decision.max_gap}, strategy fragile"
+      )
+  ```
+- **Coverage `adversarial_validator.py` : 100 %**.
+
 ## [0.0.55] - 2026-04-28
 
 ### Added
