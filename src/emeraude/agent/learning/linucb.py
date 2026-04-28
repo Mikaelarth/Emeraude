@@ -283,6 +283,43 @@ class LinUCBBandit:
         self._b[arm] = [bi + reward * xi for bi, xi in zip(self._b[arm], context, strict=True)]
         self._n_updates[arm] += 1
 
+    def score(self, arm: str, context: list[Decimal]) -> Decimal:
+        """Public UCB score for ``arm`` given ``context``.
+
+        Same value the :meth:`select` routine compares internally :
+        ``theta . x + alpha * sqrt(x^T A^{-1} x)``. Surfaced as a
+        first-class method so external callers (typically the
+        :mod:`services` adapters) can read all per-arm scores
+        without re-implementing the linear algebra.
+
+        Args:
+            arm: name of the arm to score. Must be in :attr:`arms`.
+            context: feature vector of length :attr:`context_dim`.
+
+        Returns:
+            UCB score (mean + bonus). Always ``>= 0`` for the
+            default ``b = 0`` initial state.
+
+        Raises:
+            ValueError: on unknown ``arm`` or context dimension
+                mismatch.
+        """
+        if arm not in self._a_inv:
+            msg = f"unknown arm {arm!r} ; known: {self._arms}"
+            raise ValueError(msg)
+        self._validate_context(context)
+        return self._score(arm, context)
+
+    @property
+    def arms(self) -> list[str]:
+        """Read-only copy of the arm names registered with the bandit."""
+        return list(self._arms)
+
+    @property
+    def context_dim(self) -> int:
+        """Dimension of the feature vector this bandit was wired with."""
+        return self._context_dim
+
     def state(self) -> dict[str, LinUCBArmState]:
         """Snapshot of all arms' learned parameters.
 

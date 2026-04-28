@@ -6,6 +6,129 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.53] - 2026-04-28
+
+### Added
+
+- **R14 LinUCB wiring : adapter Thompson-compatible** (doc 10
+  R14 wiring) — le `LinUCBBandit` (livré iter #37) peut désormais
+  remplacer le `StrategyBandit` Thompson dans le flow Orchestrator
+  + PositionTracker via un adapter qui satisfait le **même
+  Protocol**. Aucun refactor du code de production existant.
+  - **`StrategyBanditLike` Protocol** dans
+    `agent/learning/bandit.py` : contrat duck-type minimal
+    (`update_outcome(strategy, *, won)` +
+    `sample_weights(strategies) -> dict[str, Decimal]`).
+    Implémenté par `StrategyBandit` (Thompson) et la nouvelle
+    `LinUCBStrategyAdapter`.
+  - **`Orchestrator.bandit` + `PositionTracker.bandit` types
+    relaxés** de `StrategyBandit` à `StrategyBanditLike`. Pas
+    de logic change ; backward compat strict.
+  - **`LinUCBBandit` API publique élargie** dans
+    `agent/learning/linucb.py` : nouvelles méthodes
+    `score(arm, context) -> Decimal` (UCB score public) +
+    propriétés `arms` (read-only copy) + `context_dim`. Aucun
+    breaking change.
+  - **Module `services/linucb_strategy_adapter.py`** (~230 LOC) :
+    - **`LinUCBStrategyAdapter(*, bandit, floor=0.01)`** : wraps
+      `LinUCBBandit`, satisfait `StrategyBanditLike`.
+    - **`set_context(context)`** : caller updates le context vector
+      avant chaque cycle décision. Validation dimension. Defensive
+      copy.
+    - **`sample_weights(strategies)`** : computes UCB scores per
+      arm, normalize so top arm = 1.0, others = `score / max_score`
+      (floored at `floor`). Le floor empêche le collapse de
+      l'ensemble vote (doc 04 mandate).
+    - **`update_outcome(strategy, *, won)`** : forwarde la reward
+      0/1 au LinUCB.update avec le contexte courant. No-op
+      silencieux si pas de contexte set.
+    - **Edge cases** : no context → uniform 1.0 (let regime-base
+      weights pass through). All scores ≤ 0 → uniform 1.0
+      (cold-start safety). Unknown arm → propagate ValueError.
+  - **`build_regime_context(regime) -> list[Decimal]`** : helper
+    qui encode `Regime` en one-hot 3-D `[BULL, NEUTRAL, BEAR]`.
+    Compatible avec `LinUCBBandit(context_dim=3)`. La R14 vision
+    (volatility, hour, correlation) reste à enrichir dans une
+    iter ultérieure (anti-règle A1 : on commence simple).
+- **Re-exports `services/__init__.py`** : `LinUCBStrategyAdapter`,
+  `build_regime_context`.
+- Tests `tests/unit/test_linucb_strategy_adapter.py` : **30 tests**
+  dans 8 classes :
+  - `TestBuildRegimeContext` (4) : BULL/NEUTRAL/BEAR one-hot,
+    length=3.
+  - `TestAdapterConstruction` (6) : default floor doc 10, default
+    construction, validations floor (>1, <0, =0, =1).
+  - `TestSetContext` (4) : set/read, dimension mismatch, defensive
+    copy in + out.
+  - `TestSampleWeights` (6) : no context uniform, cold start
+    uniform, after reward winner=1.0, floor protects collapse,
+    unknown arm raises, max_score zero uniform fallback.
+  - `TestUpdateOutcome` (3) : no-context noop, won=True →
+    reward 1, won=False → reward 0.
+  - `TestProtocolCompliance` (1) : adapter satisfies
+    `StrategyBanditLike`.
+  - `TestContextSpecialization` (1) : doc 10 R14 narrative —
+    arm specializes to its training context (BULL-trained "a"
+    outweighs in BULL ctx, BEAR-trained "b" outweighs in BEAR
+    ctx).
+  - `TestLinUCBPublicAPI` (5) : score returns Decimal, score
+    unknown arm raises, score dim mismatch raises, arms returns
+    copy, context_dim property.
+
+### Changed
+
+- `src/emeraude/agent/learning/linucb.py` : ajout `score()` +
+  `arms` + `context_dim` méthodes/properties publiques.
+- `src/emeraude/agent/learning/bandit.py` : ajout
+  `StrategyBanditLike` Protocol.
+- `src/emeraude/services/orchestrator.py` : type `bandit:
+  StrategyBandit | None` -> `bandit: StrategyBanditLike | None`.
+- `src/emeraude/agent/execution/position_tracker.py` : type
+  `bandit: StrategyBandit | None` -> `bandit: StrategyBanditLike | None`.
+- `pyproject.toml` : version `0.0.52` -> `0.0.53`.
+
+### Notes
+
+- **Compatibilité descendante stricte** : la signature des deux
+  caller-classes (Orchestrator + PositionTracker) est élargie
+  (Protocol au lieu d'une classe concrète) — `StrategyBandit`
+  satisfait toujours le Protocol. Les 1354 tests v0.0.52
+  restent verts sans modification.
+- **Doc 06 — I14 status** : passe de 🟡 "module shippé sans
+  wiring" à **🟡 surveillance opt-in active**. Critère formel
+  "LinUCB choisit la stratégie spécialisée du régime" devient
+  mesurable dès que paper-mode runtime accumule de la data.
+  Le test `TestContextSpecialization` valide la propriété en
+  unit-test synthétique.
+- **Coverage globale 99.79 %** ; `linucb_strategy_adapter.py`
+  100 %, `linucb.py` 100 %.
+- **Pattern composition production** :
+  ```python
+  from emeraude.agent.learning.linucb import LinUCBBandit
+  from emeraude.agent.perception.regime import detect_regime
+  from emeraude.services import (
+      LinUCBStrategyAdapter,
+      build_regime_context,
+      Orchestrator,
+  )
+
+  bandit = LinUCBBandit(arms=[
+      "trend_follower", "mean_reversion", "breakout_hunter",
+  ], context_dim=3)
+  adapter = LinUCBStrategyAdapter(bandit=bandit)
+  orch = Orchestrator(bandit=adapter)
+
+  # Each cycle, refresh context BEFORE orchestrator.make_decision :
+  while True:
+      regime = detect_regime(klines)
+      adapter.set_context(build_regime_context(regime))
+      decision = orch.make_decision(...)
+  ```
+- **A1 deferral résiduel** : feature vector reste 3-D one-hot
+  régime. Enrichissement (volatility, hour UTC, mean correlation)
+  candidat iter #54+ une fois mesuré que le contextual bandit
+  apporte de la traction sur la version simple.
+
 ## [0.0.52] - 2026-04-28
 
 ### Added

@@ -45,6 +45,10 @@ from emeraude.services.gate_factories import (
     make_correlation_gate,
     make_microstructure_gate,
 )
+from emeraude.services.linucb_strategy_adapter import (
+    LinUCBStrategyAdapter,
+    build_regime_context,
+)
 from emeraude.services.monitor_checkpoint import (
     MonitorId,
     clear_triggered,
@@ -79,12 +83,14 @@ __all__ = [
     "CycleReport",
     "DriftCheckResult",
     "DriftMonitor",
+    "LinUCBStrategyAdapter",
     "MonitorId",
     "Orchestrator",
     "PromotionDecision",
     "RiskCheckResult",
     "RiskMonitor",
     "TradeDirection",
+    "build_regime_context",
     "clear_triggered",
     "compute_calibration_from_positions",
     "evaluate_promotion",

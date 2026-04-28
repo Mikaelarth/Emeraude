@@ -46,11 +46,44 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Final
+from typing import Final, Protocol
 
 from emeraude.infra import database
 
 _RNG: Final[random.SystemRandom] = random.SystemRandom()
+
+
+# ─── Protocol ───────────────────────────────────────────────────────────────
+
+
+class StrategyBanditLike(Protocol):
+    """Minimal contract every strategy bandit must satisfy.
+
+    Both :class:`StrategyBandit` (Thompson sampling, doc 03 pilier #2)
+    and :class:`emeraude.services.linucb_strategy_adapter.LinUCBStrategyAdapter`
+    (R14 contextual bandit, iter #53) implement this Protocol so the
+    :class:`Orchestrator` can be wired with either without a code
+    change.
+
+    The two methods are the canonical lifecycle :
+
+    * :meth:`sample_weights` — called once per decision cycle to
+      produce per-strategy multipliers in ``[0, 1]`` (or higher
+      for non-Thompson bandits ; the orchestrator is multiplicative
+      so a relative ranking is what matters).
+    * :meth:`update_outcome` — called by
+      :class:`PositionTracker._close_locked` after each trade closes.
+
+    Both methods take and return Decimal values.
+    """
+
+    def update_outcome(self, strategy: str, *, won: bool) -> None:
+        """Record one trade outcome on the named strategy."""
+        ...
+
+    def sample_weights(self, strategies: list[str]) -> dict[str, Decimal]:
+        """Return per-strategy weights for the next ensemble vote."""
+        ...
 
 
 # ─── BetaCounts ─────────────────────────────────────────────────────────────

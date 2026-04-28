@@ -43,7 +43,7 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import TYPE_CHECKING, Final
 
-from emeraude.agent.learning.bandit import StrategyBandit
+from emeraude.agent.learning.bandit import StrategyBandit, StrategyBanditLike
 from emeraude.agent.learning.regime_memory import RegimeMemory
 from emeraude.agent.perception.regime import Regime
 from emeraude.agent.reasoning.risk_manager import Side
@@ -183,20 +183,22 @@ class PositionTracker:
         self,
         *,
         regime_memory: RegimeMemory | None = None,
-        bandit: StrategyBandit | None = None,
+        bandit: StrategyBanditLike | None = None,
     ) -> None:
         """Wire the learning components.
 
         Args:
             regime_memory: per-(strategy, regime) memory updated on
                 close. Defaults to a fresh :class:`RegimeMemory`.
-            bandit: Thompson sampler updated on close. Defaults to a
-                fresh :class:`StrategyBandit`.
+            bandit: any :class:`StrategyBanditLike` implementation
+                — Thompson :class:`StrategyBandit` or the iter #53
+                LinUCB adapter. Defaults to a fresh
+                :class:`StrategyBandit`.
         """
         self._regime_memory: RegimeMemory = (
             regime_memory if regime_memory is not None else RegimeMemory()
         )
-        self._bandit: StrategyBandit = bandit if bandit is not None else StrategyBandit()
+        self._bandit: StrategyBanditLike = bandit if bandit is not None else StrategyBandit()
 
     # ─── Open ───────────────────────────────────────────────────────────────
 

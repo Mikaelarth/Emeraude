@@ -113,7 +113,7 @@ from emeraude.infra import audit
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
-    from emeraude.agent.learning.bandit import StrategyBandit
+    from emeraude.agent.learning.bandit import StrategyBanditLike
     from emeraude.agent.perception.correlation import CorrelationReport
     from emeraude.agent.perception.microstructure import MicrostructureReport
     from emeraude.agent.perception.tradability import TradabilityReport
@@ -271,7 +271,7 @@ class Orchestrator:
         *,
         strategies: list[Strategy] | None = None,
         regime_memory: RegimeMemory | None = None,
-        bandit: StrategyBandit | None = None,
+        bandit: StrategyBanditLike | None = None,
         meta_gate: Callable[[list[Kline]], TradabilityReport] | None = None,
         correlation_gate: Callable[[], CorrelationReport] | None = None,
         microstructure_gate: Callable[[TradeDirection], MicrostructureReport] | None = None,
@@ -372,7 +372,7 @@ class Orchestrator:
         self._regime_memory: RegimeMemory = (
             regime_memory if regime_memory is not None else RegimeMemory()
         )
-        self._bandit: StrategyBandit | None = bandit
+        self._bandit: StrategyBanditLike | None = bandit
         self._meta_gate: Callable[[list[Kline]], TradabilityReport] | None = meta_gate
         self._correlation_gate: Callable[[], CorrelationReport] | None = correlation_gate
         self._microstructure_gate: Callable[[TradeDirection], MicrostructureReport] | None = (
