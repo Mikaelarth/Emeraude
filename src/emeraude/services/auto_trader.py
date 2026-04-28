@@ -14,9 +14,14 @@ the bot performs every cycle of its life :
    recent r_realized stream and escalates the breaker to ``WARNING``
    on detection. Sticky semantics : one audit event per drift
    regime, no spam.
-5. **Decide** — call :meth:`Orchestrator.make_decision` with the
+5. **Risk monitor** *(optional, doc 10 R5)* — when injected,
+   :meth:`RiskMonitor.check` evaluates the I5 criterion (max DD
+   <= multiplier * |CVaR_99|) over the recent r_realized stream
+   and escalates the breaker to ``WARNING`` on breach. Sticky
+   semantics like the drift monitor.
+6. **Decide** — call :meth:`Orchestrator.make_decision` with the
    current capital + klines.
-6. **Open** — if the decision says ``should_trade`` *and* the tick did
+7. **Open** — if the decision says ``should_trade`` *and* the tick did
    not just close a position this cycle, call
    :meth:`PositionTracker.open_position` with the levels from the
    decision and the dominant strategy. The "did not just close"
@@ -68,6 +73,7 @@ if TYPE_CHECKING:
 
     from emeraude.infra.market_data import Kline
     from emeraude.services.drift_monitor import DriftCheckResult, DriftMonitor
+    from emeraude.services.risk_monitor import RiskCheckResult, RiskMonitor
 
 
 _DEFAULT_SYMBOL: Final[str] = "BTCUSDT"
@@ -104,6 +110,12 @@ class CycleReport:
             :class:`DriftCheckResult` with the per-cycle
             ``triggered`` / ``emitted_audit_event`` /
             ``breaker_escalated`` flags.
+        risk_check: result of the doc 10 R5 tail-risk surveillance
+            check. ``None`` when no monitor is wired (default
+            backward-compat). When set, carries
+            :class:`RiskCheckResult` with ``triggered`` /
+            ``breach_this_call`` / ``max_drawdown`` / ``cvar_99``
+            / ``threshold`` and the side-effect flags.
         decision: full :class:`CycleDecision` from the orchestrator.
         tick_outcome: position closed by the pre-decision tick (stop
             or target hit), or ``None``.
@@ -117,6 +129,7 @@ class CycleReport:
     current_price: Decimal
     breaker_check: BreakerCheckResult | None
     drift_check: DriftCheckResult | None
+    risk_check: RiskCheckResult | None
     decision: CycleDecision
     tick_outcome: Position | None
     opened_position: Position | None
@@ -148,6 +161,7 @@ class AutoTrader:
         tracker: PositionTracker | None = None,
         breaker_monitor: BreakerMonitor | None = None,
         drift_monitor: DriftMonitor | None = None,
+        risk_monitor: RiskMonitor | None = None,
         fetch_klines: Callable[[str, str, int], list[Kline]] | None = None,
         fetch_current_price: Callable[[str], Decimal] | None = None,
     ) -> None:
@@ -185,6 +199,15 @@ class AutoTrader:
                 the circuit breaker to ``WARNING`` (orchestrator halves
                 sizing automatically) ; the operator manually resets
                 via :func:`circuit_breaker.reset` after inspection.
+            risk_monitor: optional doc 10 R5 tail-risk surveillance.
+                When ``None`` (default), no breach detection runs —
+                strict backward-compat with pre-iter-#47 callers.
+                When injected (typically as
+                ``RiskMonitor(tracker=tracker)``), called after the
+                drift monitor and before the orchestrator decision.
+                Evaluates the I5 criterion ``max DD <= 1.2 *
+                |CVaR_99|`` and escalates the breaker to ``WARNING``
+                on breach. Sticky semantics like the drift monitor.
             fetch_klines: HTTP fetcher for klines, signature
                 ``(symbol, interval, limit) -> list[Kline]``. Defaults
                 to :func:`market_data.get_klines`.
@@ -214,6 +237,11 @@ class AutoTrader:
         # behavior change. When wired the cycle calls .check() right
         # after the breaker monitor and before the orchestrator.
         self._drift_monitor: DriftMonitor | None = drift_monitor
+        # Optional (default None) for backward compat with pre-iter-#47
+        # callers. Fires after the drift monitor on the same r_realized
+        # stream — a breach is "the model under-predicted tail risk",
+        # complementary to drift's "the distribution shifted".
+        self._risk_monitor: RiskMonitor | None = risk_monitor
         self._fetch_klines: Callable[[str, str, int], list[Kline]] = (
             fetch_klines if fetch_klines is not None else market_data.get_klines
         )
@@ -270,11 +298,21 @@ class AutoTrader:
         if self._drift_monitor is not None:
             drift_check = self._drift_monitor.check()
 
-        # Step 4 : decision.
+        # Step 4 : doc 10 R5 tail-risk surveillance (optional).
+        # Complementary to drift : drift looks for distribution
+        # *shift*, risk_monitor checks whether the realized DD
+        # exceeds the multiplier * |CVaR_99| line. Independent
+        # sticky state so an operator can reset one without losing
+        # the other.
+        risk_check: RiskCheckResult | None = None
+        if self._risk_monitor is not None:
+            risk_check = self._risk_monitor.check()
+
+        # Step 5 : decision.
         capital = self._capital_provider()
         decision = self._orchestrator.make_decision(capital=capital, klines=klines)
 
-        # Step 5 : open if all conditions hold.
+        # Step 6 : open if all conditions hold.
         opened = self._maybe_open(
             decision=decision,
             tick_outcome=tick_outcome,
@@ -288,6 +326,7 @@ class AutoTrader:
             current_price=current_price,
             breaker_check=breaker_check,
             drift_check=drift_check,
+            risk_check=risk_check,
             decision=decision,
             tick_outcome=tick_outcome,
             opened_position=opened,
@@ -371,6 +410,7 @@ def _audit_payload(report: CycleReport) -> dict[str, str | int | bool | None]:
     decision = report.decision
     breaker = report.breaker_check
     drift = report.drift_check
+    risk = report.risk_check
     payload: dict[str, str | int | bool | None] = {
         "symbol": report.symbol,
         "interval": report.interval,
@@ -388,6 +428,14 @@ def _audit_payload(report: CycleReport) -> dict[str, str | int | bool | None]:
         "drift_triggered": (drift.triggered if drift is not None else None),
         "drift_emitted_event": (drift.emitted_audit_event if drift is not None else None),
         "drift_breaker_escalated": (drift.breaker_escalated if drift is not None else None),
+        # Doc 10 R5 surveillance : surface tail-risk breach summary on
+        # every cycle. Same rationale as the drift fields — the dedicated
+        # TAIL_RISK_BREACH row fires once, so operators rely on these
+        # per-cycle flags for trending / dashboards.
+        "risk_triggered": (risk.triggered if risk is not None else None),
+        "risk_breach_this_call": (risk.breach_this_call if risk is not None else None),
+        "risk_emitted_event": (risk.emitted_audit_event if risk is not None else None),
+        "risk_breaker_escalated": (risk.breaker_escalated if risk is not None else None),
         "should_trade": "true" if decision.should_trade else "false",
         "skip_reason": decision.skip_reason,
         "regime": decision.regime.value if decision.regime is not None else None,

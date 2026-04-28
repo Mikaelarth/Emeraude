@@ -6,6 +6,88 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.47] - 2026-04-28
+
+### Added
+
+- **AutoTrader wires RiskMonitor** (doc 10 R5 active surveillance)
+  — la surveillance tail-risk livrée en iter #46 est désormais
+  branchée à la boucle de cycle production. Le bot tourne
+  maintenant avec **détection active de breach I5**
+  (`max DD > 1.2 * |CVaR_99|`).
+  - **`AutoTrader.__init__(..., risk_monitor=None, ...)`** :
+    nouveau paramètre keyword-only optionnel. `None` (défaut) =
+    pas de surveillance, comportement strictement identique au
+    pre-iter-#47. Quand injecté (typiquement
+    `RiskMonitor(tracker=tracker)`), appelé après le drift monitor
+    et avant la décision orchestrateur.
+  - **`CycleReport.risk_check: RiskCheckResult | None`** : nouveau
+    champ. `None` quand pas de monitor wired ; sinon porte le
+    verdict du cycle (`triggered`, `breach_this_call`,
+    `max_drawdown`, `cvar_99`, `threshold`,
+    `emitted_audit_event`, `breaker_escalated`).
+  - **Audit payload `AUTO_TRADER_CYCLE` étendu** : 4 nouvelles
+    clés `risk_triggered`, `risk_breach_this_call`,
+    `risk_emitted_event`, `risk_breaker_escalated`. Toutes `None`
+    quand pas de monitor (distinction "pas câblé" vs "câblé et
+    clean"). Permet de spotter le premier breach en triant les
+    rows AUTO_TRADER_CYCLE seules.
+  - **Pipeline cycle étendu de 6 à 7 étapes** (docstring mis à
+    jour) : Fetch → Tick → BreakerMonitor → DriftMonitor →
+    **RiskMonitor (nouveau, optionnel)** → Decide → Open.
+- Tests `tests/unit/test_auto_trader.py` : **+6 tests** (28 → 34)
+  dans nouvelle classe `TestRiskMonitorWiring` :
+  - `test_default_no_risk_monitor_keeps_legacy_behavior`
+  - `test_injected_clean_history_runs_check_no_breach`
+  - `test_breach_detection_escalates_breaker_to_warning` (25
+    winners + 11 small losers seedés -> breach -> WARNING)
+  - `test_risk_audit_payload_in_cycle_event` (4 clés risk_*
+    présentes et non-None)
+  - `test_no_risk_monitor_yields_null_audit_fields` (4 clés
+    risk_* présentes mais None)
+  - `test_drift_and_risk_monitors_wire_together` (composability)
+- `_make_trader` test helper accepte `risk_monitor` keyword arg.
+
+### Changed
+
+- `src/emeraude/services/auto_trader.py` : import
+  `RiskCheckResult, RiskMonitor` (TYPE_CHECKING-only),
+  étend `__init__` + `CycleReport` + `run_cycle` + `_audit_payload`.
+- `pyproject.toml` : version `0.0.46` -> `0.0.47`.
+
+### Notes
+
+- **Compatibilité descendante stricte** : `risk_monitor` est
+  optionnel (défaut `None`) ; les 28 tests AutoTrader v0.0.46
+  restent verts sans modification (les nouveaux 4 champs payload
+  sont None pour eux).
+- **Doc 06 — I5 status** : passe de 🟢 "prêt à mesurer" (iter #46)
+  à **🟢 surveillance active**. Tous les A1-deferrals R5 sont
+  levés ; le critère formel "Max DD ≤ 1.2 × CVaR_99" reste
+  🟡 jusqu'à exécution paper-mode runtime.
+- **Coverage globale 99.83 %** stable. `auto_trader.py` 100 %.
+- **Pattern composition production** :
+  ```python
+  from emeraude.agent.execution.position_tracker import PositionTracker
+  from emeraude.services import (
+      AutoTrader,
+      DriftMonitor,
+      RiskMonitor,
+  )
+
+  tracker = PositionTracker()
+  drift = DriftMonitor(tracker=tracker)
+  risk = RiskMonitor(tracker=tracker)
+  trader = AutoTrader(tracker=tracker, drift_monitor=drift, risk_monitor=risk)
+
+  while True:
+      report = trader.run_cycle()
+      if report.risk_check and report.risk_check.triggered:
+          notify_operator("tail risk breach")  # WARNING already set
+      if report.drift_check and report.drift_check.triggered:
+          notify_operator("regime drift")
+  ```
+
 ## [0.0.46] - 2026-04-28
 
 ### Added

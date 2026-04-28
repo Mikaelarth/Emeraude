@@ -26,6 +26,7 @@ from emeraude.services.auto_trader import (
 )
 from emeraude.services.drift_monitor import DriftMonitor
 from emeraude.services.orchestrator import Orchestrator
+from emeraude.services.risk_monitor import RiskMonitor
 
 # ─── Fixtures + helpers ──────────────────────────────────────────────────────
 
@@ -85,6 +86,7 @@ def _make_trader(
     orchestrator: Orchestrator | None = None,
     tracker: PositionTracker | None = None,
     drift_monitor: DriftMonitor | None = None,
+    risk_monitor: RiskMonitor | None = None,
 ) -> AutoTrader:
     if klines is None:
         klines = _bull_klines()
@@ -116,6 +118,7 @@ def _make_trader(
         orchestrator=orchestrator,
         tracker=tracker if tracker is not None else PositionTracker(),
         drift_monitor=drift_monitor,
+        risk_monitor=risk_monitor,
         fetch_klines=fake_fetch_klines,
         fetch_current_price=fake_fetch_price,
     )
@@ -666,3 +669,134 @@ class TestDriftMonitorWiring:
         assert payload["drift_triggered"] is None
         assert payload["drift_emitted_event"] is None
         assert payload["drift_breaker_escalated"] is None
+
+
+# ─── Risk monitor wiring (doc 10 R5, iter #47) ──────────────────────────────
+
+
+@pytest.mark.unit
+class TestRiskMonitorWiring:
+    def test_default_no_risk_monitor_keeps_legacy_behavior(self, fresh_db: Path) -> None:
+        # Backward compat : without injection the field is None.
+        at = _make_trader()
+        report = at.run_cycle(now=1_700_000_000)
+        assert report.risk_check is None
+
+    def test_injected_clean_history_runs_check_no_breach(self, fresh_db: Path) -> None:
+        # Wire RiskMonitor against fresh tracker (no history) :
+        # check() runs and returns triggered=False, n_samples=0.
+        tracker = PositionTracker()
+        monitor = RiskMonitor(tracker=tracker)
+        at = _make_trader(tracker=tracker, risk_monitor=monitor)
+        report = at.run_cycle(now=1_700_000_000)
+        assert report.risk_check is not None
+        assert report.risk_check.triggered is False
+        assert report.risk_check.breach_this_call is False
+        assert report.risk_check.n_samples == 0
+        assert report.risk_check.emitted_audit_event is False
+        assert report.risk_check.breaker_escalated is False
+
+    def test_breach_detection_escalates_breaker_to_warning(self, fresh_db: Path) -> None:
+        # Seed tracker with 25 winners + 11 small losers : sustained
+        # drawdown >> 1.2 * |CVaR_99| -> breach -> WARNING.
+        circuit_breaker.reset(reason="test")
+        tracker = PositionTracker()
+        for i in range(25):
+            tracker.open_position(
+                strategy="trend_follower",
+                regime=Regime.BULL,
+                side=Side.LONG,
+                entry_price=Decimal("100"),
+                stop=Decimal("98"),
+                target=Decimal("104"),
+                quantity=Decimal("0.1"),
+                risk_per_unit=Decimal("2"),
+                opened_at=i * 10,
+            )
+            tracker.close_position(
+                exit_price=Decimal("104"),
+                exit_reason=ExitReason.TARGET_HIT,
+                closed_at=i * 10 + 5,
+            )
+        for i in range(11):
+            tracker.open_position(
+                strategy="trend_follower",
+                regime=Regime.BULL,
+                side=Side.LONG,
+                entry_price=Decimal("100"),
+                stop=Decimal("98"),
+                target=Decimal("104"),
+                quantity=Decimal("0.1"),
+                risk_per_unit=Decimal("2"),
+                opened_at=(25 + i) * 10,
+            )
+            tracker.close_position(
+                exit_price=Decimal("98"),
+                exit_reason=ExitReason.STOP_HIT,
+                closed_at=(25 + i) * 10 + 5,
+            )
+        circuit_breaker.reset(reason="post_seed")
+
+        monitor = RiskMonitor(tracker=tracker, min_samples=30)
+        at = _make_trader(tracker=tracker, risk_monitor=monitor)
+        report = at.run_cycle(now=1_700_000_000)
+
+        assert report.risk_check is not None
+        assert report.risk_check.triggered is True
+        assert report.risk_check.emitted_audit_event is True
+        assert report.risk_check.breaker_escalated is True
+        assert circuit_breaker.get_state() == CircuitBreakerState.WARNING
+
+    def test_risk_audit_payload_in_cycle_event(self, fresh_db: Path) -> None:
+        # Verify the AUTO_TRADER_CYCLE audit payload carries the
+        # 4 risk_* fields (so dashboards can sort on them).
+        circuit_breaker.reset(reason="test")
+        tracker = PositionTracker()
+        monitor = RiskMonitor(tracker=tracker)
+        at = _make_trader(tracker=tracker, risk_monitor=monitor)
+        at.run_cycle(now=1_700_000_000)
+
+        assert audit.flush_default_logger(timeout=2.0)
+        events = audit.query_events(event_type="AUTO_TRADER_CYCLE")
+        assert len(events) >= 1
+        payload = events[0]["payload"]
+        assert "risk_triggered" in payload
+        assert "risk_breach_this_call" in payload
+        assert "risk_emitted_event" in payload
+        assert "risk_breaker_escalated" in payload
+        # Clean cycle : all four False (not None — monitor IS wired).
+        assert payload["risk_triggered"] is False
+        assert payload["risk_breach_this_call"] is False
+        assert payload["risk_emitted_event"] is False
+        assert payload["risk_breaker_escalated"] is False
+
+    def test_no_risk_monitor_yields_null_audit_fields(self, fresh_db: Path) -> None:
+        # Without monitor : 4 risk_* fields are None (distinguish
+        # "not wired" from "wired and clean").
+        circuit_breaker.reset(reason="test")
+        at = _make_trader()
+        at.run_cycle(now=1_700_000_000)
+
+        assert audit.flush_default_logger(timeout=2.0)
+        events = audit.query_events(event_type="AUTO_TRADER_CYCLE")
+        payload = events[0]["payload"]
+        assert payload["risk_triggered"] is None
+        assert payload["risk_breach_this_call"] is None
+        assert payload["risk_emitted_event"] is None
+        assert payload["risk_breaker_escalated"] is None
+
+    def test_drift_and_risk_monitors_wire_together(self, fresh_db: Path) -> None:
+        # Both monitors injected ; both surface in CycleReport.
+        tracker = PositionTracker()
+        drift = DriftMonitor(tracker=tracker)
+        risk = RiskMonitor(tracker=tracker)
+        at = _make_trader(
+            tracker=tracker,
+            drift_monitor=drift,
+            risk_monitor=risk,
+        )
+        report = at.run_cycle(now=1_700_000_000)
+        assert report.drift_check is not None
+        assert report.risk_check is not None
+        assert report.drift_check.triggered is False
+        assert report.risk_check.triggered is False
