@@ -6,6 +6,91 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.54] - 2026-04-28
+
+### Added
+
+- **R15 Conformal coverage validator** (doc 10 R15 wiring) — les
+  primitives `compute_residuals` + `compute_quantile` +
+  `compute_coverage` (livrées iter #33) sont désormais consommées
+  par un service de validation qui décide si l'historique de
+  trades clears le critère doc 10 I15 (`empirical coverage` dans
+  `tolerance` du `1 - alpha` target). Pattern décision-gate
+  one-shot identique à iter #50 (PSR/DSR).
+  - **Module `src/emeraude/services/coverage_validator.py`**
+    (~210 LOC) — pur sans état :
+    - **`validate_coverage(*, positions, alpha, tolerance,
+      min_samples, prediction_target, emit_audit=True)`** : pull
+      `(prediction, outcome)` pairs depuis l'historique
+      (`prediction = confidence * prediction_target`,
+      `outcome = r_realized`), compute residuals + quantile +
+      empirical coverage via les primitives `learning/conformal`,
+      compare gap vs tolerance.
+    - **Sample floor** : `min_samples >= 30` par défaut (matche
+      drift / risk / champion_promotion). En dessous, reason =
+      `"below_min_samples"`, `coverage_valid=False`.
+    - **`CoverageValidationDecision`** frozen dataclass :
+      `n_predictions`, `target_coverage`, `empirical_coverage`,
+      `quantile`, `tolerance`, `coverage_valid`, `reason`.
+    - **3 reason constants** publics :
+      `REASON_BELOW_MIN_SAMPLES`, `REASON_COVERAGE_DRIFT`,
+      `REASON_VALID`. Stables pour filtres audit-log.
+  - **`AUDIT_COVERAGE_VALIDATION = "COVERAGE_VALIDATION"`**
+    constante publique pour `audit.query_events`.
+  - **`DEFAULT_PREDICTION_TARGET = Decimal("2")`** — doc 04 R/R
+    floor (orchestrator force R = 2 par construction). Le
+    `prediction_target` est configurable pour évolutions futures.
+  - **Pattern composition production** :
+    ```python
+    from emeraude.services import validate_coverage
+    decision = validate_coverage(positions=tracker.history(limit=200))
+    if not decision.coverage_valid:
+        notify_operator(f"coverage drift: {decision.empirical_coverage}")
+    ```
+- **Re-exports `services/__init__.py`** : `validate_coverage`,
+  `CoverageValidationDecision`, `AUDIT_COVERAGE_VALIDATION`.
+- Tests `tests/unit/test_coverage_validator.py` : **19 tests**
+  dans 6 classes :
+  - `TestValidation` (2) : min_samples < 1, default target = 2.
+  - `TestBelowSampleFloor` (4) : empty, below floor, legacy rows
+    filtered, open positions filtered.
+  - `TestCoverageVerdict` (6) : well-calibrated overcoverage,
+    loose tolerance passes, dataclass immutable, full diagnostic,
+    alpha shifts target, custom prediction_target shifts quantile.
+  - `TestAuditEmission` (4) : default emits, emit_audit=False
+    silent, below_min_samples emits, Decimal stringifiés.
+  - `TestAuditConstant` (2) : nom + 3 reason constants stables.
+  - `TestEndToEndWithRealTracker` (1) : 50 trades via vrai
+    `PositionTracker` -> verdict cohérent.
+
+### Changed
+
+- `pyproject.toml` : version `0.0.53` -> `0.0.54`.
+
+### Notes
+
+- **Doc 06 — I15 status** : passe de 🟡 "module shippé sans
+  caller production" à **🟢 surveillance active**. Critère formel
+  "intervalles conformes couvrent ≥ 90 % des observations" reste
+  🟡 jusqu'à exécution paper-mode runtime.
+- **A1-deferral résiduel** : la prédiction utilisée est
+  `confidence * 2` (R/R floor doc 04). Le scoring orchestrator
+  pourrait à terme exposer un predicted-R par stratégie pour une
+  prédiction plus riche — candidat iter ultérieure.
+- **Coverage `coverage_validator.py` : 100 %**.
+- **Compatibilité descendante stricte** : aucun module modifié
+  hors re-export. Tests v0.0.53 (1384) + 19 nouveaux = 1403.
+
+### Bilan global doc 10 — surveillance active 13/15
+
+Avec cette iter, le doc 06 dénombre **13/15 critères** I-criteria
+en surveillance active :
+
+* 🟢 active (13) : I1, I3, I5, I6, I7, I8, I10, I11, I12, I13,
+  I14, **I15 (cette iter)**, I9 module shippé.
+* 🟡 wiring restant (2) : I2 (adversarial promotion gate), I4
+  (robustness wiring), avec I9 fill-loop temps-réel encore A1.
+
 ## [0.0.53] - 2026-04-28
 
 ### Added

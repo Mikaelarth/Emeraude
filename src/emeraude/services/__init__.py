@@ -36,6 +36,11 @@ from emeraude.services.champion_promotion import (
     PromotionDecision,
     evaluate_promotion,
 )
+from emeraude.services.coverage_validator import (
+    AUDIT_COVERAGE_VALIDATION,
+    CoverageValidationDecision,
+    validate_coverage,
+)
 from emeraude.services.drift_monitor import (
     AUDIT_DRIFT_DETECTED,
     DriftCheckResult,
@@ -74,11 +79,13 @@ from emeraude.services.risk_monitor import (
 
 __all__ = [
     "AUDIT_CHAMPION_PROMOTION_DECISION",
+    "AUDIT_COVERAGE_VALIDATION",
     "AUDIT_DRIFT_DETECTED",
     "AUDIT_TAIL_RISK_BREACH",
     "AutoTrader",
     "BackupRecord",
     "BackupService",
+    "CoverageValidationDecision",
     "CycleDecision",
     "CycleReport",
     "DriftCheckResult",
@@ -104,4 +111,5 @@ __all__ = [
     "report_to_json",
     "report_to_markdown",
     "save_triggered",
+    "validate_coverage",
 ]
