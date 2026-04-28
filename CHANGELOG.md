@@ -6,6 +6,89 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.44] - 2026-04-28
+
+### Added
+
+- **R3 Drift surveillance service** (doc 10 R3 wiring) — la
+  paire de détecteurs `PageHinkleyDetector` + `AdwinDetector`
+  livrée en iter #29 est désormais consommée par un service
+  périodique qui agit sur détection.
+  - **Module `src/emeraude/services/drift_monitor.py`** (~190
+    LOC) — service stateful avec sticky semantics :
+    - **`DriftMonitor(tracker, *, page_hinkley, adwin,
+      lookback)`** : scanne `tracker.history(limit=lookback)`,
+      reverse en chronologique, feed les 2 détecteurs.
+    - **`check() -> DriftCheckResult`** : exécute l'analyse,
+      émet **un seul** événement audit `DRIFT_DETECTED` à la
+      première détection (jamais de doublon), et escalade le
+      breaker à `WARNING` (raison `"auto:drift_detected"`).
+    - **Sticky `triggered` flag** : sous régime de drift soutenu,
+      les cycles suivants reportent `triggered=True` sans
+      re-émettre l'audit ni re-escalader le breaker. Évite le
+      spam audit-log.
+    - **`reset()`** : opérateur clear le flag + reset les
+      détecteurs ; le breaker reste séparément géré (manual
+      `circuit_breaker.reset` requis).
+  - **`DriftCheckResult` frozen dataclass** : `triggered`,
+    `page_hinkley_fired`, `adwin_fired`, `n_samples`,
+    `emitted_audit_event`, `breaker_escalated` — toutes les
+    info nécessaires à l'audit-replay et aux dashboards.
+  - **`AUDIT_DRIFT_DETECTED = "DRIFT_DETECTED"`** constante
+    publique pour `audit.query_events(event_type=...)`.
+  - **Side-effects intentionnels** : escalade vers `WARNING`
+    (pas `TRIGGERED`) — drift = incertain, pas catastrophique.
+    L'orchestrator halve automatiquement le sizing via
+    `warning_size_factor`. L'opérateur garde la main pour reset.
+  - **Protocol `_HistorySource`** : minimal contract du tracker
+    (`history(*, limit) -> list[Position]`) pour découpler le
+    service de la persistance concrète et permettre des stubs
+    en test sans cassure mypy strict.
+- **Re-exports `services/__init__.py`** : `DriftMonitor`,
+  `DriftCheckResult`, `AUDIT_DRIFT_DETECTED`.
+- Tests `tests/unit/test_drift_monitor.py` : **16 tests** dans
+  5 classes :
+  - `TestConstruction` (5) : default lookback, custom accepté,
+    zero/négatif rejetés, détecteurs custom injectés.
+  - `TestNoDrift` (4) : empty history, constant winning, open
+    positions filtrés, zero side-effect sur historique propre.
+  - `TestDriftDetection` (5) : sustained drop fires Page-Hinkley,
+    audit event émis avec diagnostic complet, breaker escaladé
+    à WARNING, sticky no-re-emit, reset clears state.
+  - `TestEndToEndWithRealTracker` (1) : 30 winners + 10 losers
+    via vrai `PositionTracker` -> drift détecté.
+  - `TestAuditConstant` (1) : nom stable.
+
+### Changed
+
+- `pyproject.toml` : version `0.0.43` -> `0.0.44`.
+
+### Notes
+
+- **Doc 06 — I3 status** : passe de 🟡 "module shippé sans
+  surveillance" à **🟢 prêt à mesurer** dès qu'une fenêtre de
+  trades en paper-mode contient un changement de régime
+  injecté. Critère formel "drift détecté ≤ 72h sur injection
+  synthétique" reste 🟡 jusqu'à exécution d'un test fluxes
+  synthétiques (anti-règle A1 stricte).
+- **Compatibilité descendante stricte** : aucun module existant
+  modifié au-delà du re-export `__init__.py`. AutoTrader
+  inchangé ; le caller final compose
+  `DriftMonitor(tracker=auto_trader._tracker)` quand il veut
+  activer la surveillance. Wiring optionnel dans `AutoTrader`
+  candidate iter #45 si désiré (alongside `BreakerMonitor`).
+- **Coverage `drift_monitor.py` : 98.80 %** — tous les chemins
+  fonctionnels couverts ; le 1.2 % résiduel est une branche du
+  Protocol au runtime (Protocol bodies sont elidées par mypy).
+- **Pattern composition pour dashboards** :
+  ```python
+  from emeraude.infra import audit
+  from emeraude.services import AUDIT_DRIFT_DETECTED
+  events = audit.query_events(event_type=AUDIT_DRIFT_DETECTED, limit=20)
+  for ev in events:
+      print(ev["payload"]["page_hinkley_fired"], ev["payload"]["n_samples"])
+  ```
+
 ## [0.0.43] - 2026-04-27
 
 ### Added

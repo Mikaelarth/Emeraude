@@ -31,6 +31,11 @@ from emeraude.services.calibration_tracker import (
     extract_predictions_outcomes,
     is_well_calibrated_history,
 )
+from emeraude.services.drift_monitor import (
+    AUDIT_DRIFT_DETECTED,
+    DriftCheckResult,
+    DriftMonitor,
+)
 from emeraude.services.gate_factories import (
     make_correlation_gate,
     make_microstructure_gate,
@@ -42,11 +47,14 @@ from emeraude.services.orchestrator import (
 )
 
 __all__ = [
+    "AUDIT_DRIFT_DETECTED",
     "AutoTrader",
     "BackupRecord",
     "BackupService",
     "CycleDecision",
     "CycleReport",
+    "DriftCheckResult",
+    "DriftMonitor",
     "Orchestrator",
     "TradeDirection",
     "compute_calibration_from_positions",
