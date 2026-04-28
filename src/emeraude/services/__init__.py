@@ -45,9 +45,15 @@ from emeraude.services.orchestrator import (
     Orchestrator,
     TradeDirection,
 )
+from emeraude.services.risk_monitor import (
+    AUDIT_TAIL_RISK_BREACH,
+    RiskCheckResult,
+    RiskMonitor,
+)
 
 __all__ = [
     "AUDIT_DRIFT_DETECTED",
+    "AUDIT_TAIL_RISK_BREACH",
     "AutoTrader",
     "BackupRecord",
     "BackupService",
@@ -56,6 +62,8 @@ __all__ = [
     "DriftCheckResult",
     "DriftMonitor",
     "Orchestrator",
+    "RiskCheckResult",
+    "RiskMonitor",
     "TradeDirection",
     "compute_calibration_from_positions",
     "extract_predictions_outcomes",

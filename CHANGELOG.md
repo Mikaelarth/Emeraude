@@ -6,6 +6,101 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.46] - 2026-04-28
+
+### Added
+
+- **R5 Tail-risk surveillance service** (doc 10 R5 wiring) —
+  les primitives `compute_tail_metrics` (Cornish-Fisher VaR +
+  CVaR + max DD, livrées iter #24) sont désormais consommées par
+  un service périodique qui agit sur breach.
+  - **Module `src/emeraude/services/risk_monitor.py`** (~210
+    LOC) — service stateful avec sticky semantics, pattern
+    identique à `DriftMonitor` (iter #44) :
+    - **`RiskMonitor(tracker, *, multiplier=1.2, min_samples=30,
+      lookback=200)`** : pull les `r_realized` les plus récents,
+      compute `TailRiskMetrics`, compare `max_drawdown` vs
+      `multiplier * |cvar_99|`.
+    - **`check() -> RiskCheckResult`** : breach détecté =>
+      émet `TAIL_RISK_BREACH` audit event + escalade le breaker
+      à `WARNING` (raison `"auto:tail_risk_breach"`). Sticky
+      no-duplicate.
+    - **`reset()`** : opérateur clear le sticky flag (le breaker
+      reste séparément managé via `circuit_breaker.reset`).
+  - **`RiskCheckResult` frozen dataclass** : `triggered`,
+    `breach_this_call` (état brut), `n_samples`, `max_drawdown`,
+    `cvar_99`, `threshold`, `emitted_audit_event`,
+    `breaker_escalated`. Le double flag (sticky + brut) permet
+    à un opérateur après reset de voir si la condition s'est
+    levée.
+  - **`AUDIT_TAIL_RISK_BREACH = "TAIL_RISK_BREACH"`** constante
+    publique.
+  - **`DEFAULT_MULTIPLIER = Decimal("1.2")`** constante doc 10
+    I5 ("Max DD reel <= 1.2 * CVaR_99").
+  - **Critère doc 10 I5** : breach quand
+    `max_drawdown > 1.2 * |cvar_99|`. C'est exactement la
+    condition "le modèle a sous-estimé le risque de queue" que
+    R5 doit détecter.
+  - **Validation entrées** : `multiplier >= 1` (un multiplier
+    < 1 fire à la moindre approche du tail = défaite du safety
+    margin), `min_samples >= 1`, `lookback >= 1`.
+  - **Protocol `_HistorySource`** : pattern identique à iter #44
+    pour testabilité (stubs structurels mypy-strict-friendly).
+- **Re-exports `services/__init__.py`** : `RiskMonitor`,
+  `RiskCheckResult`, `AUDIT_TAIL_RISK_BREACH`.
+- Tests `tests/unit/test_risk_monitor.py` : **20 tests** dans
+  6 classes :
+  - `TestConstruction` (6) : default multiplier doc 10, custom
+    accepté, multiplier < 1 / min_samples 0 / lookback 0
+    rejetés.
+  - `TestBelowSampleFloor` (3) : empty, sous min_samples,
+    open positions filtered.
+  - `TestNoBreach` (3) : pattern sans breach, no audit event,
+    breaker stays HEALTHY.
+  - `TestBreachDetection` (6) : drawdown soutenu > 1.2*CVaR
+    triggers, audit event diagnostic, breaker WARNING, sticky
+    no-re-emit, reset clears state, multiplier strict.
+  - `TestEndToEndWithRealTracker` (1) : 25 winners + 11 small
+    losers via vrai `PositionTracker` -> breach détecté.
+  - `TestAuditConstant` (1) : nom stable.
+
+### Changed
+
+- `pyproject.toml` : version `0.0.45` -> `0.0.46`.
+
+### Notes
+
+- **Doc 06 — I5 status** : passe de 🟡 "module shippé sans
+  surveillance" à **🟢 prêt à mesurer** dès qu'un paper-mode
+  accumulé >= 30 trades. Critère formel "Max DD réel ≤ 1.2 ×
+  CVaR_99" est exactement ce que le service code détecte
+  (anti-règle A1 stricte : la mesure attend la data réelle).
+- **Insight contre-intuitif découvert pendant les tests** :
+  une distribution dominée par un **seul black swan** ne breach
+  pas le criterion I5 — la perte catastrophique fait monter
+  CVaR_99 ET max_DD ensemble (les deux scalent linéairement
+  avec la pire trade). Ce qui breach est un **drawdown soutenu**
+  fait de plusieurs petites pertes : CVaR_99 reste petit (1 %
+  de la queue) mais le DD cumulatif accumule. Le test
+  E2E reproduit exactement ce scénario (25 winners + 11 losers
+  uniformes -> DD 11 R vs CVaR 1 R = breach).
+- **Compatibilité descendante stricte** : aucun module
+  modifié au-delà du re-export `__init__.py`. AutoTrader
+  inchangé ; le wiring dans la boucle `run_cycle` est candidate
+  iter #47 (même pattern que iter #45 pour DriftMonitor).
+- **Coverage `risk_monitor.py` : 98.75 %** — tous les chemins
+  fonctionnels couverts ; 1.25 % résiduel sur le body du
+  Protocol (élidé runtime).
+- **Pattern composition pour dashboards** :
+  ```python
+  from emeraude.infra import audit
+  from emeraude.services import AUDIT_TAIL_RISK_BREACH
+  events = audit.query_events(event_type=AUDIT_TAIL_RISK_BREACH, limit=20)
+  for ev in events:
+      p = ev["payload"]
+      print(f"DD {p['max_drawdown']} > {p['threshold']} (CVaR {p['cvar_99']})")
+  ```
+
 ## [0.0.45] - 2026-04-28
 
 ### Added
