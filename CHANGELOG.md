@@ -6,6 +6,85 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.45] - 2026-04-28
+
+### Added
+
+- **AutoTrader wires DriftMonitor** (doc 10 R3 active surveillance)
+  — la surveillance de drift livrée en iter #44 est désormais
+  branchée à la boucle de cycle production. Le bot tourne
+  maintenant avec **détection active de changement de régime**.
+  - **`AutoTrader.__init__(..., drift_monitor=None, ...)`** :
+    nouveau paramètre keyword-only optionnel. `None` (défaut) =
+    pas de surveillance, comportement strictement identique au
+    pre-iter-#45. Quand injecté (typiquement
+    `DriftMonitor(tracker=tracker)`), appelé après le breaker
+    monitor et avant la décision orchestrateur.
+  - **`CycleReport.drift_check: DriftCheckResult | None`** :
+    nouveau champ. `None` quand pas de monitor wired ; sinon
+    porte le verdict du cycle (`triggered`,
+    `emitted_audit_event`, `breaker_escalated`, etc.).
+  - **Audit payload `AUTO_TRADER_CYCLE` étendu** : 3 nouvelles
+    clés `drift_triggered`, `drift_emitted_event`,
+    `drift_breaker_escalated`. Toutes `None` quand pas de monitor
+    (distinction explicite "pas câblé" vs "câblé et clean").
+    Permet de spotter le premier cycle déclencheur en triant
+    les rows AUTO_TRADER_CYCLE seules — sans avoir à corréler
+    avec la row dédiée `DRIFT_DETECTED`.
+  - **Pipeline cycle étendu de 4 à 6 étapes** (docstring mis à
+    jour) : Fetch → Tick → BreakerMonitor → **DriftMonitor (nouveau, optionnel)** → Decide → Open.
+- Tests `tests/unit/test_auto_trader.py` : **+5 tests** (23 → 28)
+  dans nouvelle classe `TestDriftMonitorWiring` :
+  - `test_default_no_drift_monitor_keeps_legacy_behavior` :
+    `drift_check is None` quand pas injecté.
+  - `test_injected_clean_history_runs_check_no_trigger` : monitor
+    wired sur fresh tracker -> `triggered=False, n_samples=0`.
+  - `test_drift_detection_escalates_breaker_to_warning` : 30
+    winners + 10 losers seedés -> drift fire -> breaker WARNING.
+  - `test_drift_audit_payload_in_cycle_event` : 3 clés drift_*
+    présentes et non-None quand monitor wired (clean = False).
+  - `test_no_drift_monitor_yields_null_audit_fields` : 3 clés
+    drift_* présentes mais None quand pas wired.
+- `_make_trader` test helper accepte `drift_monitor` keyword arg.
+
+### Changed
+
+- `src/emeraude/services/auto_trader.py` : import
+  `DriftCheckResult, DriftMonitor` (TYPE_CHECKING-only),
+  étend `__init__` + `CycleReport` + `run_cycle` + `_audit_payload`.
+- Audit payload type widened de `dict[str, str | int | None]` à
+  `dict[str, str | int | bool | None]` pour accepter les bool
+  Python natifs sans coercition string.
+- `pyproject.toml` : version `0.0.44` -> `0.0.45`.
+
+### Notes
+
+- **Compatibilité descendante stricte** : `drift_monitor` est
+  optionnel (défaut `None`) ; les 23 tests AutoTrader v0.0.44
+  restent verts sans modification (les nouveaux 3 champs payload
+  sont None pour eux).
+- **Doc 06 — I3 status** : passe de 🟢 "prêt à mesurer" (iter #44)
+  à **🟢 surveillance active**. Tous les A1-deferrals R3 sont
+  levés ; le critère formel "drift détecté ≤ 72h sur injection
+  synthétique" reste 🟡 jusqu'à exécution d'un test fluxes
+  synthétiques sur paper-mode runtime — mais le code est
+  100 % opérationnel.
+- **Coverage globale 99.85 %** stable. `auto_trader.py` 100 %.
+- **Pattern composition production** :
+  ```python
+  from emeraude.agent.execution.position_tracker import PositionTracker
+  from emeraude.services import AutoTrader, DriftMonitor
+
+  tracker = PositionTracker()
+  monitor = DriftMonitor(tracker=tracker)
+  trader = AutoTrader(tracker=tracker, drift_monitor=monitor)
+
+  while True:
+      report = trader.run_cycle()
+      if report.drift_check and report.drift_check.triggered:
+          notify_operator(...)  # WARNING breaker already set
+  ```
+
 ## [0.0.44] - 2026-04-28
 
 ### Added

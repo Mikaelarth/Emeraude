@@ -7,9 +7,16 @@ the bot performs every cycle of its life :
 1. **Fetch** — current ticker price + recent klines from Binance.
 2. **Tick** — call :meth:`PositionTracker.tick` so any open position is
    auto-closed on stop / target hits *before* a new decision is taken.
-3. **Decide** — call :meth:`Orchestrator.make_decision` with the
+3. **Breaker monitor** — :meth:`BreakerMonitor.check` auto-escalates
+   the circuit breaker on streak / cumulative-loss conditions.
+4. **Drift monitor** *(optional, doc 10 R3)* — when injected,
+   :meth:`DriftMonitor.check` runs Page-Hinkley + ADWIN over the
+   recent r_realized stream and escalates the breaker to ``WARNING``
+   on detection. Sticky semantics : one audit event per drift
+   regime, no spam.
+5. **Decide** — call :meth:`Orchestrator.make_decision` with the
    current capital + klines.
-4. **Open** — if the decision says ``should_trade`` *and* the tick did
+6. **Open** — if the decision says ``should_trade`` *and* the tick did
    not just close a position this cycle, call
    :meth:`PositionTracker.open_position` with the levels from the
    decision and the dominant strategy. The "did not just close"
@@ -60,6 +67,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from emeraude.infra.market_data import Kline
+    from emeraude.services.drift_monitor import DriftCheckResult, DriftMonitor
 
 
 _DEFAULT_SYMBOL: Final[str] = "BTCUSDT"
@@ -90,6 +98,12 @@ class CycleReport:
         current_price: ticker price used for the tick step.
         breaker_check: result of the pre-decision breaker monitor
             check (None when no monitor is wired).
+        drift_check: result of the doc 10 R3 drift surveillance
+            check. ``None`` when no monitor is wired (default
+            backward-compat). When set, carries
+            :class:`DriftCheckResult` with the per-cycle
+            ``triggered`` / ``emitted_audit_event`` /
+            ``breaker_escalated`` flags.
         decision: full :class:`CycleDecision` from the orchestrator.
         tick_outcome: position closed by the pre-decision tick (stop
             or target hit), or ``None``.
@@ -102,6 +116,7 @@ class CycleReport:
     fetched_at: int
     current_price: Decimal
     breaker_check: BreakerCheckResult | None
+    drift_check: DriftCheckResult | None
     decision: CycleDecision
     tick_outcome: Position | None
     opened_position: Position | None
@@ -132,6 +147,7 @@ class AutoTrader:
         orchestrator: Orchestrator | None = None,
         tracker: PositionTracker | None = None,
         breaker_monitor: BreakerMonitor | None = None,
+        drift_monitor: DriftMonitor | None = None,
         fetch_klines: Callable[[str, str, int], list[Kline]] | None = None,
         fetch_current_price: Callable[[str], Decimal] | None = None,
     ) -> None:
@@ -158,6 +174,17 @@ class AutoTrader:
                 scenarios remain unaffected. The monitor only
                 escalates, never downgrades, so a manually-tripped
                 breaker stays tripped.
+            drift_monitor: optional doc 10 R3 drift surveillance.
+                When ``None`` (default), no drift detection runs —
+                strict backward-compat with pre-iter-#45 callers.
+                When injected (typically as
+                ``DriftMonitor(tracker=tracker)``), called after the
+                breaker monitor and before the orchestrator decision ;
+                the result is attached to :class:`CycleReport` and
+                surfaced in the audit payload. Drift detection escalates
+                the circuit breaker to ``WARNING`` (orchestrator halves
+                sizing automatically) ; the operator manually resets
+                via :func:`circuit_breaker.reset` after inspection.
             fetch_klines: HTTP fetcher for klines, signature
                 ``(symbol, interval, limit) -> list[Kline]``. Defaults
                 to :func:`market_data.get_klines`.
@@ -183,6 +210,10 @@ class AutoTrader:
             if breaker_monitor is not None
             else BreakerMonitor(tracker=self._tracker)
         )
+        # Optional (default None) so pre-iter-#45 callers see no
+        # behavior change. When wired the cycle calls .check() right
+        # after the breaker monitor and before the orchestrator.
+        self._drift_monitor: DriftMonitor | None = drift_monitor
         self._fetch_klines: Callable[[str, str, int], list[Kline]] = (
             fetch_klines if fetch_klines is not None else market_data.get_klines
         )
@@ -229,11 +260,21 @@ class AutoTrader:
         # breaker state on its own pre-decision check.
         breaker_check = self._breaker_monitor.check(now=ts)
 
-        # Step 3 : decision.
+        # Step 3 : doc 10 R3 drift surveillance (optional). Runs after
+        # the breaker monitor so a streak-based escalation already has
+        # the chance to fire, then drift sits on top : detection
+        # escalates to WARNING (the breaker monitor never downgrades
+        # so a previously-set TRIGGERED stays). The drift monitor
+        # itself owns its sticky / no-duplicate semantics.
+        drift_check: DriftCheckResult | None = None
+        if self._drift_monitor is not None:
+            drift_check = self._drift_monitor.check()
+
+        # Step 4 : decision.
         capital = self._capital_provider()
         decision = self._orchestrator.make_decision(capital=capital, klines=klines)
 
-        # Step 4 : open if all conditions hold.
+        # Step 5 : open if all conditions hold.
         opened = self._maybe_open(
             decision=decision,
             tick_outcome=tick_outcome,
@@ -246,6 +287,7 @@ class AutoTrader:
             fetched_at=ts,
             current_price=current_price,
             breaker_check=breaker_check,
+            drift_check=drift_check,
             decision=decision,
             tick_outcome=tick_outcome,
             opened_position=opened,
@@ -320,7 +362,7 @@ def _default_capital_provider() -> Decimal:
     return _DEFAULT_COLD_START_CAPITAL
 
 
-def _audit_payload(report: CycleReport) -> dict[str, str | int | None]:
+def _audit_payload(report: CycleReport) -> dict[str, str | int | bool | None]:
     """Flatten a :class:`CycleReport` for the audit log.
 
     Decimal values are serialized as their string representation so
@@ -328,7 +370,8 @@ def _audit_payload(report: CycleReport) -> dict[str, str | int | None]:
     """
     decision = report.decision
     breaker = report.breaker_check
-    payload: dict[str, str | int | None] = {
+    drift = report.drift_check
+    payload: dict[str, str | int | bool | None] = {
         "symbol": report.symbol,
         "interval": report.interval,
         "fetched_at": report.fetched_at,
@@ -338,6 +381,13 @@ def _audit_payload(report: CycleReport) -> dict[str, str | int | None]:
             "true" if breaker is not None and breaker.transitioned else "false"
         ),
         "breaker_reason": (breaker.triggered_reason if breaker is not None else None),
+        # Doc 10 R3 surveillance : surface drift summary in every cycle's
+        # audit payload so an operator can spot the *first* triggered
+        # cycle by sorting on AUTO_TRADER_CYCLE rows alone (the dedicated
+        # DRIFT_DETECTED row from DriftMonitor is fired at most once).
+        "drift_triggered": (drift.triggered if drift is not None else None),
+        "drift_emitted_event": (drift.emitted_audit_event if drift is not None else None),
+        "drift_breaker_escalated": (drift.breaker_escalated if drift is not None else None),
         "should_trade": "true" if decision.should_trade else "false",
         "skip_reason": decision.skip_reason,
         "regime": decision.regime.value if decision.regime is not None else None,

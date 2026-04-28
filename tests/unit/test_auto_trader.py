@@ -24,6 +24,7 @@ from emeraude.services.auto_trader import (
     CycleReport,
     _default_capital_provider,
 )
+from emeraude.services.drift_monitor import DriftMonitor
 from emeraude.services.orchestrator import Orchestrator
 
 # ─── Fixtures + helpers ──────────────────────────────────────────────────────
@@ -83,6 +84,7 @@ def _make_trader(
     capital: Decimal = Decimal("1000"),
     orchestrator: Orchestrator | None = None,
     tracker: PositionTracker | None = None,
+    drift_monitor: DriftMonitor | None = None,
 ) -> AutoTrader:
     if klines is None:
         klines = _bull_klines()
@@ -113,6 +115,7 @@ def _make_trader(
         capital_provider=lambda: capital,
         orchestrator=orchestrator,
         tracker=tracker if tracker is not None else PositionTracker(),
+        drift_monitor=drift_monitor,
         fetch_klines=fake_fetch_klines,
         fetch_current_price=fake_fetch_price,
     )
@@ -543,3 +546,123 @@ class TestBreakerMonitorIntegration:
         report = at.run_cycle(now=1_700_000_000)
         assert report.breaker_check is not None
         assert report.breaker_check.state_after == CircuitBreakerState.TRIGGERED
+
+
+# ─── Drift monitor wiring (doc 10 R3, iter #45) ────────────────────────────
+
+
+@pytest.mark.unit
+class TestDriftMonitorWiring:
+    def test_default_no_drift_monitor_keeps_legacy_behavior(self, fresh_db: Path) -> None:
+        # Backward compat : without injection the field is None and
+        # no surveillance runs. Existing 23 tests already cover this
+        # path implicitly ; here we just assert the surface contract.
+        at = _make_trader()
+        report = at.run_cycle(now=1_700_000_000)
+        assert report.drift_check is None
+
+    def test_injected_clean_history_runs_check_no_trigger(self, fresh_db: Path) -> None:
+        # Wire a DriftMonitor against a fresh tracker (no history) :
+        # check() runs and returns triggered=False.
+
+        tracker = PositionTracker()
+        monitor = DriftMonitor(tracker=tracker)
+        at = _make_trader(tracker=tracker, drift_monitor=monitor)
+        report = at.run_cycle(now=1_700_000_000)
+        assert report.drift_check is not None
+        assert report.drift_check.triggered is False
+        assert report.drift_check.n_samples == 0
+        assert report.drift_check.emitted_audit_event is False
+        assert report.drift_check.breaker_escalated is False
+
+    def test_drift_detection_escalates_breaker_to_warning(self, fresh_db: Path) -> None:
+        # Seed the tracker with 30 winners then 10 losers ; on next
+        # cycle the drift monitor fires and escalates the breaker.
+
+        circuit_breaker.reset(reason="test")
+        tracker = PositionTracker()
+        for i in range(30):
+            tracker.open_position(
+                strategy="trend_follower",
+                regime=Regime.BULL,
+                side=Side.LONG,
+                entry_price=Decimal("100"),
+                stop=Decimal("98"),
+                target=Decimal("104"),
+                quantity=Decimal("0.1"),
+                risk_per_unit=Decimal("2"),
+                opened_at=i * 10,
+            )
+            tracker.close_position(
+                exit_price=Decimal("104"),
+                exit_reason=ExitReason.TARGET_HIT,
+                closed_at=i * 10 + 5,
+            )
+        for i in range(10):
+            tracker.open_position(
+                strategy="trend_follower",
+                regime=Regime.BULL,
+                side=Side.LONG,
+                entry_price=Decimal("100"),
+                stop=Decimal("98"),
+                target=Decimal("104"),
+                quantity=Decimal("0.1"),
+                risk_per_unit=Decimal("2"),
+                opened_at=(30 + i) * 10,
+            )
+            tracker.close_position(
+                exit_price=Decimal("98"),
+                exit_reason=ExitReason.STOP_HIT,
+                closed_at=(30 + i) * 10 + 5,
+            )
+        # Reset breaker after the seed history (close paths might warn).
+        circuit_breaker.reset(reason="post_seed")
+
+        monitor = DriftMonitor(tracker=tracker)
+        at = _make_trader(tracker=tracker, drift_monitor=monitor)
+        report = at.run_cycle(now=1_700_000_000)
+
+        assert report.drift_check is not None
+        assert report.drift_check.triggered is True
+        assert report.drift_check.emitted_audit_event is True
+        assert report.drift_check.breaker_escalated is True
+        # Breaker actually escalated.
+        assert circuit_breaker.get_state() == CircuitBreakerState.WARNING
+
+    def test_drift_audit_payload_in_cycle_event(self, fresh_db: Path) -> None:
+        # Verify the AUTO_TRADER_CYCLE audit payload carries the
+        # drift summary fields (so dashboards can sort on them).
+
+        circuit_breaker.reset(reason="test")
+        tracker = PositionTracker()
+        monitor = DriftMonitor(tracker=tracker)
+        at = _make_trader(tracker=tracker, drift_monitor=monitor)
+        at.run_cycle(now=1_700_000_000)
+
+        assert audit.flush_default_logger(timeout=2.0)
+        events = audit.query_events(event_type="AUTO_TRADER_CYCLE")
+        assert len(events) >= 1
+        payload = events[0]["payload"]
+        # All three drift fields must be present and not None when
+        # the monitor is wired.
+        assert "drift_triggered" in payload
+        assert "drift_emitted_event" in payload
+        assert "drift_breaker_escalated" in payload
+        assert payload["drift_triggered"] is False
+        assert payload["drift_emitted_event"] is False
+        assert payload["drift_breaker_escalated"] is False
+
+    def test_no_drift_monitor_yields_null_audit_fields(self, fresh_db: Path) -> None:
+        # Without the monitor, the three drift_* audit fields are None
+        # (not absent — explicit null distinguishes "not wired" from
+        # "wired and clean").
+        circuit_breaker.reset(reason="test")
+        at = _make_trader()
+        at.run_cycle(now=1_700_000_000)
+
+        assert audit.flush_default_logger(timeout=2.0)
+        events = audit.query_events(event_type="AUTO_TRADER_CYCLE")
+        payload = events[0]["payload"]
+        assert payload["drift_triggered"] is None
+        assert payload["drift_emitted_event"] is None
+        assert payload["drift_breaker_escalated"] is None
