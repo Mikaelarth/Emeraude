@@ -66,6 +66,12 @@ from emeraude.agent.learning.risk_metrics import (
     compute_tail_metrics,
 )
 from emeraude.infra import audit
+from emeraude.services.monitor_checkpoint import (
+    MonitorId,
+    clear_triggered,
+    load_triggered,
+    save_triggered,
+)
 
 if TYPE_CHECKING:
     from emeraude.agent.execution.position_tracker import Position
@@ -168,6 +174,7 @@ class RiskMonitor:
         multiplier: Decimal = DEFAULT_MULTIPLIER,
         min_samples: int = _DEFAULT_MIN_SAMPLES,
         lookback: int = _DEFAULT_LOOKBACK,
+        persistent: bool = False,
     ) -> None:
         """Wire the monitor with explicit thresholds.
 
@@ -185,6 +192,12 @@ class RiskMonitor:
                 single worst trade and the gate stays silent.
             lookback: recent positions to feed the metrics.
                 Default 200.
+            persistent: when ``True`` (doc 10 R10 wiring), the sticky
+                ``triggered`` flag is loaded from / saved to the
+                ``settings`` table under ``MonitorId.RISK`` so it
+                survives ``kill -9``. When ``False`` (default), the
+                flag is in-memory only — strict backward-compat with
+                pre-iter-#51 callers.
 
         Raises:
             ValueError: on ``multiplier < 1``, ``min_samples < 1``,
@@ -204,7 +217,11 @@ class RiskMonitor:
         self._multiplier = multiplier
         self._min_samples = min_samples
         self._lookback = lookback
-        self._triggered = False
+        self._persistent = persistent
+        # Sticky flag, optionally rehydrated from the ``settings`` table
+        # (doc 10 R10) so a crash + restart does not double-fire on the
+        # same pre-existing breach.
+        self._triggered = load_triggered(MonitorId.RISK) if persistent else False
 
     # ─── Public API ─────────────────────────────────────────────────────────
 
@@ -251,6 +268,10 @@ class RiskMonitor:
 
         if breach and not self._triggered:
             self._triggered = True
+            if self._persistent:
+                # Persist before any side-effect so a crash mid-emit
+                # does not lose the sticky flag (doc 10 R10).
+                save_triggered(MonitorId.RISK, triggered=True)
             self._emit_audit(metrics=metrics, threshold=threshold, n_samples=n)
             emitted_audit = True
             circuit_breaker.warn(_BREAKER_REASON)
@@ -273,8 +294,13 @@ class RiskMonitor:
         Called by an operator after inspecting the breach and
         deciding to resume normal surveillance. Does **not** reset
         the circuit breaker — that is a separate manual operation.
+
+        When ``persistent=True``, the persisted checkpoint is also
+        cleared.
         """
         self._triggered = False
+        if self._persistent:
+            clear_triggered(MonitorId.RISK)
 
     @property
     def triggered(self) -> bool:

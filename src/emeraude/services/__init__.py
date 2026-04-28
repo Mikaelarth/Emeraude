@@ -45,6 +45,12 @@ from emeraude.services.gate_factories import (
     make_correlation_gate,
     make_microstructure_gate,
 )
+from emeraude.services.monitor_checkpoint import (
+    MonitorId,
+    clear_triggered,
+    load_triggered,
+    save_triggered,
+)
 from emeraude.services.orchestrator import (
     CycleDecision,
     Orchestrator,
@@ -73,19 +79,23 @@ __all__ = [
     "CycleReport",
     "DriftCheckResult",
     "DriftMonitor",
+    "MonitorId",
     "Orchestrator",
     "PromotionDecision",
     "RiskCheckResult",
     "RiskMonitor",
     "TradeDirection",
+    "clear_triggered",
     "compute_calibration_from_positions",
     "evaluate_promotion",
     "export_from_positions",
     "extract_predictions_outcomes",
     "is_well_calibrated_history",
+    "load_triggered",
     "make_correlation_gate",
     "make_microstructure_gate",
     "report_to_dict",
     "report_to_json",
     "report_to_markdown",
+    "save_triggered",
 ]

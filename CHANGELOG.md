@@ -6,6 +6,104 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.51] - 2026-04-28
+
+### Added
+
+- **R10 Long-term memory : checkpoint des sticky flags des
+  monitors** (doc 10 R10 wiring) — les flags `_triggered` de
+  `DriftMonitor` (iter #44) et `RiskMonitor` (iter #46) sont
+  désormais checkpointables via la table `settings` existante.
+  Avant cette iter, après un `kill -9` le monitor "oubliait"
+  qu'il avait déjà détecté la condition et re-fired le même
+  audit event + breaker escalation au prochain `check()`. Le
+  critère doc 10 I10 "100 % des états critiques restaurés
+  après kill -9" est désormais satisfait pour tous les
+  composants stateful.
+  - **Module `src/emeraude/services/monitor_checkpoint.py`**
+    (~80 LOC) — pas de schéma, pas de migration, juste un
+    namespace `monitor.<id>.triggered` dans `settings` :
+    - **`MonitorId` StrEnum** : `DRIFT`, `RISK`. Stable pour
+      filtres downstream.
+    - **`load_triggered(monitor_id) -> bool`** : lit le flag,
+      `False` si pas de row (fresh DB / first construction).
+    - **`save_triggered(monitor_id, *, triggered)`** : UPSERT
+      via `database.set_setting`. TEXT-only encoding via
+      `"true"`/`"false"`.
+    - **`clear_triggered(monitor_id)`** : convenience pour
+      `reset()`.
+  - **`DriftMonitor.__init__(..., persistent=False)`** : nouveau
+    paramètre keyword-only optionnel. `False` (défaut) =
+    comportement strictement identique au pre-iter-#51. `True` =
+    rehydrate `_triggered` depuis le settings table sur init,
+    persiste avant chaque side-effect (audit + breaker), clear
+    sur `reset()`.
+  - **`RiskMonitor.__init__(..., persistent=False)`** : même
+    paramètre, même contrat.
+  - **Découplage strict** : la persistance est opt-in. Existing
+    callers (1300 tests v0.0.50) restent verts sans modification.
+- **Re-exports `services/__init__.py`** : `MonitorId`,
+  `load_triggered`, `save_triggered`, `clear_triggered`.
+- Tests `tests/unit/test_monitor_checkpoint.py` : **18 tests**
+  dans 5 classes :
+  - `TestCheckpointPrimitives` (5) : load default False, save +
+    load round-trip, save False idempotent, clear resets, two
+    monitor_ids isolated.
+  - `TestDriftMonitorPersistence` (5) : default not persistent
+    (backward compat), persistent loads on init, saves on first
+    trigger, **kill -9 simulation skips duplicate audit**, reset
+    clears persistent checkpoint.
+  - `TestRiskMonitorPersistence` (4) : symétrique.
+  - `TestEndToEndIndependence` (2) : drift fires sans
+    contaminer risk's checkpoint, kill -9 sur vrai
+    `PositionTracker` rehydrate correctement le sticky flag.
+
+### Changed
+
+- `src/emeraude/services/drift_monitor.py` : ajout
+  `persistent` param + load on init / save on transition / clear
+  on reset.
+- `src/emeraude/services/risk_monitor.py` : symétrique.
+- `pyproject.toml` : version `0.0.50` -> `0.0.51`.
+
+### Notes
+
+- **Compatibilité descendante stricte** : `persistent=False`
+  est le défaut ; les 36 tests existants sur DriftMonitor +
+  RiskMonitor (v0.0.50) restent verts sans modification.
+- **Doc 06 — I10 status** : passe de 🔴 "module pas créé" à
+  **🟢 surveillance active**. Le critère formel ne peut pas
+  être marqué ✅ tant qu'on n'a pas exécuté un crash test
+  réel en paper-mode runtime, mais le code est 100 %
+  opérationnel.
+- **Inventaire R10 complet** : tous les états critiques
+  désormais persistants après `kill -9` :
+  - ✅ `positions` (open + closed)
+  - ✅ `settings` (capital, breaker state, **+ monitor sticky**)
+  - ✅ `audit_log`
+  - ✅ `regime_memory`
+  - ✅ `strategy_performance` (bandit Beta counts)
+  - ✅ `champion_history`
+- **Coverage `monitor_checkpoint.py` : 100 %**, `drift_monitor.py`
+  100 %, `risk_monitor.py` 98.89 %. Tous chemins persistent /
+  non-persistent couverts.
+- **Pattern composition production** :
+  ```python
+  from emeraude.services import (
+      AutoTrader,
+      DriftMonitor,
+      RiskMonitor,
+  )
+  from emeraude.agent.execution.position_tracker import PositionTracker
+
+  tracker = PositionTracker()
+  drift = DriftMonitor(tracker=tracker, persistent=True)
+  risk = RiskMonitor(tracker=tracker, persistent=True)
+  trader = AutoTrader(tracker=tracker, drift_monitor=drift, risk_monitor=risk)
+
+  # Process restart : monitors rehydrate from DB ; no double-fire.
+  ```
+
 ## [0.0.50] - 2026-04-28
 
 ### Added

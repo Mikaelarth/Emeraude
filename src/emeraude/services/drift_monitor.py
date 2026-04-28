@@ -68,6 +68,12 @@ from emeraude.agent.learning.drift import (
     PageHinkleyDetector,
 )
 from emeraude.infra import audit
+from emeraude.services.monitor_checkpoint import (
+    MonitorId,
+    clear_triggered,
+    load_triggered,
+    save_triggered,
+)
 
 if TYPE_CHECKING:
     from emeraude.agent.execution.position_tracker import Position
@@ -159,6 +165,7 @@ class DriftMonitor:
         page_hinkley: PageHinkleyDetector | None = None,
         adwin: AdwinDetector | None = None,
         lookback: int = _DEFAULT_LOOKBACK,
+        persistent: bool = False,
     ) -> None:
         """Wire the monitor with explicit dependencies.
 
@@ -174,6 +181,12 @@ class DriftMonitor:
                 the detectors on each :meth:`check`. Default 200,
                 matches the ADWIN ``max_window`` so both detectors
                 see the full recent context.
+            persistent: when ``True`` (doc 10 R10 wiring), the sticky
+                ``triggered`` flag is loaded from / saved to the
+                ``settings`` table under ``MonitorId.DRIFT`` so it
+                survives ``kill -9``. When ``False`` (default), the
+                flag is in-memory only — strict backward-compat with
+                pre-iter-#51 callers.
 
         Raises:
             ValueError: on non-positive ``lookback``.
@@ -185,10 +198,13 @@ class DriftMonitor:
         self._page_hinkley = page_hinkley if page_hinkley is not None else PageHinkleyDetector()
         self._adwin = adwin if adwin is not None else AdwinDetector()
         self._lookback = lookback
+        self._persistent = persistent
         # Sticky : once any detector fires, the monitor stays "triggered"
         # until reset. Side effects (audit + breaker) only fire on the
-        # first transition.
-        self._triggered = False
+        # first transition. When ``persistent`` is set, the flag is
+        # rehydrated from the ``settings`` table so a process restart
+        # does not double-fire on the same pre-existing drift.
+        self._triggered = load_triggered(MonitorId.DRIFT) if persistent else False
 
     # ─── Public API ─────────────────────────────────────────────────────────
 
@@ -235,6 +251,11 @@ class DriftMonitor:
         if any_fired and not self._triggered:
             # First-time transition : emit audit + escalate breaker.
             self._triggered = True
+            if self._persistent:
+                # Persist the sticky flag immediately so a crash between
+                # this point and the next ``check()`` cannot reset us
+                # (doc 10 R10 — surviving kill -9).
+                save_triggered(MonitorId.DRIFT, triggered=True)
             self._emit_audit(
                 page_hinkley_fired=ph_state,
                 adwin_fired=adwin_state,
@@ -261,8 +282,13 @@ class DriftMonitor:
         surveillance. Does **not** reset the circuit breaker — that
         is a separate manual operation through
         :func:`circuit_breaker.reset`.
+
+        When ``persistent=True``, the persisted checkpoint is also
+        cleared so the next process start sees a fresh state.
         """
         self._triggered = False
+        if self._persistent:
+            clear_triggered(MonitorId.DRIFT)
         self._page_hinkley.reset()
         self._adwin.reset()
 
