@@ -45,6 +45,12 @@ from emeraude.services.orchestrator import (
     Orchestrator,
     TradeDirection,
 )
+from emeraude.services.performance_export import (
+    export_from_positions,
+    report_to_dict,
+    report_to_json,
+    report_to_markdown,
+)
 from emeraude.services.risk_monitor import (
     AUDIT_TAIL_RISK_BREACH,
     RiskCheckResult,
@@ -66,8 +72,12 @@ __all__ = [
     "RiskMonitor",
     "TradeDirection",
     "compute_calibration_from_positions",
+    "export_from_positions",
     "extract_predictions_outcomes",
     "is_well_calibrated_history",
     "make_correlation_gate",
     "make_microstructure_gate",
+    "report_to_dict",
+    "report_to_json",
+    "report_to_markdown",
 ]

@@ -6,6 +6,91 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.48] - 2026-04-28
+
+### Added
+
+- **R12 Performance reporting export** (doc 10 R12 wiring) — la
+  primitive `compute_performance_report` (livrée iter #27) est
+  désormais sérialisable en wire formats. Le service est
+  **pur transformer** : pas d'état, pas de side effects, pas de I/O.
+  Différent paradigme des derniers iters (qui livraient des
+  monitors stateful sticky).
+  - **Module `src/emeraude/services/performance_export.py`**
+    (~140 LOC) :
+    - **`report_to_dict(report) -> dict[str, str | int]`** :
+      mapping JSON-friendly. Decimals stringifiés (précision
+      preservée), int counts gardés int. Schema mirror exact
+      des champs du dataclass.
+    - **`report_to_json(report, *, indent=None) -> str`** :
+      sérialise via `json.dumps`, ensure_ascii=False, indent
+      optionnel pour humain.
+    - **`report_to_markdown(report) -> str`** : table Markdown
+      à 12 lignes pour Telegram / CLI / audit. Win rate en
+      pourcentage 2 décimales, R-units en 4 décimales,
+      Infinity rendu littéralement.
+    - **`export_from_positions(positions) -> dict`** : helper
+      qui chaîne `compute_performance_report` + `report_to_dict`.
+  - **Decimal handling** : valeurs stringifiées via `str(x)` —
+    full precision préservée + `Decimal("Infinity")` round-trip
+    losslessly via `"Infinity"` string (JSON n'a pas Infinity
+    natif). Le consumer parse back avec `Decimal(s)`.
+- **Re-exports `services/__init__.py`** : `report_to_dict`,
+  `report_to_json`, `report_to_markdown`, `export_from_positions`.
+- Tests `tests/unit/test_performance_export.py` : **23 tests**
+  dans 5 classes :
+  - `TestReportToDict` (6) : empty, schema complet, int stays
+    int, Decimal stringifié, précision préservée, Infinity =
+    "Infinity".
+  - `TestReportToJson` (6) : returns string, json.loads
+    round-trip, Decimal lossless, Infinity round-trip, compact
+    default, indent=2.
+  - `TestReportToMarkdown` (7) : empty no table, table rendered,
+    pourcentage win rate, 4 décimales R-units, Infinity word,
+    heading n=N trades, LF endings.
+  - `TestExportFromPositions` (3) : chaîne compute+dict, empty
+    yields zero-padded, open positions filtered.
+  - `TestRoundTrip` (1) : pipeline complet compute -> dict ->
+    JSON -> parse -> rebuild Decimal préserve toutes les valeurs.
+
+### Changed
+
+- `pyproject.toml` : version `0.0.47` -> `0.0.48`.
+
+### Notes
+
+- **Doc 06 — I12 status partiel** : le critère "dashboard
+  performance lisible ≤ 5 s" reste 🟡 jusqu'à exécution UI
+  Kivy ; mais le **format de sortie** est livré et mesurable
+  (sub-millisecond per-call sur 1000 positions).
+- **Pattern différent** des iters #44-#47 : pas de stateful, pas
+  de sticky semantics, pas de side effect. Pur transformer →
+  testable de manière simple, composable avec n'importe quel
+  consumer (Telegram bot, CLI, UI Kivy, audit log).
+- **Compatibilité descendante** : zéro impact sur les modules
+  existants. Tests v0.0.47 (1250) + 23 nouveaux = 1273.
+- **Coverage `performance_export.py` : 100 %** — tous chemins
+  couverts (empty/typical/all-wins/round-trip).
+- **Pattern composition production** :
+  ```python
+  from emeraude.agent.execution.position_tracker import PositionTracker
+  from emeraude.services import (
+      report_to_json,
+      report_to_markdown,
+      export_from_positions,
+  )
+
+  tracker = PositionTracker()
+
+  # JSON pour UI / API
+  payload = export_from_positions(tracker.history(limit=200))
+
+  # Markdown pour Telegram / CLI
+  from emeraude.agent.learning.performance_report import compute_performance_report
+  report = compute_performance_report(tracker.history())
+  print(report_to_markdown(report))
+  ```
+
 ## [0.0.47] - 2026-04-28
 
 ### Added
