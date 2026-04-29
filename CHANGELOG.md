@@ -6,6 +6,50 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.57] - 2026-04-29
+
+### Changed
+
+- **Doc 06 ROADMAP refresh v1.4 -> v1.5** — capture l'état post-sprint
+  wiring doc 10 (iter #39 à #56). Source de vérité partagée mise à
+  jour sur 4 axes :
+  - **Tests + version** : 1131 → 1443 tests (+312), coverage 99.87 %
+    → 99.80 %, version 0.0.38 → 0.0.56, modules src 40 → 52.
+  - **R-modules livrés** : 13/15 → **15/15** (R9 `agent/execution/smart_limit.py`
+    et R10 `services/monitor_checkpoint.py` ajoutés depuis v1.4).
+  - **Wirings doc 10** : nouvelle catégorie 🟢 surveillance active
+    introduite. **14/15 wirings 🟢** câblés via la couche `services/`
+    (calibration_tracker, drift_monitor, robustness_validator,
+    risk_monitor, gate_factories, monitor_checkpoint, performance_export,
+    champion_promotion, linucb_strategy_adapter, coverage_validator,
+    adversarial_validator + auto_trader build R8). R9 fill-loop reste
+    🟡 par design (anti-règle A1 jusqu'au live-trading path).
+  - **Score consolidé** : modules + wirings 21/78 → **37/78**.
+    Critères mesurés inchangés 8/78 (l'accumulation de trades réels
+    n'a pas encore eu lieu — c'est le verrou suivant pour passer
+    🟢 → ✅).
+- **Nouvelle légende I1-I15** : ajout du symbole 🟢 (wiring actif)
+  entre 🟡 (module livré) et ✅ (critère mesuré). Reflète le palier
+  intermédiaire "audit event émis sur chaque cycle, en attente de
+  trades pour la mesure".
+- **T1 + T16 status** : T1 mis à jour 1131 → 1443 tests ; T16 timestamp
+  refresh.
+- `pyproject.toml` : version `0.0.56` -> `0.0.57`.
+
+### Notes
+
+- **Pas de changement de code** dans cet iter — refresh documentation
+  exclusivement. Les 14 wirings 🟢 ont été individuellement audités
+  via leur audit event respectif (`CALIBRATION_REPORT`, `DRIFT_DETECTED`,
+  `ROBUSTNESS_VALIDATION`, `TAIL_RISK_BREACH`, `MICROSTRUCTURE_GATE`,
+  `CORRELATION_GATE`, `META_GATE`, `MONITOR_TRIGGERED`, `HOEFFDING_BOUND`,
+  `CHAMPION_PROMOTION_DECISION`, `COVERAGE_VALIDATION`, `ADVERSARIAL_VALIDATION`).
+- **Phase backend statistique close** : 14/15 surveillance active +
+  R9 par design A1. Le pilier #1 UI Kivy est désormais le verrou
+  unique pour T3/T4/T5/T6/T7/T13/T18/T20 et les paliers 1+.
+- **Prochaine itération** : ouverture du chantier UI Kivy (pivot
+  Pilier #1, 0 % livré actuellement).
+
 ## [0.0.56] - 2026-04-28
 
 ### Added
