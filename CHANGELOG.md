@@ -6,6 +6,56 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.71] - 2026-04-29
+
+### Added
+
+- **Crash-to-file logging** dans `emeraude.main:main()` : toute
+  exception dans le bootstrap (import errors, DB init failures,
+  recipes Android manquantes, etc.) est désormais capturée dans
+  `$ANDROID_PRIVATE/last_crash.log` (Android) ou
+  `$EMERAUDE_STORAGE_DIR/last_crash.log` (desktop). L'exception est
+  ensuite re-raisée pour que Kivy / Android émettent leur crash
+  report normal.
+  - **Pourquoi** : iter #69 a livré un APK fonctionnel en CI mais
+    l'utilisateur a constaté un crash au démarrage sur device.
+    Sans ADB l'extraction du logcat est complexe ; le crash log
+    sur disque permet à l'utilisateur (ou un script forensic) de
+    récupérer le traceback via `adb shell run-as
+    org.mikaelarth.emeraude cat files/last_crash.log` ou via un file
+    manager Android avec accès au scoped storage de l'app.
+  - **Best-effort strict** : `_write_crash_log` ne raise jamais —
+    si le dump lui-même échoue, on garde le re-raise upstream comme
+    chemin de signal principal.
+  - Resolution order pour le path : `ANDROID_PRIVATE` → résolution
+    via `infra.paths.app_storage_dir()` → fallback `tempfile.gettempdir()`.
+
+### Changed
+
+- **`src/emeraude/__init__.py`** : élargissement du `try/except`
+  autour de `importlib.metadata.version("emeraude")`. Précédemment
+  on attrapait seulement `PackageNotFoundError` ; maintenant on
+  attrape `Exception` car les modes d'échec sur Android packagé
+  ne sont pas strictement typés (LookupError, OSError sur metadata
+  absente, etc.). Fallback `__version__ = "unknown"`. Anti-règle
+  A8 documentée par commentaire — c'est un cas où le silence est
+  intentionnel parce que l'alternative (crash au boot pour une
+  string d'affichage Config) serait pire.
+- `pyproject.toml` : version `0.0.70` -> `0.0.71`.
+- `buildozer.spec` : version `0.0.71`.
+
+### Notes
+
+- **Diagnostic du crash iter #69 en cours** : sans logcat encore
+  reçu de l'utilisateur, on ne sait pas la cause exacte. Le crash
+  logger ajouté ici servira pour les builds suivants. Pour
+  l'instant, l'utilisateur doit récupérer le logcat de l'APK
+  v0.0.69 via ADB (cf. instructions dans la conversation).
+- **Pas de fix runtime spécifique** dans cet iter — on n'a pas
+  identifié la cause racine. Cet iter livre **l'instrumentation**
+  pour diagnostiquer le prochain crash.
+- Suite stable à 1695 tests, coverage 99.76 %.
+
 ## [0.0.70] - 2026-04-29
 
 ### Added
