@@ -84,10 +84,6 @@ android.minapi = 24
 # 25b is the Buildozer 1.5 default ; pinned for reproducibility.
 android.ndk = 25b
 
-# (str) Android SDK version to use
-# Latest stable supported by python-for-android 2024.x.
-android.sdk = 33
-
 # (list) The Android archs to build for
 # arm64-v8a covers all modern phones. armeabi-v7a covers older 32-bit
 # devices (still ~10 % of the fleet en 2026). We ship both — bundle
@@ -102,9 +98,12 @@ android.accept_sdk_license = True
 p4a.bootstrap = sdl2
 
 # (str) python-for-android branch to use
-# 2024.1.21 is the latest stable supporting Python 3.11+ + Kivy 2.3.
-# Pinned for reproducibility ; bump explicitly when upgrading.
-p4a.branch = 2024.1.21
+# ``master`` = latest stable Buildozer pulls. python-for-android tags
+# its releases (2024.1.21, etc.) but Buildozer's ``p4a.branch`` does
+# a ``git clone -b BRANCH --single-branch`` which doesn't fetch tags.
+# Stick to ``master`` until we want a deeper pin (would require
+# changing the Buildozer p4a fetch strategy).
+p4a.branch = master
 
 # (bool) Skip byte compile for .py files
 # False = compile to .pyo for smaller APK. True = include .py source.
