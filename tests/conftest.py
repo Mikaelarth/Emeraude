@@ -16,16 +16,14 @@ os.environ.setdefault("KIVY_NO_ARGS", "1")
 os.environ.setdefault("KIVY_NO_CONSOLELOG", "1")
 
 # Per-worker isolated KIVY_HOME : Kivy 2.3's __init__.py does a
-# non-atomic ``if not exists(home): mkdir(home)`` which races under
-# pytest-xdist (multiple workers attempting to create ~/.kivy
-# simultaneously, only one wins, others crash with FileExistsError).
-# Each worker gets its own scratch dir under TMPDIR keyed by the
-# ``PYTEST_XDIST_WORKER`` env var that xdist sets per child process.
-# When xdist isn't active (``PYTEST_XDIST_WORKER`` unset) we still
-# pick a unique dir so a future ``-p no:xdist`` run stays isolated
-# from any host ``~/.kivy``.
-_xdist_worker = os.environ.get("PYTEST_XDIST_WORKER", "main")
-_kivy_home = Path(tempfile.gettempdir()) / f"emeraude-kivy-{_xdist_worker}"
+# non-atomic ``if not exists(home): mkdir(home)`` (and same for the
+# ``mods`` subdir) which races under pytest-xdist (multiple workers
+# attempting to create ~/.kivy simultaneously, only one wins, others
+# crash with FileExistsError). Keying on the process PID guarantees
+# uniqueness without depending on ``PYTEST_XDIST_WORKER`` (which xdist
+# sets via plugin hooks AFTER conftest.py module-level code runs, so
+# it is empty here when xdist forks workers).
+_kivy_home = Path(tempfile.gettempdir()) / f"emeraude-kivy-{os.getpid()}"
 _kivy_home.mkdir(parents=True, exist_ok=True)
 os.environ.setdefault("KIVY_HOME", str(_kivy_home))
 
