@@ -6,6 +6,37 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.80] - 2026-04-29
+
+### Fixed
+
+- **WebView Android refuse de charger ``http://127.0.0.1:8765/``** :
+  l'install v0.0.79 sur P30 lite (Android 10) affichait
+  ``net::ERR_CLEARTEXT_NOT_PERMITTED`` au lieu de l'app Vue/Vuetify.
+  - **Cause** : depuis Android 9 (API 28), le WebView refuse les
+    connexions HTTP cleartext par défaut, sauf si l'application
+    déclare ``android:usesCleartextTraffic="true"`` dans le manifest.
+  - **Diagnostic** : screenshot WebView P30 lite montrant l'erreur
+    explicite (la WebView elle-même ouvre — fix iter #78bis OK).
+  - **Fix** : ajout du fichier
+    ``buildozer_resources/manifest_application_attrs.xml`` contenant
+    l'attribut ``android:usesCleartextTraffic="true"``, et
+    référencement dans ``buildozer.spec`` via
+    ``android.extra_manifest_application_arguments``. Buildozer/p4a
+    l'injecte au build dans la balise ``<application>`` de
+    l'AndroidManifest.
+
+### Notes
+
+- Scope global mais sans risque pratique : l'app n'émet du HTTP que
+  vers loopback (Binance utilise exclusivement HTTPS). Si on veut
+  scoper plus tard à 127.0.0.1 uniquement, on passera par une
+  Network Security Config XML — overhead supplémentaire injustifié
+  pour cette iter.
+- Suite stable à 1 733 tests, coverage 99.05 %, quality gates OK.
+- Continuation immédiate de l'iter #78 (le 3e fix de la même
+  livraison). Pas un nouvel iter conceptuel.
+
 ## [0.0.79] - 2026-04-29
 
 ### Fixed

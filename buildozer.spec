@@ -37,7 +37,7 @@ source.exclude_dirs = tests, docs, .venv, .buildozer, bin, __pycache__
 # Manual sync with pyproject.toml. We don't use ``version.regex`` because
 # emeraude/__init__.py reads its version dynamically via importlib.metadata
 # (works in pip-installed contexts but not parseable by buildozer).
-version = 0.0.79
+version = 0.0.80
 
 # (list) Application requirements
 # Pinned to the same versions as pyproject.toml's runtime deps (kivy 2.3,
@@ -116,6 +116,18 @@ android.archs = arm64-v8a,armeabi-v7a,x86_64
 # (bool) If True, then automatically accept SDK license agreements.
 # Required for headless CI builds.
 android.accept_sdk_license = True
+
+# (str) Extra attributes to inject inside the <application> tag of
+# AndroidManifest.xml. Iter #78ter (cf. ADR-0004) ajoute
+# ``android:usesCleartextTraffic="true"`` pour que la WebView
+# Android puisse charger ``http://127.0.0.1:8765/`` (notre serveur
+# HTTP local). Sans, Android 9+ bloque avec
+# ``net::ERR_CLEARTEXT_NOT_PERMITTED`` (observé v0.0.79 P30 lite).
+# Le scope est global mais l'app n'émet du HTTP que vers loopback —
+# Binance API étant HTTPS only — donc l'expansion d'attaque est nulle.
+# Le fragment est un attribut XML brut (pas un document complet) que
+# p4a interpole dans le template ``AndroidManifest.tmpl.xml``.
+android.extra_manifest_application_arguments = buildozer_resources/manifest_application_attrs.xml
 
 # (str) Bootstrap to use for android builds
 p4a.bootstrap = sdl2
