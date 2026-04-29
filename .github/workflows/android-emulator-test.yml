@@ -157,6 +157,17 @@ jobs:
             set -eu
             echo "=== ADB devices ==="
             adb devices
+            # Iter #73 attempt #2 (run 25109363158) hit
+            # ``INSTALL_FAILED_UPDATE_INCOMPATIBLE: signatures do not match`` :
+            # the AVD cache (``actions/cache@v4`` keyed on api-level) carries
+            # over a previously installed emeraude debug APK from an earlier
+            # CI run. Each Buildozer build generates a fresh debug keystore
+            # so the new signature never matches the cached install. Wipe
+            # any prior install before ``adb install``. ``|| true`` because
+            # if the package is absent (first ever run on a clean AVD), the
+            # uninstall returns non-zero — that's fine.
+            echo "=== Uninstall any stale build (signature compat) ==="
+            adb uninstall org.mikaelarth.emeraude || true
             echo "=== Install APK ==="
             adb install -r -t "$APK_PATH"
             echo "=== Confirm package present ==="
