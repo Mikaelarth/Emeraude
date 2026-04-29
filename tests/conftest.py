@@ -2,7 +2,16 @@
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING
+
+# Kivy headless guards (ADR-0002 §7) — set BEFORE any kivy import that
+# may happen via test modules. Keeps Kivy from parsing pytest's argv
+# (KIVY_NO_ARGS) and from spamming the console banner during the run
+# (KIVY_NO_CONSOLELOG). Window is not created until App.run(), so no
+# display backend is needed for the L1 smoke test in tests/unit/.
+os.environ.setdefault("KIVY_NO_ARGS", "1")
+os.environ.setdefault("KIVY_NO_CONSOLELOG", "1")
 
 import pytest
 

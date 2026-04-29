@@ -6,6 +6,75 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.58] - 2026-04-29
+
+### Added
+
+- **ADR-0002 — Architecture UI mobile-first (Kivy)** (`docs/adr/0002-mobile-first-ui-architecture.md`).
+  Première itération du pivot Pilier #1. Fige les choix structurants
+  avant l'arrivée du 1er écran fonctionnel :
+  - `ScreenManager` racine, mobile-first single-Window pour les 5
+    écrans cibles (Dashboard, Configuration, Backtest, Audit, Learning).
+  - Layout `src/emeraude/ui/` avec sous-packages `screens/` + `widgets/`.
+  - **Python pur d'abord, KV files plus tard** — ruff + mypy strict
+    couvrent 100 % du code UI tant qu'on ne migre pas vers KV.
+  - **Theming maison, pas de KivyMD** — minimisation surface dépendances
+    + Buildozer prédictible.
+  - Pas d'i18n au démarrage (mission francophone unique, anti-règle A1).
+  - **Injection de services par constructeur** dans chaque Screen ;
+    `EmeraudeApp.build()` est la composition root unique.
+  - Stratégie de test à 3 niveaux : L1 smoke (importabilité +
+    `App.build()`), L2 logique écran (mocks de services), L3 runtime
+    (T3/T4 manuel desktop+Android).
+- **Scaffolding `src/emeraude/ui/`** (3 modules) :
+  - `ui/__init__.py` — docstring d'orientation.
+  - `ui/app.py` — `EmeraudeApp(App)` composition root, retourne un
+    `ScreenManager` avec un placeholder Screen ("bootstrap"). Constantes
+    publiques `APP_TITLE`, `PLACEHOLDER_SCREEN_NAME`.
+  - `ui/theme.py` — palette couleurs RGBA (8 couleurs : background,
+    surface, primary, success, danger, warning, text_primary,
+    text_secondary), tailles police (4 niveaux), espacement (3 niveaux),
+    durée transition. Toutes en constantes `Final` typées.
+- **Point d'entrée `src/emeraude/main.py`** — `main()` qui pose les env
+  guards Kivy (`KIVY_NO_ARGS`, `KIVY_NO_CONSOLELOG`) **avant** l'import
+  de `EmeraudeApp` et appelle `.run()`. Bloc `if __name__ == "__main__"`
+  pour l'invocation desktop. Module exclus du coverage par design
+  (mainloop blocante).
+- **Test L1 `tests/unit/test_ui_smoke.py`** — **22 tests** dans 3 classes :
+  - `TestImports` (3) : EmeraudeApp / theme / main importables.
+  - `TestAppBuild` (5) : `build()` retourne `ScreenManager`,
+    placeholder Screen présent, widgets non vides, `APP_TITLE` stable.
+  - `TestThemeShape` (8 + 4 paramétrés couleurs + 4 paramétrés fonts) :
+    couleurs RGBA dans `[0, 1]`, fonts int >= seuil minimal, spacings
+    SM<MD<LG, transition > 0.
+
+### Changed
+
+- `tests/conftest.py` : ajout des env guards Kivy (`KIVY_NO_ARGS`,
+  `KIVY_NO_CONSOLELOG`) au niveau module, **avant** tout import — garde
+  Kivy silencieux en CI / headless.
+- `pyproject.toml` : version `0.0.57` -> `0.0.58`.
+
+### Notes
+
+- **Zéro nouveau dependency** : Kivy 2.3 était déjà dans
+  `[project.dependencies]` depuis l'initialisation du projet. L'iter
+  ne fait que poser le scaffolding qui consomme la dep.
+- **Coverage `ui/*` + `main.py`** : exclus par design dans
+  `pyproject.toml` `[tool.coverage.run] omit`. Le smoke test L1
+  garantit l'**importabilité** sans gonfler artificiellement le
+  coverage. La suite **passe à 1465 tests** (1443 -> 1465, **+22**),
+  coverage global stable à **99.80 %**.
+- **Buildozer non touché** dans cet iter — la configuration `.spec`
+  arrivera quand on aura un vrai écran Dashboard à packager (iter
+  #59+).
+- **Mypy strict + Kivy** : `App` étant typé `Any` (override
+  `ignore_missing_imports = true` pour `kivy.*`), une seule
+  suppression `# type: ignore[misc]` est nécessaire sur la ligne
+  `class EmeraudeApp(App):` ; tout le reste reste strictement typé.
+- **Prochaine itération** : 1er écran fonctionnel (Dashboard) sur ce
+  scaffolding — référence ADR-0002 §1 + doc 03.
+
 ## [0.0.57] - 2026-04-29
 
 ### Changed
