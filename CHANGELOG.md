@@ -6,6 +6,56 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.72] - 2026-04-29
+
+### Added
+
+- **`.github/workflows/android-emulator-test.yml`** — workflow CI
+  qui spin un émulateur Android (API 30, x86_64 avec ARM
+  translation pour notre APK arm64-v8a/armeabi-v7a), installe la
+  dernière APK build par `android.yml`, lance l'activité, attend
+  15 s, et capture :
+  - `emulator_logcat_full.txt` — logcat brut complet
+  - `emulator_logcat_filtered.txt` — filtré sur emeraude / python
+    / kivy / fatal / sigsegv
+  - `emulator_last_crash.log` — extrait via `run-as` du fichier
+    écrit par le crash logger iter #71
+  - `emulator_files_listing.txt` — listing du private dir emeraude
+  - `emulator_topactivity.txt` — activité au moment du fail
+  - **Pourquoi** : le device Android physique de l'utilisateur
+    (Redmi MIUI/HyperOS V816 sur Android 16) bloque silencieusement
+    l'install des APK debug. Sans pouvoir installer + lancer +
+    capturer le crash, on est aveugle. L'émulateur AOSP en CI
+    contourne entièrement la couche MIUI.
+  - **Architecture** : déclenchement sur tags `v*` (chaîné après
+    `android.yml`) et `workflow_dispatch` manuel. Workflow attend
+    que `android.yml` finisse pour récupérer son APK artifact, puis
+    lance l'émulateur via `reactivecircus/android-emulator-runner@v2`.
+    Cache AVD pour accélérer les runs suivants.
+  - **Trade-off** : émulateur AOSP ≠ MIUI. Les bugs spécifiques à
+    MIUI (auto-uninstall, restrictions storage) ne reproduisent pas
+    sur AOSP. Mais 90 % des bugs Python / Kivy / p4a SI — c'est le
+    diagnostic principal qu'on cherche.
+  - `continue-on-error: true` initialement (canary, comme
+    `android.yml` iter #68).
+
+### Changed
+
+- `pyproject.toml` : version `0.0.71` -> `0.0.72`.
+- `buildozer.spec` : version `0.0.72`.
+
+### Notes
+
+- **Contexte** : iter #71 a livré un crash logger qui dump le
+  traceback dans `last_crash.log`. Iter #72 livre **le moyen de
+  lire ce fichier sans device Android coopératif**. Combinés, on
+  a un diagnostic end-to-end de l'APK runtime.
+- **Suite stable à 1695 tests, coverage 99.76 %** (workflow YAML,
+  pas de code applicatif touché).
+- **Le tag v0.0.72 va trigger** `android.yml` (build APK ~15 min)
+  PUIS `android-emulator-test.yml` (attend l'APK + boot émulateur
+  + diagnostic ~15 min). Total ~30 min pour avoir le crash Python.
+
 ## [0.0.71] - 2026-04-29
 
 ### Added

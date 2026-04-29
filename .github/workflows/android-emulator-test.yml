@@ -1,0 +1,197 @@
+name: Android Emulator Test
+
+# Iter #72 : spin an Android emulator on CI, install the latest APK
+# from android.yml workflow, launch the activity, capture logcat +
+# the ``last_crash.log`` written by our crash logger (iter #71). The
+# whole point is to contournement MIUI / Xiaomi-Pure-Mode rejecting
+# the install on the user's physical device — emulator runs clean
+# AOSP Android with full ADB access.
+#
+# Triggered manually via workflow_dispatch (the build is heavy
+# ~10-15 min) AND on tags so each release gets emulator-validated.
+
+on:
+  workflow_dispatch:
+    inputs:
+      api-level:
+        description: "Android API level"
+        required: false
+        default: "30"
+        type: choice
+        options:
+          - "28"
+          - "29"
+          - "30"
+          - "33"
+  push:
+    tags: ["v*"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONUNBUFFERED: "1"
+
+permissions:
+  contents: read
+  actions: read  # needed to download artifacts from the android.yml run
+
+jobs:
+  emulator-bootstrap-test:
+    name: APK launch in emulator (API ${{ inputs.api-level || '30' }})
+    runs-on: ubuntu-22.04
+    # Iter #72 canary : continue-on-error stays true until 3
+    # consecutive emulator runs succeed (matches android.yml policy).
+    continue-on-error: true
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Wait for the latest android.yml build then download APK ──────────
+      # The emulator test depends on the APK produced by android.yml.
+      # When triggered on a tag push, both workflows run in parallel
+      # so we poll for the APK build to finish (max ~25 min).
+      - name: Wait for android.yml APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # If we're triggered by a tag, find the matching android.yml run.
+          # If triggered manually, take the latest successful android.yml run.
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            REF="${{ github.ref }}"
+            echo "Looking for android.yml run on $REF..."
+            for i in $(seq 1 60); do
+              RUN_ID=$(gh run list \
+                --workflow=android.yml \
+                --branch="${REF#refs/tags/}" \
+                --limit 1 \
+                --json databaseId,status,conclusion \
+                --jq '.[0] | select(.status == "completed") | .databaseId' || true)
+              if [[ -n "$RUN_ID" ]]; then
+                echo "Found run $RUN_ID"
+                break
+              fi
+              echo "Run not yet complete, sleep 30s ($i/60)"
+              sleep 30
+            done
+          else
+            RUN_ID=$(gh run list \
+              --workflow=android.yml \
+              --status=success \
+              --limit 1 \
+              --json databaseId \
+              --jq '.[0].databaseId')
+            echo "Latest successful run : $RUN_ID"
+          fi
+          if [[ -z "${RUN_ID:-}" ]]; then
+            echo "No android.yml run found — abort."
+            exit 1
+          fi
+          echo "RUN_ID=$RUN_ID" >> "$GITHUB_ENV"
+
+      - name: Download APK artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download "$RUN_ID" --dir apk-artifact
+          find apk-artifact -name '*.apk' -exec ls -lh {} \;
+          # Pin the APK path so subsequent steps can reference it.
+          APK_PATH=$(find apk-artifact -name '*.apk' | head -1)
+          echo "APK_PATH=$APK_PATH" >> "$GITHUB_ENV"
+
+      # ── Enable KVM for the emulator ──────────────────────────────────────
+      # GitHub-hosted Linux runners have nested virt enabled but the
+      # /dev/kvm node defaults to root-only. The reactivecircus action
+      # documents this exact recipe.
+      - name: Enable KVM group permissions
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      # ── Cache the emulator AVD to speed up subsequent runs ──────────────
+      - name: Cache AVD
+        uses: actions/cache@v4
+        id: avd-cache
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: avd-${{ inputs.api-level || '30' }}
+
+      # ── Spin the emulator + run the diagnostic script ────────────────────
+      # API 30 + x86_64 is the cheapest combo : x86_64 runs at
+      # near-native speed on Linux x86 hosts AND Android 11+ ships
+      # the libndk_translation library that runs arm64-v8a apps
+      # (which our APK contains) under emulation. Boot ~3 min.
+      - name: Run emulator + bootstrap diagnostic
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ inputs.api-level || '30' }}
+          arch: x86_64
+          profile: pixel_3a
+          target: google_apis
+          force-avd-creation: false
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -no-boot-anim -camera-back none -no-audio
+          disable-animations: true
+          script: |
+            set -euo pipefail
+            echo "=== ADB devices ==="
+            adb devices
+            echo "=== Install APK ==="
+            adb install -r -t "$APK_PATH"
+            echo "=== Confirm package present ==="
+            adb shell pm list packages | grep -i emeraude || (echo "PACKAGE NOT INSTALLED"; exit 1)
+            echo "=== Launch the activity ==="
+            adb logcat -c
+            adb shell am start -n org.mikaelarth.emeraude/org.kivy.android.PythonActivity
+            echo "=== Wait 15s for bootstrap to complete or crash ==="
+            sleep 15
+            echo "=== Capture logcat (filtered) ==="
+            adb logcat -d > emulator_logcat_full.txt
+            adb logcat -d \
+              | grep -iE 'emeraude|mikael|python|kivy|androidruntime|libc|sigsegv|fatal' \
+              > emulator_logcat_filtered.txt || true
+            echo "=== Capture crash log via run-as (debug APK) ==="
+            adb shell run-as org.mikaelarth.emeraude cat files/last_crash.log \
+              > emulator_last_crash.log 2>&1 || echo "no last_crash.log present"
+            echo "=== Capture private dir listing ==="
+            adb shell run-as org.mikaelarth.emeraude ls -la files/ \
+              > emulator_files_listing.txt 2>&1 || true
+            echo "=== Capture currently visible activity ==="
+            adb shell dumpsys activity activities | grep -iE 'topResumed|RealActivity|mResumed' \
+              > emulator_topactivity.txt || true
+
+      - name: Upload diagnostic artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: emulator-diagnostic-${{ github.sha }}
+          path: |
+            emulator_logcat_full.txt
+            emulator_logcat_filtered.txt
+            emulator_last_crash.log
+            emulator_files_listing.txt
+            emulator_topactivity.txt
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Print filtered logcat in CI log
+        if: always()
+        run: |
+          echo "=== last_crash.log ==="
+          cat emulator_last_crash.log 2>/dev/null || echo "absent"
+          echo ""
+          echo "=== filtered logcat ==="
+          cat emulator_logcat_filtered.txt 2>/dev/null | head -300 || echo "absent"
+          echo ""
+          echo "=== files/ listing in emeraude private dir ==="
+          cat emulator_files_listing.txt 2>/dev/null || echo "absent"
