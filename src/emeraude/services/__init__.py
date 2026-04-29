@@ -41,6 +41,9 @@ from emeraude.services.champion_promotion import (
     PromotionDecision,
     evaluate_promotion,
 )
+from emeraude.services.config_data_source import (
+    SettingsConfigDataSource,
+)
 from emeraude.services.coverage_validator import (
     AUDIT_COVERAGE_VALIDATION,
     CoverageValidationDecision,
@@ -122,6 +125,7 @@ __all__ = [
     "RiskCheckResult",
     "RiskMonitor",
     "RobustnessValidationDecision",
+    "SettingsConfigDataSource",
     "TrackerDashboardDataSource",
     "TradeDirection",
     "WalletService",

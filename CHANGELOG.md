@@ -6,6 +6,95 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.64] - 2026-04-29
+
+### Added
+
+- **Config Screen — 3ème écran fonctionnel Pilier #1** (doc 02
+  §"⚙ CONFIG — Tout paramétrer en sécurité"). Slice 1 : status
+  système + toggle mode paper ↔ real persisté avec **double-tap
+  inline A5**. Pilier #1 passe de 40 % à **60 %** (3/5 écrans).
+- **`src/emeraude/services/config_types.py`** (~150 LOC, 100 %
+  coverage) — Kivy-free :
+  - `SETTING_KEY_MODE = "ui.mode"` constante stable
+  - `ConfigSnapshot` frozen dataclass : mode, starting_capital,
+    app_version, total_audit_events, db_path
+  - `ConfigDataSource` Protocol : `fetch_snapshot()` + `set_mode()`
+  - `format_mode_label`, `format_starting_capital_label`,
+    `format_audit_count_label`, `is_valid_mode` pures
+- **`src/emeraude/services/config_data_source.py`** (~85 LOC,
+  100 % coverage) :
+  - `SettingsConfigDataSource` lit/écrit via
+    `database.get_setting`/`set_setting` + `audit.query_events`
+    + `paths.database_path()` + `emeraude.__version__`
+  - Validation `default_mode` + `set_mode` : `ValueError` si mode
+    inconnu
+- **`src/emeraude/ui/screens/config.py`** (~280 LOC, exclu coverage)
+  - `_TwoStageButton(Button)` : machine d'état IDLE → ARMED → IDLE
+    avec timer `Clock.schedule_once` 5s. **Pattern A5 inline**, pas
+    de Popup.
+  - `ConfigScreen(Screen)` : 5-row status panel + 2 boutons toggle
+    (le mode actif est un badge `[actif]` non-cliquable, l'inactif
+    est un `_TwoStageButton`). Restart hint en bas.
+- **`src/emeraude/__init__.py`** : `__version__` lu dynamiquement
+  via `importlib.metadata.version("emeraude")` pour rester en sync
+  avec `pyproject.toml`. Fallback `"unknown"` si package non
+  installé.
+- **3 fichiers de tests, 51 nouveaux tests** :
+  - `test_config_types.py` (23) : Mode label / Capital label /
+    Audit count / Validator / Snapshot / Constants — runs partout.
+  - `test_config_data_source.py` (14) : Validation / Snapshot
+    shape / Audit count / Mode persistence — runs partout (DB +
+    Decimal, no Kivy).
+  - `test_config_screen.py` (13, gated `_DISPLAY_AVAILABLE`) :
+    Construction / ActiveBadge / TwoStageButton / Mode toggle E2E
+    / Refresh.
+  - `test_ui_smoke.py` (+1) : assert `CONFIG_SCREEN_NAME` registered.
+
+### Changed
+
+- **`EmeraudeApp.build()`** :
+  - Lit le mode persisté via `database.get_setting(SETTING_KEY_MODE)`
+    au démarrage. Fallback sur le `mode` du constructeur si rien
+    persisté. **Effet** : un toggle Config → restart applique le
+    nouveau mode.
+  - Enregistre désormais 3 écrans : `dashboard` + `journal` +
+    `config`.
+  - `NavigationBar` étendue à 3 onglets : Tableau / Journal / Config.
+- `services/__init__.py` : re-export `SettingsConfigDataSource`.
+- `pyproject.toml` : version `0.0.63` -> `0.0.64`.
+
+### Notes
+
+- **Effet du toggle = prochain redémarrage** dans cet iter. Le
+  `WalletService` capture sa propre valeur de mode au `build()` ;
+  une mutation runtime requiert la propagation live (iter #65+,
+  `mode_provider: Callable`). Cette friction est **affichée
+  explicitement** dans l'UI (`Modification effective au prochain
+  redémarrage`) — pas de fonctionnalité fictive (anti-A1).
+- **Pas de KivyMD pour le `_TwoStageButton`** — pure Kivy 2.3.
+  Le Popup standard aurait été plus lourd UX-wise pour une
+  confirmation simple. Le pattern inline (single button qui
+  change d'état) est plus mobile-friendly et réutilisable.
+- **Saisie clés Binance reportée à iter #66+** — slice de
+  Configuration plus large qui touche aux secrets via
+  `infra/crypto.py` PBKDF2+XOR. Iter #65 = propagation live du
+  mode toggle (priorité plus immédiate pour l'UX cohérence).
+- **Anti-règles respectées** :
+  - **A1** : aucune section "Coming soon" affichée. Les sections
+    doc 02 non livrées (Capital, Risque, Bot Maître, etc.)
+    n'apparaissent simplement pas dans l'écran.
+  - **A5** : double-tap obligatoire pour changer de mode (pas de
+    single-tap). Le bouton revient à l'état idle après 5 s sans
+    confirmation.
+  - **A8** : `ConfigDataSource.set_mode` lève `ValueError`
+    explicite sur mode invalide. Pas de `except: pass`.
+  - **A11** : `starting_capital` n'est pas hardcodé côté Config —
+    il est lu via le provider (typiquement
+    `WalletService.starting_capital`).
+- Suite **1588 → 1639 tests (+51)**, coverage global stable à
+  **99.79 %**.
+
 ## [0.0.63] - 2026-04-29
 
 ### Added

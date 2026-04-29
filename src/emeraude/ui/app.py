@@ -42,10 +42,17 @@ from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.screenmanager import ScreenManager
 
 from emeraude.agent.execution.position_tracker import PositionTracker
+from emeraude.infra import database
+from emeraude.services.config_data_source import SettingsConfigDataSource
+from emeraude.services.config_types import SETTING_KEY_MODE
 from emeraude.services.dashboard_data_source import TrackerDashboardDataSource
 from emeraude.services.dashboard_types import MODE_PAPER
 from emeraude.services.journal_data_source import QueryEventsJournalDataSource
 from emeraude.services.wallet import DEFAULT_COLD_START_CAPITAL, WalletService
+from emeraude.ui.screens.config import (
+    CONFIG_SCREEN_NAME,
+    ConfigScreen,
+)
 from emeraude.ui.screens.dashboard import (
     DASHBOARD_SCREEN_NAME,
     DashboardScreen,
@@ -152,11 +159,19 @@ class EmeraudeApp(App):  # type: ignore[misc]  # Kivy classes are untyped (kivy.
         # have been applied — they will be applied on first use.
         tracker = PositionTracker()
 
+        # Honor a persisted mode setting if present (iter #64). The
+        # constructor's ``mode`` parameter remains the cold-start
+        # default ; user toggles via ConfigScreen are persisted in
+        # the ``settings`` table and re-applied here at next launch.
+        # Live propagation (without restart) lands iter #65+.
+        persisted_mode = database.get_setting(SETTING_KEY_MODE)
+        effective_mode = persisted_mode if persisted_mode is not None else self._mode
+
         # Wallet : either the injected one (tests) or a fresh
         # tracker-backed one (production).
         wallet = self._wallet or WalletService(
             tracker=tracker,
-            mode=self._mode,
+            mode=effective_mode,
             starting_capital=self._starting_capital,
         )
 
@@ -181,13 +196,26 @@ class EmeraudeApp(App):  # type: ignore[misc]  # Kivy classes are untyped (kivy.
         )
         sm.add_widget(journal)
 
-        # Bottom navigation bar — switches between Dashboard / Journal.
-        # Future screens (Signaux, Portfolio, IA, Config) will add
-        # tabs here. The order in the tuple is the order on screen.
+        # Config : status panel + persisted mode toggle (iter #64).
+        # Other doc 02 sections (clés Binance, Telegram, Emergency
+        # Stop, Backtest) ship in subsequent iters.
+        config_data_source = SettingsConfigDataSource(
+            starting_capital_provider=lambda: wallet.starting_capital,
+            default_mode=effective_mode,
+        )
+        config = ConfigScreen(
+            data_source=config_data_source,
+            name=CONFIG_SCREEN_NAME,
+        )
+        sm.add_widget(config)
+
+        # Bottom navigation bar — switches between Dashboard / Journal /
+        # Config. Future screens (Signaux, Portfolio, IA) will extend.
         nav = NavigationBar(
             tabs=(
                 NavTab(screen_name=DASHBOARD_SCREEN_NAME, label="Tableau"),
                 NavTab(screen_name=JOURNAL_SCREEN_NAME, label="Journal"),
+                NavTab(screen_name=CONFIG_SCREEN_NAME, label="Config"),
             ),
             screen_manager=sm,
         )

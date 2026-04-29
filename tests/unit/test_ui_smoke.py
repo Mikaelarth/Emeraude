@@ -38,6 +38,7 @@ from emeraude.ui.app import (
     APP_TITLE,
     EmeraudeApp,
 )
+from emeraude.ui.screens.config import CONFIG_SCREEN_NAME
 from emeraude.ui.screens.dashboard import DASHBOARD_SCREEN_NAME
 from emeraude.ui.screens.journal import JOURNAL_SCREEN_NAME
 
@@ -125,6 +126,14 @@ class TestAppBuild:
         sm = app.screen_manager
         assert sm is not None
         assert JOURNAL_SCREEN_NAME in sm.screen_names
+
+    def test_screen_manager_has_config_screen(self, fresh_db: Path) -> None:
+        # Iter #64 : Config est le 3eme ecran (status + toggle mode).
+        app = EmeraudeApp()
+        app.build()
+        sm = app.screen_manager
+        assert sm is not None
+        assert CONFIG_SCREEN_NAME in sm.screen_names
 
     def test_dashboard_screen_has_widgets(self, fresh_db: Path) -> None:
         app = EmeraudeApp()
