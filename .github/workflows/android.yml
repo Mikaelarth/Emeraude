@@ -1,0 +1,101 @@
+name: Android APK
+
+on:
+  # Run on tag pushes (release builds) and on demand. NOT on every PR
+  # — Android builds are slow (~15-30 min first time, ~5-10 min cached)
+  # and the dev cycle's main signal is the regular CI matrix.
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONUNBUFFERED: "1"
+
+permissions:
+  contents: read
+
+jobs:
+  android-debug-apk:
+    name: Buildozer android debug APK
+    runs-on: ubuntu-latest
+    # Iter #68 ships the workflow as a canary : we want visibility on
+    # build status without blocking releases on first-attempt flakiness.
+    # Once 3 consecutive runs succeed cleanly, this flag is removed.
+    continue-on-error: true
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── System dependencies for Buildozer + python-for-android ──────────
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git zip unzip openjdk-17-jdk autoconf libtool pkg-config \
+            zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo6 \
+            cmake libffi-dev libssl-dev libgl1
+
+      # ── Python + Buildozer ──────────────────────────────────────────────
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Cython 0.29 is required by python-for-android 2024.x ; newer
+      # Cython 3.x breaks Kivy + Android.
+      - name: Install Buildozer + Cython 0.29
+        run: |
+          python -m pip install --upgrade pip
+          pip install Cython==0.29.36 buildozer
+
+      # Buildozer caches the Android SDK / NDK / build outputs under
+      # ~/.buildozer (~3 GB). Cache it across runs to drop the build
+      # time from ~25 min to ~7 min.
+      - name: Cache Buildozer global dir
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.buildozer
+          key: buildozer-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
+          restore-keys: |
+            buildozer-${{ runner.os }}-
+
+      - name: Cache Buildozer project dir
+        uses: actions/cache@v4
+        with:
+          path: |
+            .buildozer
+          key: buildozer-project-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
+          restore-keys: |
+            buildozer-project-${{ runner.os }}-
+
+      # ── Build the debug APK ─────────────────────────────────────────────
+      # ``android debug`` produces an unsigned APK suitable for sideload
+      # on a physical device. ``android release`` would require keystore
+      # signing — out of scope for iter #68.
+      - name: Buildozer android debug
+        run: |
+          export PATH=$PATH:~/.local/bin/
+          buildozer android debug
+
+      # ── Publish the APK as a workflow artifact ──────────────────────────
+      - name: Upload APK artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: emeraude-debug-apk-${{ github.sha }}
+          path: bin/*.apk
+          retention-days: 30
+          if-no-files-found: warn
+
+      # ── Surface the APK size for T17 (≤ 50 MB target) ──────────────────
+      - name: Report APK size
+        if: success()
+        run: |
+          ls -lh bin/*.apk || true
+          du -sh bin/*.apk || true

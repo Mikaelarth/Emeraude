@@ -6,6 +6,89 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.68] - 2026-04-29
+
+### Added
+
+- **Buildozer + Android packaging** (iter #68) — débloque côté
+  outillage T4 (APK sans crash 24h) + T17 (taille APK ≤ 50 MB).
+  Pilier #1 reste à 65 % côté UI, mais le **packaging mobile**
+  est désormais reproductible.
+- **`buildozer.spec`** à la racine du repo :
+  - `package.domain = org.mikaelarth`, `package.name = emeraude`,
+    `version = 0.0.68` (hardcodé, sync manuel avec pyproject —
+    cf. ADR-0003 §3).
+  - `requirements = python3,kivy==2.3.1,requests==2.32.3,certifi==2024.8.30`
+    pinned aux mêmes versions que `pyproject.toml`.
+  - `source.dir = src`, `source.include_patterns =
+    emeraude/infra/migrations/*.sql` (les SQL doivent ship dans
+    l'APK).
+  - `source.exclude_dirs = tests, docs, .venv, .buildozer, bin,
+    __pycache__` (pas de tests dans l'APK).
+  - `orientation = portrait`, `android.permissions = INTERNET`
+    uniquement (anti-règle A1 : ne pas demander ce qu'on n'utilise
+    pas).
+  - `android.api = 33`, `android.minapi = 24` (Android 13 cible /
+    7.0 minimum, ~95 % couverture).
+  - `android.archs = arm64-v8a,armeabi-v7a` (modern + tail 32-bit).
+  - `p4a.bootstrap = sdl2`, `p4a.branch = 2024.1.21` pinned.
+- **`src/main.py`** — Buildozer entry shim minimal :
+  importe :func:`emeraude.main.main` et l'invoque. Buildozer cherche
+  ``main.py`` à la racine de ``source.dir`` ; le vrai bootstrap
+  Kivy reste dans :mod:`emeraude.main`.
+- **`.github/workflows/android.yml`** — workflow CI dédié au build
+  APK debug :
+  - Déclenchement : tags `v*` + `workflow_dispatch` manuel. **Pas
+    sur PR** (build 15-30 min trop lent pour le cycle de revue).
+  - `continue-on-error: true` initialement (1er builds Android
+    typiquement flaky). Retrait après 3 builds verts consécutifs.
+  - Cache `~/.buildozer/` (~3 GB SDK/NDK) + `.buildozer/` projet
+    pour passer de ~25 min à ~7 min sur cache hit.
+  - Artifact APK exposé via `actions/upload-artifact@v4`
+    (rétention 30j) — sideload depuis l'interface GitHub Actions.
+  - Étape `Report APK size` (`du -sh bin/*.apk`) pour suivre T17
+    à chaque build.
+- **`docs/adr/0003-buildozer-config.md`** — ADR documentant les
+  choix : Buildozer + p4a 2024.1.21, versionnage manuel,
+  permissions minimales, archs ciblées, cache CI, alternatives
+  rejetées (Briefcase, AAB, build sur PR, signing release, etc.).
+
+### Changed
+
+- **`pyproject.toml`** : `src/main.py` ajouté à
+  `[tool.coverage.run] omit` (le shim Buildozer s'exécute en
+  runtime APK, pas en pytest).
+- `pyproject.toml` : version `0.0.67` -> `0.0.68`.
+
+### Notes
+
+- **Pas d'icône / presplash custom cet iter** : utilisation des
+  défauts Kivy. Création d'assets graphiques de qualité hors scope
+  code. Lignes commentées dans `buildozer.spec` prêtes pour un
+  iter futur (`src/data/icon.png` 512x512).
+- **Pas de signing release** : APK debug-only. Distribution Google
+  Play hors scope. Sideload depuis GitHub Actions artifact suffit
+  pour T4 manuel.
+- **Versionnage manuel** : `version` dans `buildozer.spec` est
+  hardcodé. Buildozer `version.regex` ne peut pas parser
+  `__version__: str = _pkg_version("emeraude")` — donc on bump
+  manuellement à chaque iter en parallèle de pyproject.toml. ADR-0003
+  §3 documente le trade-off + la migration future possible.
+- **Le 1er build CI sera lent** (~25 min, télécharge SDK + NDK).
+  Subsequent builds cached → ~7 min.
+- **Test runtime device** : sideload manuel post-build via
+  l'artifact GitHub Actions. T4 (24h sans crash) reste un test
+  manuel jusqu'à ce qu'on ait un device farm CI (out of scope MVP).
+- **Anti-règles respectées** :
+  - **A1** : permissions Android minimales (INTERNET seul). Pas de
+    "Coming soon" — l'APK ship avec exactement les fonctionnalités
+    livrées (3 écrans + saisie clés + mode real).
+  - **R5** : `src/main.py` ne contient que le shim, la logique réelle
+    reste dans `emeraude/main.py` (1 source de vérité).
+- Suite **1695 → 1695 tests** (pas de nouveau test — Buildozer est
+  packaging, pas code applicatif testable en pytest), coverage
+  global stable à **99.76 %**.
+
 ## [0.0.67] - 2026-04-29
 
 ### Added
