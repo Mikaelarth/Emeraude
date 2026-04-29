@@ -59,9 +59,11 @@ class TrackerDashboardDataSource:
         capital_provider: callable returning the current capital in
             quote currency, or ``None`` if not yet configured. Same
             convention as :class:`AutoTrader`.
-        mode: stable mode label, one of
-            :data:`emeraude.ui.screens.dashboard.MODE_PAPER` /
-            :data:`MODE_REAL` / :data:`MODE_UNCONFIGURED`.
+        mode_provider: callable returning the current mode label
+            (``MODE_PAPER`` / ``MODE_REAL`` / ``MODE_UNCONFIGURED``).
+            Re-évalué à chaque ``fetch_snapshot()`` — un toggle Config
+            propagé via ``settings`` apparaît sur le Dashboard au
+            prochain cycle pump (iter #65, plus de redémarrage requis).
         history_limit: maximum number of closed trades to aggregate
             for the cumulative P&L. Default 200.
     """
@@ -71,7 +73,7 @@ class TrackerDashboardDataSource:
         *,
         tracker: PositionTracker,
         capital_provider: Callable[[], Decimal | None],
-        mode: str,
+        mode_provider: Callable[[], str],
         history_limit: int = _DEFAULT_HISTORY_LIMIT,
     ) -> None:
         if history_limit < 1:
@@ -79,7 +81,7 @@ class TrackerDashboardDataSource:
             raise ValueError(msg)
         self._tracker = tracker
         self._capital_provider = capital_provider
-        self._mode = mode
+        self._mode_provider = mode_provider
         self._history_limit = history_limit
 
     def fetch_snapshot(self) -> DashboardSnapshot:
@@ -93,6 +95,8 @@ class TrackerDashboardDataSource:
           ``r_realized * risk_per_unit * quantity`` over the closed
           history. Open positions are filtered.
         * ``n_closed_trades`` : cardinality of the same filtered set.
+        * ``mode`` : whatever ``mode_provider()`` returns at this
+          call — re-évalué à chaque snapshot pour propagation live.
         """
         history = self._tracker.history(limit=self._history_limit)
         cumulative = _ZERO
@@ -113,5 +117,5 @@ class TrackerDashboardDataSource:
             open_position=self._tracker.current_open(),
             cumulative_pnl=cumulative,
             n_closed_trades=n_closed,
-            mode=self._mode,
+            mode=self._mode_provider(),
         )

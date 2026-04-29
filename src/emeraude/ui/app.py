@@ -159,26 +159,31 @@ class EmeraudeApp(App):  # type: ignore[misc]  # Kivy classes are untyped (kivy.
         # have been applied — they will be applied on first use.
         tracker = PositionTracker()
 
-        # Honor a persisted mode setting if present (iter #64). The
-        # constructor's ``mode`` parameter remains the cold-start
-        # default ; user toggles via ConfigScreen are persisted in
-        # the ``settings`` table and re-applied here at next launch.
-        # Live propagation (without restart) lands iter #65+.
-        persisted_mode = database.get_setting(SETTING_KEY_MODE)
-        effective_mode = persisted_mode if persisted_mode is not None else self._mode
+        # Shared mode provider : reads the persisted setting on each
+        # call, falls back to the constructor-default mode. Wallet +
+        # dashboard data source consume the same provider so a Config
+        # toggle propagates within one refresh tick (iter #65 — plus
+        # de "redémarrage requis"). Tests bypassent via ``wallet=``
+        # injection.
+        def _read_mode() -> str:
+            persisted = database.get_setting(SETTING_KEY_MODE)
+            return persisted if persisted is not None else self._mode
 
         # Wallet : either the injected one (tests) or a fresh
         # tracker-backed one (production).
         wallet = self._wallet or WalletService(
             tracker=tracker,
-            mode=effective_mode,
+            mode_provider=_read_mode,
             starting_capital=self._starting_capital,
         )
 
         data_source = TrackerDashboardDataSource(
             tracker=tracker,
             capital_provider=wallet.current_capital,
-            mode=wallet.mode,
+            # Délégué au wallet pour cohérence quand le wallet est
+            # injecté en test : sa source de vérité prime sur la
+            # composition root.
+            mode_provider=lambda: wallet.mode,
         )
 
         dashboard = DashboardScreen(
@@ -196,12 +201,15 @@ class EmeraudeApp(App):  # type: ignore[misc]  # Kivy classes are untyped (kivy.
         )
         sm.add_widget(journal)
 
-        # Config : status panel + persisted mode toggle (iter #64).
-        # Other doc 02 sections (clés Binance, Telegram, Emergency
-        # Stop, Backtest) ship in subsequent iters.
+        # Config : status panel + persisted mode toggle (iter #64,
+        # propagation live iter #65). Other doc 02 sections (clés
+        # Binance, Telegram, Emergency Stop, Backtest) ship in
+        # subsequent iters. ``default_mode`` est le cold-start
+        # constructor (anti-A11) ; le SettingsConfigDataSource lit
+        # ensuite le settings persisté à chaque snapshot.
         config_data_source = SettingsConfigDataSource(
             starting_capital_provider=lambda: wallet.starting_capital,
-            default_mode=effective_mode,
+            default_mode=self._mode,
         )
         config = ConfigScreen(
             data_source=config_data_source,

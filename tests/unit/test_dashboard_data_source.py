@@ -108,7 +108,7 @@ class TestValidation:
             TrackerDashboardDataSource(
                 tracker=PositionTracker(),
                 capital_provider=lambda: None,
-                mode=MODE_PAPER,
+                mode_provider=lambda: MODE_PAPER,
                 history_limit=0,
             )
 
@@ -117,7 +117,7 @@ class TestValidation:
             TrackerDashboardDataSource(
                 tracker=PositionTracker(),
                 capital_provider=lambda: None,
-                mode=MODE_PAPER,
+                mode_provider=lambda: MODE_PAPER,
                 history_limit=-5,
             )
 
@@ -131,7 +131,7 @@ class TestSnapshotShape:
         ds = TrackerDashboardDataSource(
             tracker=PositionTracker(),
             capital_provider=lambda: Decimal("20"),
-            mode=MODE_PAPER,
+            mode_provider=lambda: MODE_PAPER,
         )
         snap = ds.fetch_snapshot()
         assert isinstance(snap, DashboardSnapshot)
@@ -140,7 +140,7 @@ class TestSnapshotShape:
         ds = TrackerDashboardDataSource(
             tracker=PositionTracker(),
             capital_provider=lambda: Decimal("42.5"),
-            mode=MODE_PAPER,
+            mode_provider=lambda: MODE_PAPER,
         )
         snap = ds.fetch_snapshot()
         assert snap.capital_quote == Decimal("42.5")
@@ -149,7 +149,7 @@ class TestSnapshotShape:
         ds = TrackerDashboardDataSource(
             tracker=PositionTracker(),
             capital_provider=lambda: None,
-            mode=MODE_UNCONFIGURED,
+            mode_provider=lambda: MODE_UNCONFIGURED,
         )
         snap = ds.fetch_snapshot()
         assert snap.capital_quote is None
@@ -158,7 +158,7 @@ class TestSnapshotShape:
         ds = TrackerDashboardDataSource(
             tracker=PositionTracker(),
             capital_provider=lambda: None,
-            mode=MODE_REAL,
+            mode_provider=lambda: MODE_REAL,
         )
         snap = ds.fetch_snapshot()
         assert snap.mode == MODE_REAL
@@ -173,7 +173,7 @@ class TestCumulativePnl:
         ds = TrackerDashboardDataSource(
             tracker=PositionTracker(),
             capital_provider=lambda: None,
-            mode=MODE_PAPER,
+            mode_provider=lambda: MODE_PAPER,
         )
         snap = ds.fetch_snapshot()
         assert snap.cumulative_pnl == Decimal("0")
@@ -185,7 +185,7 @@ class TestCumulativePnl:
         ds = TrackerDashboardDataSource(
             tracker=tracker,
             capital_provider=lambda: Decimal("21.20"),
-            mode=MODE_PAPER,
+            mode_provider=lambda: MODE_PAPER,
         )
         snap = ds.fetch_snapshot()
         assert snap.cumulative_pnl == Decimal("1.2")
@@ -197,7 +197,7 @@ class TestCumulativePnl:
         ds = TrackerDashboardDataSource(
             tracker=tracker,
             capital_provider=lambda: None,
-            mode=MODE_PAPER,
+            mode_provider=lambda: MODE_PAPER,
         )
         snap = ds.fetch_snapshot()
         assert snap.cumulative_pnl == Decimal("-0.4")
@@ -209,7 +209,7 @@ class TestCumulativePnl:
         ds = TrackerDashboardDataSource(
             tracker=tracker,
             capital_provider=lambda: None,
-            mode=MODE_PAPER,
+            mode_provider=lambda: MODE_PAPER,
         )
         snap = ds.fetch_snapshot()
         assert snap.cumulative_pnl == Decimal("0.6")
@@ -226,7 +226,7 @@ class TestOpenPosition:
         ds = TrackerDashboardDataSource(
             tracker=tracker,
             capital_provider=lambda: None,
-            mode=MODE_PAPER,
+            mode_provider=lambda: MODE_PAPER,
         )
         snap = ds.fetch_snapshot()
         assert snap.open_position is None
@@ -236,7 +236,7 @@ class TestOpenPosition:
         ds = TrackerDashboardDataSource(
             tracker=tracker,
             capital_provider=lambda: None,
-            mode=MODE_PAPER,
+            mode_provider=lambda: MODE_PAPER,
         )
         snap = ds.fetch_snapshot()
         assert snap.open_position is not None
@@ -258,7 +258,7 @@ class TestHistoryLimit:
         ds = TrackerDashboardDataSource(
             tracker=tracker,
             capital_provider=lambda: None,
-            mode=MODE_PAPER,
+            mode_provider=lambda: MODE_PAPER,
             history_limit=2,
         )
         snap = ds.fetch_snapshot()

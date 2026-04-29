@@ -6,6 +6,58 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.65] - 2026-04-29
+
+### Changed (BREAKING — service-layer API)
+
+- **`WalletService.__init__`** : `mode: str` → `mode_provider:
+  Callable[[], str]`. Le mode est maintenant **re-évalué à chaque
+  accès** à :attr:`WalletService.mode` ou
+  :meth:`current_capital()`. Élimine la friction
+  "redémarrage requis" du toggle iter #64.
+- **`TrackerDashboardDataSource.__init__`** : `mode: str` →
+  `mode_provider: Callable[[], str]`. `fetch_snapshot()` invoque
+  le provider à chaque appel.
+- **`EmeraudeApp.build()`** : un **seul lambda
+  `_read_mode`** est partagé par les deux services. Lit
+  `database.get_setting(SETTING_KEY_MODE)` puis fallback sur
+  `self._mode` (constructor cold-start). Le data source utilise
+  `lambda: wallet.mode` pour rester cohérent quand un wallet
+  custom est injecté en test.
+- **`ConfigScreen`** : le hint "redémarrage requis" devient
+  "La modification est appliquée automatiquement dans quelques
+  secondes." (cycle pump iter #63 + live provider iter #65).
+- `pyproject.toml` : version `0.0.64` -> `0.0.65`.
+
+### Added
+
+- **`tests/unit/test_wallet.py`** classe
+  `TestLiveModeProvider` (2 tests) :
+  - `test_mode_re_evaluated_on_each_access` : mute le mode externe,
+    `wallet.mode` reflète immédiatement.
+  - `test_current_capital_reflects_live_mode_change` : paper →
+    real propagation sans rebuild.
+- Tests `test_wallet.py` (15) + `test_dashboard_data_source.py` (13)
+  mis à jour : `mode=MODE_X` → `mode_provider=lambda: MODE_X`.
+
+### Notes
+
+- **Cohérence wallet ↔ data source** : le data source reçoit
+  `mode_provider=lambda: wallet.mode`, pas `_read_mode` directement.
+  Quand un test injecte un wallet custom (`EmeraudeApp(wallet=...)`),
+  le data source consomme la source de vérité du wallet, jamais celle
+  de la composition root. Évite les états divergents.
+- **Anti-règle A1** : la friction "redémarrage requis" était une
+  fonctionnalité semi-fictive (le toggle persistait mais l'effet
+  était différé). Maintenant le toggle fait ce qu'il dit, en ~5
+  secondes.
+- **Anti-règle R5** : les Protocol consumer-side n'ont pas changé
+  (`DashboardDataSource.fetch_snapshot()` retourne toujours un
+  `DashboardSnapshot` avec un `mode: str`). Pas de cascade UI.
+- **No coverage regression** : 99.79 % stable. 1639 → 1641 tests
+  (+2). 28 tests existants ont juste leur ligne `mode=` mutée vers
+  `mode_provider=lambda:`, pas de logique nouvelle.
+
 ## [0.0.64] - 2026-04-29
 
 ### Added

@@ -19,11 +19,12 @@ Emergency Stop, Backtest. Les sections doc 02 non encore livrées
 n'apparaissent **pas** dans l'écran (anti-règle A1 — pas de
 "Coming soon").
 
-Effet du toggle dans cet iter : **prochain redémarrage**. Le
-:class:`WalletService` capture sa propre valeur de mode au
-:meth:`build`, donc une mutation runtime nécessite la propagation
-live (iter #65+, ``mode_provider: Callable``). Cette friction est
-**affichée explicitement** dans l'UI — pas de fonctionnalité fictive.
+Effet du toggle (iter #65) : **propagation live** dans les ~5
+secondes via le cycle pump (``Clock.schedule_interval`` iter #63).
+Le :class:`WalletService` reçoit désormais un ``mode_provider:
+Callable[[], str]`` qui re-lit la table ``settings`` à chaque
+appel ; le Dashboard, le Journal et le Config screen voient le
+nouveau mode au prochain refresh. Pas de redémarrage requis.
 
 ADR-0002 §6 + §7 — pure logique dans
 :mod:`emeraude.services.config_types` ; ce module ne contient que
@@ -61,7 +62,7 @@ CONFIG_SCREEN_NAME: Final[str] = "config"
 #: explicite".
 _ARM_DURATION_SECONDS: Final[float] = 5.0
 
-_RESTART_HINT: Final[str] = "Modification effective au prochain redemarrage de l'app."
+_REFRESH_HINT: Final[str] = "La modification est appliquee automatiquement dans quelques secondes."
 
 
 class _TwoStageButton(Button):  # type: ignore[misc]  # Kivy classes are untyped (ADR-0002).
@@ -177,8 +178,9 @@ class ConfigScreen(Screen):  # type: ignore[misc]  # Kivy classes are untyped (A
     * **Mode toggle** : 2 :class:`_TwoStageButton` (Mode Paper / Mode
       Reel). The active mode's button is disabled (grayed) so the
       user can only toggle to the other.
-    * **Restart hint** : label expliquant que la modification
-      s'applique au prochain démarrage.
+    * **Refresh hint** : label expliquant que la modification
+      s'applique automatiquement dans les quelques secondes (cycle
+      pump iter #63 + live mode_provider iter #65).
 
     On :meth:`refresh` (initial + cycle pump) the snapshot is pulled
     from the data source and the rows are repopulated. The toggle
@@ -230,10 +232,10 @@ class ConfigScreen(Screen):  # type: ignore[misc]  # Kivy classes are untyped (A
         self._toggle_panel.bind(
             minimum_height=self._toggle_panel.setter("height"),
         )
-        self._restart_hint = Label(
-            text=_RESTART_HINT,
+        self._refresh_hint = Label(
+            text=_REFRESH_HINT,
             font_size=theme.FONT_SIZE_CAPTION,
-            color=theme.COLOR_WARNING,
+            color=theme.COLOR_TEXT_SECONDARY,
             size_hint_y=None,
             height=theme.FONT_SIZE_CAPTION * 2,
             halign="left",
@@ -243,7 +245,7 @@ class ConfigScreen(Screen):  # type: ignore[misc]  # Kivy classes are untyped (A
         self._outer.add_widget(self._header_label)
         self._outer.add_widget(self._status_panel)
         self._outer.add_widget(self._toggle_panel)
-        self._outer.add_widget(self._restart_hint)
+        self._outer.add_widget(self._refresh_hint)
         self.add_widget(self._outer)
 
         self.refresh()

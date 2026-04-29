@@ -53,6 +53,8 @@ from typing import TYPE_CHECKING, Final
 from emeraude.services.dashboard_types import MODE_PAPER
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from emeraude.agent.execution.position_tracker import PositionTracker
 
 
@@ -76,11 +78,20 @@ class WalletService:
     starting capital. Real / unconfigured modes return ``None`` until
     the corresponding live wiring lands.
 
+    Iter #65 : ``mode`` est un :class:`Callable` (provider) plutôt
+    qu'une chaîne statique, pour que les changements persistés via
+    ``ConfigScreen`` se propagent **sans redémarrage**. Le provider
+    est invoqué à chaque ``current_capital()`` / ``mode`` access ;
+    typiquement la composition root passe une lambda qui lit
+    :func:`emeraude.infra.database.get_setting`.
+
     Args:
         tracker: position lifecycle service. Read-only access.
-        mode: one of :data:`MODE_PAPER`, :data:`MODE_REAL`,
+        mode_provider: callable returning the current mode label,
+            one of :data:`MODE_PAPER`, :data:`MODE_REAL`,
             :data:`MODE_UNCONFIGURED` (cf.
-            :mod:`emeraude.services.dashboard_types`).
+            :mod:`emeraude.services.dashboard_types`). Invoqué à
+            chaque appel de :attr:`mode` ou :meth:`current_capital`.
         starting_capital: paper-mode baseline. Default
             :data:`DEFAULT_COLD_START_CAPITAL` (= 20 USD per doc 04).
             Must be ``>= 0``.
@@ -96,7 +107,7 @@ class WalletService:
         self,
         *,
         tracker: PositionTracker,
-        mode: str,
+        mode_provider: Callable[[], str],
         starting_capital: Decimal = DEFAULT_COLD_START_CAPITAL,
         history_limit: int = _DEFAULT_HISTORY_LIMIT,
     ) -> None:
@@ -107,14 +118,19 @@ class WalletService:
             msg = f"history_limit must be >= 1, got {history_limit}"
             raise ValueError(msg)
         self._tracker = tracker
-        self._mode = mode
+        self._mode_provider = mode_provider
         self._starting_capital = starting_capital
         self._history_limit = history_limit
 
     @property
     def mode(self) -> str:
-        """Stable mode label for the dashboard badge / audit filters."""
-        return self._mode
+        """Mode courant tel que rapporté par le provider.
+
+        Re-évalué à chaque accès — un changement persisté côté
+        ``settings`` apparaît au prochain appel sans rebuild
+        :class:`WalletService`.
+        """
+        return self._mode_provider()
 
     @property
     def starting_capital(self) -> Decimal:
@@ -133,7 +149,7 @@ class WalletService:
               (always a non-None ``Decimal``).
             * Real / unconfigured : ``None`` (the UI shows ``—``).
         """
-        if self._mode == MODE_PAPER:
+        if self._mode_provider() == MODE_PAPER:
             return self._starting_capital + self._cumulative_realized_pnl()
         # Real-mode live balance + unconfigured both return None until
         # their respective wiring lands. Honest cold-start (anti-A1).
