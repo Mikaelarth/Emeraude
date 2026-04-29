@@ -22,7 +22,23 @@ généré au démarrage et passé à la WebView via un cookie ``HttpOnly``
 qui essaierait de fetch ``localhost:8765/api/dashboard`` ne peut pas
 forger ce cookie et reçoit un 403.
 
-Pas de TLS — on est sur loopback, le risque MITM est nul.
+Note iter #78quater : Android 9+ refuse le HTTP cleartext dans la
+WebView par défaut. La tentative iter #78ter de patcher le manifest
+via ``android.extra_manifest_application_arguments`` a cassé Gradle
+ManifestMerger sans message d'erreur exploitable. Trois solutions
+sont possibles pour une prochaine iter :
+
+1. Java helper ``TrustingWebViewClient.java`` compilé via p4a, qui
+   override ``onReceivedSslError`` ; et ce serveur passe en HTTPS
+   avec un cert auto-signé bundlé.
+2. NetworkSecurityConfig XML resource + manifest patch via une
+   autre voie (TBD).
+3. JavaScript bridge (``addJavascriptInterface``) pour appeler le
+   coeur Python directement depuis JS, court-circuitant HTTP.
+
+Iter #78quater livre uniquement le revert du manifest fix cassé ;
+la WebView Android affichera ``ERR_CLEARTEXT_NOT_PERMITTED`` jusqu'à
+ce qu'on tackle le sujet en iter dédié.
 
 Pas de FastAPI / Flask — :mod:`http.server` stdlib suffit largement
 pour notre besoin (3-5 endpoints, GET principalement, JSON en sortie).

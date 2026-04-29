@@ -89,21 +89,25 @@ def _resolve_web_root() -> Path:
 def _open_android_webview(url: str, auth_token: str) -> None:
     """Replace the Kivy ContentView with an Android WebView pointed at ``url``.
 
-    The Android :class:`WebView` constructor requires a thread that
-    has a :class:`Looper` attached — that's the **Android UI thread**,
-    not the Kivy main thread. Iter #78 first attempt used Kivy's
-    ``@mainthread`` decorator (from ``kivy.clock``) which schedules
-    on the Kivy main thread → ``WebView(activity)`` raised
-    ``JavaException: NullPointerException ... Looper.mQueue`` on
-    Huawei P30 lite (cf. last_crash.log of the v0.0.78 first install).
+    The Android :class:`WebView` constructor requires a thread with an
+    attached :class:`Looper` — the **Android UI thread**, not the Kivy
+    main thread (which is the SDL2 native thread on p4a). We use
+    ``android.runnable.run_on_ui_thread`` to post via the Activity's
+    JVM ``runOnUiThread`` (cf. iter #78bis, fixed
+    ``JavaException: NullPointerException ... Looper.mQueue``).
 
-    The correct primitive is ``android.runnable.run_on_ui_thread``
-    (provided by ``python-for-android`` android stubs). It posts to
-    the Activity's UI thread via the JVM's standard
-    ``runOnUiThread`` mechanism.
+    Note iter #78quater : the v0.0.79 install showed
+    ``ERR_CLEARTEXT_NOT_PERMITTED`` because Android 9+ refuses HTTP
+    cleartext in the WebView by default. The fix needs either a
+    manifest patch (broken via Buildozer's
+    ``extra_manifest_application_arguments`` mechanism for unclear
+    reasons), an HTTPS server with a Java-compiled
+    ``TrustingWebViewClient`` helper, or a JS bridge avoiding HTTP
+    entirely. Iter #78quater ships only the manifest-patch revert ;
+    the real cleartext fix is its own iter.
 
     Keeps :mod:`pyjnius` and :mod:`android` imports lazy (this module
-    must remain importable on desktop).
+    must remain importable on desktop without a JVM).
     """
     # Android-only imports — jnius and android.runnable are provided
     # by python-for-android only ; no stubs available on host.
@@ -122,9 +126,6 @@ def _open_android_webview(url: str, auth_token: str) -> None:
         activity = PythonActivity.mActivity
 
         # Pre-set the auth cookie so the first GET / can use it.
-        # The SPA's fetch('/api/...') calls with credentials='include'
-        # will then send the cookie. The Set-Cookie header on GET /
-        # is a belt-and-suspenders backup.
         cm = CookieManager.getInstance()
         cm.setAcceptCookie(True)
         cookie_value = f"emeraude_auth={auth_token}; Path=/"

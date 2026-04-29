@@ -37,7 +37,7 @@ source.exclude_dirs = tests, docs, .venv, .buildozer, bin, __pycache__
 # Manual sync with pyproject.toml. We don't use ``version.regex`` because
 # emeraude/__init__.py reads its version dynamically via importlib.metadata
 # (works in pip-installed contexts but not parseable by buildozer).
-version = 0.0.80
+version = 0.0.81
 
 # (list) Application requirements
 # Pinned to the same versions as pyproject.toml's runtime deps (kivy 2.3,
@@ -117,17 +117,16 @@ android.archs = arm64-v8a,armeabi-v7a,x86_64
 # Required for headless CI builds.
 android.accept_sdk_license = True
 
-# (str) Extra attributes to inject inside the <application> tag of
-# AndroidManifest.xml. Iter #78ter (cf. ADR-0004) ajoute
-# ``android:usesCleartextTraffic="true"`` pour que la WebView
-# Android puisse charger ``http://127.0.0.1:8765/`` (notre serveur
-# HTTP local). Sans, Android 9+ bloque avec
-# ``net::ERR_CLEARTEXT_NOT_PERMITTED`` (observé v0.0.79 P30 lite).
-# Le scope est global mais l'app n'émet du HTTP que vers loopback —
-# Binance API étant HTTPS only — donc l'expansion d'attaque est nulle.
-# Le fragment est un attribut XML brut (pas un document complet) que
-# p4a interpole dans le template ``AndroidManifest.tmpl.xml``.
-android.extra_manifest_application_arguments = buildozer_resources/manifest_application_attrs.xml
+# Note iter #78quater : la tentative iter #78ter d'utiliser
+# ``android.extra_manifest_application_arguments`` pour injecter
+# ``android:usesCleartextTraffic="true"`` a cassé le manifest merger
+# Gradle (``ManifestMerger2$MergeFailureException`` v0.0.80 build).
+# Le mécanisme exact d'échec n'est pas trivialement reproductible.
+# Plutôt que de continuer à debug, on bascule sur HTTPS auto-signé
+# (cf. iter #78quater) — l'app sert son propre cert au boot et la
+# WebView est configurée pour l'accepter via
+# ``WebViewClient.onReceivedSslError``. Pas d'attribut manifest à
+# injecter, et c'est plus propre architecturellement.
 
 # (str) Bootstrap to use for android builds
 p4a.bootstrap = sdl2

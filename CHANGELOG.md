@@ -6,6 +6,39 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.81] - 2026-04-29
+
+### Reverted
+
+- **Iter #78ter manifest patch (v0.0.80) cassait le build CI** :
+  ``ManifestMerger2$MergeFailureException: Error parsing AndroidManifest.xml``
+  pendant ``processDebugMainManifest`` Gradle. Le rendu Jinja local
+  du template AndroidManifest.tmpl.xml avec mon fragment d'attribut
+  produit pourtant du XML valide (vérifié hors-ligne). La cause
+  exacte côté CI reste obscure — possiblement cache Buildozer
+  pollué, ou interaction avec la version particulière du Gradle
+  Android plugin. Plutôt que de continuer à debug aveuglément,
+  retrait complet du patch.
+- Suppression de ``buildozer_resources/manifest_application_attrs.xml``
+  et de la ligne
+  ``android.extra_manifest_application_arguments`` dans
+  ``buildozer.spec``.
+
+### Notes
+
+- **État restauré** : v0.0.81 = v0.0.79 fonctionnellement (build OK,
+  WebView Android affiche ``ERR_CLEARTEXT_NOT_PERMITTED`` au démarrage
+  comme observé en v0.0.79). Le fix réel du cleartext nécessite une
+  iter dédiée — voir :
+  - Option 1 : Java helper ``TrustingWebViewClient`` compilé via
+    Buildozer ``android.add_src``, et serveur en HTTPS avec cert
+    auto-signé bundlé.
+  - Option 2 : JavaScript bridge ``addJavascriptInterface`` exposant
+    le coeur Python directement depuis JS, court-circuitant HTTP.
+  - Option 3 : NetworkSecurityConfig XML resource + manifest patch
+    via une autre voie (TBD).
+- Suite à 1 733 tests verts, coverage 99.05 %, quality gates OK.
+
 ## [0.0.80] - 2026-04-29
 
 ### Fixed
