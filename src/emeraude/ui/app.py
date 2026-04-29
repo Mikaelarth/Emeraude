@@ -12,13 +12,16 @@ single root, mobile-first single-Window pattern.
 ADR-0002 §6 : the App is the **composition root**. Services are
 instantiated here and passed by constructor injection to each Screen.
 A test that wants to swap a service for a mock can do so by passing
-``data_source`` at construction time.
+``wallet=`` (to control capital reporting) or by constructing the
+DashboardScreen directly with a fake ``DashboardDataSource``.
 
-The ``capital_provider`` defaults to ``lambda: None`` rather than the
-doc 04 cold-start ``Decimal("20")`` because anti-règle A11 forbids
-hardcoded capital outside of a deliberately-named constant. The UI
-will show ``—`` until a real wallet integration lands (future
-``WalletService``) ; this is the honest cold-start state.
+Iter #60 wires :class:`WalletService` : the App constructor accepts
+``mode`` (default :data:`MODE_PAPER`) and ``starting_capital`` (default
+:data:`DEFAULT_COLD_START_CAPITAL` = 20 USD per doc 04). Paper mode is
+the **default canonical entry point** : a fresh user opens the app and
+sees ``Mode : Paper`` + ``Capital : 20.00 USDT`` instead of an
+unhelpful ``—``. Real-mode opt-in lands when the Binance live-balance
+flow is wired (future iter).
 """
 
 from __future__ import annotations
@@ -30,14 +33,14 @@ from kivy.uix.screenmanager import ScreenManager
 
 from emeraude.agent.execution.position_tracker import PositionTracker
 from emeraude.services.dashboard_data_source import TrackerDashboardDataSource
-from emeraude.services.dashboard_types import MODE_UNCONFIGURED
+from emeraude.services.dashboard_types import MODE_PAPER
+from emeraude.services.wallet import DEFAULT_COLD_START_CAPITAL, WalletService
 from emeraude.ui.screens.dashboard import (
     DASHBOARD_SCREEN_NAME,
     DashboardScreen,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
     from decimal import Decimal
 
     from kivy.uix.widget import Widget
@@ -46,33 +49,27 @@ if TYPE_CHECKING:
 APP_TITLE: Final[str] = "Emeraude"
 
 
-def _default_capital_provider() -> Decimal | None:
-    """Cold-start capital provider for the UI.
-
-    Returns ``None`` so the Dashboard displays ``—`` rather than a
-    fake value. Anti-règle A1 (no fictitious feature) + A11 (no
-    hardcoded capital). Real implementations will live in a future
-    ``WalletService`` : paper-mode → constant 20 USD via the doc 04
-    constant ; real-mode → polled Binance balance.
-    """
-    return None
-
-
 class EmeraudeApp(App):  # type: ignore[misc]  # Kivy classes are untyped (kivy.* override).
     """Composition root of the Emeraude UI.
 
     Subclassing :class:`kivy.app.App`. The :meth:`build` method returns
     the :class:`ScreenManager` that hosts the mobile screens. Each
     Screen receives its service dependencies (PositionTracker,
-    Orchestrator, ChampionLifecycle, etc.) by constructor injection.
+    WalletService, Orchestrator, ChampionLifecycle, etc.) by
+    constructor injection.
 
     Args:
-        capital_provider: callable returning the current capital in
-            quote currency, or ``None`` if unconfigured. Defaults to
-            :func:`_default_capital_provider` which always returns
-            ``None`` (cold start). Tests pass a stub.
         mode: dashboard mode badge (paper / real / unconfigured).
-            Defaults to :data:`MODE_UNCONFIGURED`.
+            Defaults to :data:`MODE_PAPER` so the canonical first
+            launch shows real numbers (paper P&L on top of the doc 04
+            cold-start capital).
+        starting_capital: paper-mode baseline. Default
+            :data:`DEFAULT_COLD_START_CAPITAL` (= 20 USD per doc 04).
+        wallet: pre-built :class:`WalletService` for tests. When
+            provided, ``mode`` and ``starting_capital`` are ignored and
+            the wallet's own values are used. Most callers (and the
+            production main entry) leave this ``None`` so the App
+            instantiates a tracker-backed wallet itself.
     """
 
     title = APP_TITLE
@@ -80,22 +77,22 @@ class EmeraudeApp(App):  # type: ignore[misc]  # Kivy classes are untyped (kivy.
     def __init__(
         self,
         *,
-        capital_provider: Callable[[], Decimal | None] | None = None,
-        mode: str = MODE_UNCONFIGURED,
+        mode: str = MODE_PAPER,
+        starting_capital: Decimal = DEFAULT_COLD_START_CAPITAL,
+        wallet: WalletService | None = None,
         **kwargs: object,
     ) -> None:
         super().__init__(**kwargs)
-        self._capital_provider: Callable[[], Decimal | None] = (
-            capital_provider if capital_provider is not None else _default_capital_provider
-        )
-        self._mode: str = mode
+        self._mode = mode
+        self._starting_capital = starting_capital
+        self._wallet = wallet
 
     def build(self) -> Widget:
         """Build the root widget tree.
 
         Returns:
             A :class:`ScreenManager` containing the Dashboard. As iter
-            #60+ ships, this method will instantiate the other 4
+            #61+ ships, this method will instantiate the other 4
             screens (Configuration, Backtest, Audit, Learning) and
             register them under their stable names.
         """
@@ -107,10 +104,18 @@ class EmeraudeApp(App):  # type: ignore[misc]  # Kivy classes are untyped (kivy.
         # have been applied — they will be applied on first use.
         tracker = PositionTracker()
 
+        # Wallet : either the injected one (tests) or a fresh
+        # tracker-backed one (production).
+        wallet = self._wallet or WalletService(
+            tracker=tracker,
+            mode=self._mode,
+            starting_capital=self._starting_capital,
+        )
+
         data_source = TrackerDashboardDataSource(
             tracker=tracker,
-            capital_provider=self._capital_provider,
-            mode=self._mode,
+            capital_provider=wallet.current_capital,
+            mode=wallet.mode,
         )
 
         dashboard = DashboardScreen(

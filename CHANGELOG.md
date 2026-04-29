@@ -6,6 +6,72 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.60] - 2026-04-29
+
+### Added
+
+- **`WalletService` — capital reporting paper-mode** (`src/emeraude/services/wallet.py`,
+  ~140 LOC, 100 % coverage). Bridge entre l'historique des positions
+  fermées et l'affichage capital de la Dashboard. Mode-aware :
+  - **Paper** : `starting_capital + cumulative_realized_pnl` agrégé
+    via `tracker.history()`. Cold-start = 20 USD doc 04.
+  - **Real** : retourne `None` jusqu'au câblage Binance live (A1
+    deferral).
+  - **Unconfigured** : retourne `None`.
+  - Mode inconnu : fallback `None` (anti-A8 + safe degrade UI).
+- **`DEFAULT_COLD_START_CAPITAL = Decimal("20")`** constante
+  publique référençant le doc 04. Re-exportée via
+  `services/__init__.py` pour que les callers (UI composition root,
+  tests) référencent une seule source de vérité documentée.
+- **Re-exports `services/__init__.py`** : `WalletService`,
+  `DEFAULT_COLD_START_CAPITAL`.
+- Tests `tests/unit/test_wallet.py` : **16 tests, 5 classes** :
+  - `TestValidation` (3) : starting_capital >= 0, history_limit >= 1.
+  - `TestModeDispatch` (4) : paper/real/unconfigured/unknown.
+  - `TestPaperModeAggregation` (5) : empty / wins / losses / mixed /
+    custom starting_capital.
+  - `TestHistoryLimit` (1) : limit caps PnL aggregation.
+  - `TestProperties` (3) : mode + starting_capital passthrough +
+    constante doc 04.
+
+### Changed
+
+- **`EmeraudeApp` composition root** :
+  - Constructeur accepte désormais `mode` + `starting_capital` +
+    `wallet` (pré-construit pour tests). Remplace l'ancien
+    `capital_provider: Callable` par une orchestration explicite.
+  - **Default mode = `MODE_PAPER`** au lieu de `MODE_UNCONFIGURED` —
+    la première ouverture de l'app affiche désormais
+    `Mode : Paper / Capital : 20.00 USDT` au lieu d'un `—` peu
+    informatif. Pattern UX "5 secondes" honoré : l'utilisateur voit
+    immédiatement où il en est.
+  - `EmeraudeApp.build()` instancie un `WalletService` (paper-mode
+    avec 20 USD cold-start) puis passe `wallet.current_capital` +
+    `wallet.mode` au `TrackerDashboardDataSource`.
+- `pyproject.toml` : version `0.0.59` -> `0.0.60`.
+
+### Notes
+
+- **Pourquoi pas `equity_history` SQLite ?** La table n'existe pas
+  encore. L'iter #60 utilise `tracker.history()` comme proxy fiable
+  (les trades fermés portent leur P&L réalisé). L'extension vers une
+  vraie table `equity_history` (avec snapshots cycle-par-cycle)
+  reste à faire ; le contrat `current_capital() -> Decimal | None`
+  ne change pas, donc la migration sera transparente côté UI.
+- **Anti-règle A1 honorée** : real mode retourne `None` (pas de
+  fake balance). La Dashboard affiche `Capital : —` dans ce cas.
+- **Anti-règle A11 honorée** : `DEFAULT_COLD_START_CAPITAL` est une
+  constante nommée référençant doc 04, pas un magic number en clair.
+  Le fait qu'elle soit aussi en interne dans `auto_trader.py`
+  (`_DEFAULT_COLD_START_CAPITAL`) est cohérent : les deux modules
+  pointent vers le même cold-start documenté ; consolidation
+  possible iter future si pertinent.
+- **Pattern Service Injection ADR-0002 §6 respecté** : tests
+  injectent un `wallet=WalletService(...)` pré-construit dans
+  `EmeraudeApp(wallet=...)` plutôt qu'un mock global.
+- Suite **1507 → 1523 tests (+16)**, coverage global stable à
+  **99.79 %**.
+
 ## [0.0.59] - 2026-04-29
 
 ### Added

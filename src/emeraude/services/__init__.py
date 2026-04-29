@@ -89,6 +89,10 @@ from emeraude.services.robustness_validator import (
     RobustnessValidationDecision,
     validate_robustness,
 )
+from emeraude.services.wallet import (
+    DEFAULT_COLD_START_CAPITAL,
+    WalletService,
+)
 
 __all__ = [
     "AUDIT_ADVERSARIAL_VALIDATION",
@@ -97,6 +101,7 @@ __all__ = [
     "AUDIT_DRIFT_DETECTED",
     "AUDIT_ROBUSTNESS_VALIDATION",
     "AUDIT_TAIL_RISK_BREACH",
+    "DEFAULT_COLD_START_CAPITAL",
     "AdversarialValidationDecision",
     "AutoTrader",
     "BackupRecord",
@@ -115,6 +120,7 @@ __all__ = [
     "RobustnessValidationDecision",
     "TrackerDashboardDataSource",
     "TradeDirection",
+    "WalletService",
     "build_regime_context",
     "clear_triggered",
     "compute_calibration_from_positions",
