@@ -46,6 +46,9 @@ from emeraude.services.coverage_validator import (
     CoverageValidationDecision,
     validate_coverage,
 )
+from emeraude.services.dashboard_data_source import (
+    TrackerDashboardDataSource,
+)
 from emeraude.services.drift_monitor import (
     AUDIT_DRIFT_DETECTED,
     DriftCheckResult,
@@ -110,6 +113,7 @@ __all__ = [
     "RiskCheckResult",
     "RiskMonitor",
     "RobustnessValidationDecision",
+    "TrackerDashboardDataSource",
     "TradeDirection",
     "build_regime_context",
     "clear_triggered",

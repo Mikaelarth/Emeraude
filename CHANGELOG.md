@@ -6,6 +6,116 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.59] - 2026-04-29
+
+### Added
+
+- **Dashboard Screen — 1er écran fonctionnel Pilier #1** (doc 02
+  §"📊 DASHBOARD — Voir d'un coup d'œil"). Premier écran consommateur
+  de services réels via injection au constructeur, suit le pattern
+  ADR-0002 §6 (composition root + service injection). Affiche :
+  - **Capital quote-currency** (USDT) avec ``—`` si non renseigné
+    (cold start, anti-règle A1 + A11).
+  - **P&L cumulé réalisé** signé avec couleur vert/rouge/neutre
+    selon signe.
+  - **Position ouverte** unique (``LONG 0.1 trend_follower @ 100``)
+    ou ``Aucune position ouverte``.
+  - **Compteur trades fermés** (singulier/pluriel correct).
+  - **Badge mode** : Paper / Réel / Non configuré.
+- **`src/emeraude/ui/screens/__init__.py`** + nouveau sous-package.
+- **`src/emeraude/ui/screens/dashboard.py`** (~280 LOC) :
+  - **`DashboardSnapshot`** frozen dataclass : capital_quote
+    (`Decimal | None`), open_position, cumulative_pnl, n_closed_trades,
+    mode.
+  - **`DashboardLabels`** frozen dataclass : 5 strings prêtes à
+    l'affichage.
+  - **`DashboardDataSource`** Protocol — découplage UI / services,
+    facilite mocking dans les tests.
+  - **`format_dashboard_labels(snapshot) -> DashboardLabels`** : pure
+    function, testable sans Kivy ni display. Pattern L1 ADR-0002 §7.
+  - **`DashboardScreen(Screen)`** widget : `BoxLayout` vertical avec
+    5 Labels stylés (`FONT_SIZE_METRIC` pour le capital, couleurs
+    sémantiques sur P&L). Constructeur prend `data_source` injecté.
+    `refresh()` pull snapshot + push strings + applique couleur P&L.
+  - 4 reason constants : `MODE_PAPER`, `MODE_REAL`,
+    `MODE_UNCONFIGURED`, `DASHBOARD_SCREEN_NAME`.
+- **`src/emeraude/services/dashboard_data_source.py`** (~110 LOC) —
+  implémentation concrète :
+  - **`TrackerDashboardDataSource`** : implémente le Protocol
+    structurellement (duck-typed). Bridge entre `PositionTracker`
+    (DB-backed) et le widget. `capital_provider: Callable[[],
+    Decimal | None]` même convention qu'`AutoTrader`. Configurable
+    `history_limit` (default 200).
+  - Re-exporté via `services/__init__.py`.
+- **`src/emeraude/ui/app.py` mis à jour** : `EmeraudeApp` instancie
+  désormais `PositionTracker` + `TrackerDashboardDataSource` +
+  `DashboardScreen` au lieu du placeholder. `_default_capital_provider`
+  retourne ``None`` (anti-A1 + A11 : pas de fake value en défaut).
+  Constructeur accepte `capital_provider` + `mode` injectables pour
+  les tests.
+- **3 fichiers de tests, 42 nouveaux tests** :
+  - **`tests/unit/test_dashboard_formatter.py`** (~21 tests, 7
+    classes) — pure logic, runs partout :
+    - `TestCapitalFormatting` (4) — known/unknown/quantize/zero.
+    - `TestOpenPositionFormatting` (2) — none / fields rendered.
+    - `TestPnlFormatting` (4) — signs + currency.
+    - `TestTradeCountFormatting` (3) — singulier / pluriel.
+    - `TestModeBadgeFormatting` (4) — paper/real/unconfigured/unknown.
+    - `TestDashboardLabelsContainer` (2) — immutable + non-empty.
+    - `TestDashboardSnapshotContainer` (2) — immutable + None capital.
+  - **`tests/unit/test_dashboard_data_source.py`** (~13 tests, 5
+    classes) — concrète, real PositionTracker :
+    - `TestValidation` (2) — history_limit >= 1.
+    - `TestSnapshotShape` (4) — type + passthrough fields.
+    - `TestCumulativePnl` (4) — empty / wins / losses / mixed.
+    - `TestOpenPosition` (2) — none / passthrough.
+    - `TestHistoryLimit` (1) — limit caps aggregation.
+  - **`tests/unit/test_dashboard_screen.py`** (~8 tests, 3 classes,
+    gated par `_DISPLAY_AVAILABLE`) — Kivy widget :
+    - `TestConstruction` (3) — name / eager fetch / initial labels.
+    - `TestRefresh` (3) — capital update / fetch each time / P&L
+      color cue.
+    - `TestStyling` (2) — capital metric font / mode badge warning.
+
+### Changed
+
+- **`src/emeraude/ui/app.py`** : remplacement du placeholder
+  ``bootstrap`` par `DashboardScreen` réelle. `PLACEHOLDER_SCREEN_NAME`
+  retiré ; `DASHBOARD_SCREEN_NAME` exporté depuis `screens/dashboard.py`.
+- **`tests/unit/test_ui_smoke.py`** : tests `TestAppBuild` mis à jour
+  pour assert `DASHBOARD_SCREEN_NAME` au lieu de `PLACEHOLDER_*`.
+  Fixture `fresh_db` ajoutée car `EmeraudeApp.build()` instancie
+  désormais un `PositionTracker` qui lit la DB via le data source.
+- `services/__init__.py` : re-export `TrackerDashboardDataSource`.
+- `pyproject.toml` : version `0.0.58` -> `0.0.59`.
+
+### Notes
+
+- **Pattern L1/L2 validé** :
+  - **L1 pure formatter** (21 tests) : runs partout, couvre toutes
+    les branches d'affichage sans Kivy.
+  - **L2 widget** (8 tests, gated `_DISPLAY_AVAILABLE`) : valide les
+    bindings réels sur les machines avec display ; skipped en CI
+    headless. Mocks via `_FakeDataSource` Protocol implementer.
+  - **Concrete data source** (13 tests) : runs partout (DB + Decimal,
+    pas de Kivy), exercise PositionTracker réel.
+- **Coverage `dashboard_data_source.py` : 100 %**. Suite passe
+  **1465 → 1507 tests** (+42), coverage global stable à **99.80 %**
+  (UI exclu par design).
+- **Anti-règle A11 respectée** : `_default_capital_provider`
+  retourne `None`, pas un `Decimal("20")` magique. Le UI affiche
+  ``—`` jusqu'à ce qu'un futur `WalletService` câble la vraie source.
+- **Anti-règle A1 respectée** : pas de "Coming soon" dans l'UI.
+  Les 4 autres écrans (Configuration, Backtest, Audit, Learning)
+  n'apparaissent pas dans le ScreenManager tant qu'ils ne sont pas
+  livrés. Le Dashboard contient uniquement les 5 widgets que les
+  services existants peuvent alimenter (variation 24h, top
+  opportunité, 8 cryptos avec signal — listés doc 02 — restent
+  pour les iter futures).
+- **Prochaine itération** : 2ème écran (Configuration ou
+  Audit), ou bien Buildozer `.spec` pour préparer le packaging APK
+  Android. Pilier #1 progresse de 0% → ~20% (1 écran sur 5 livré).
+
 ## [0.0.58] - 2026-04-29
 
 ### Added

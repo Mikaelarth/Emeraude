@@ -25,17 +25,19 @@ from __future__ import annotations
 
 import os
 import platform
+from pathlib import Path
 
 import pytest
 from kivy.uix.screenmanager import Screen, ScreenManager
 
 from emeraude import main as emeraude_main
+from emeraude.infra import database
 from emeraude.ui import theme
 from emeraude.ui.app import (
     APP_TITLE,
-    PLACEHOLDER_SCREEN_NAME,
     EmeraudeApp,
 )
+from emeraude.ui.screens.dashboard import DASHBOARD_SCREEN_NAME
 
 # True iff the current environment can host a Kivy Window. Windows /
 # macOS desktops have a default driver ; Linux needs ``$DISPLAY`` (X)
@@ -48,6 +50,24 @@ _DISPLAY_AVAILABLE: bool = (
     or bool(os.environ.get("WAYLAND_DISPLAY"))
 )
 _NO_DISPLAY_REASON = "Kivy Window cannot init without a display backend (headless CI)"
+
+
+# ─── Fixtures ────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def fresh_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Pin storage and pre-apply migrations.
+
+    The Dashboard screen pulls a snapshot at construction time which
+    triggers DB access via :class:`PositionTracker`. Without this
+    fixture the build path would write into the user's real storage
+    dir, leaking state between tests.
+    """
+    monkeypatch.setenv("EMERAUDE_STORAGE_DIR", str(tmp_path))
+    database.get_connection()
+    return tmp_path / "emeraude.db"
+
 
 # ─── Module imports ─────────────────────────────────────────────────────────
 
@@ -75,23 +95,25 @@ class TestImports:
 @pytest.mark.unit
 @pytest.mark.skipif(not _DISPLAY_AVAILABLE, reason=_NO_DISPLAY_REASON)
 class TestAppBuild:
-    def test_build_returns_screen_manager(self) -> None:
+    def test_build_returns_screen_manager(self, fresh_db: Path) -> None:
         app = EmeraudeApp()
         root = app.build()
         assert isinstance(root, ScreenManager)
 
-    def test_screen_manager_has_bootstrap_screen(self) -> None:
+    def test_screen_manager_has_dashboard_screen(self, fresh_db: Path) -> None:
+        # Iter #59 : Dashboard est le 1er ecran fonctionnel et la
+        # screen courante par defaut. Les 4 autres (Configuration,
+        # Backtest, Audit, Learning) arriveront iter #60+.
         app = EmeraudeApp()
         root = app.build()
-        assert PLACEHOLDER_SCREEN_NAME in root.screen_names
+        assert DASHBOARD_SCREEN_NAME in root.screen_names
 
-    def test_bootstrap_screen_has_widgets(self) -> None:
+    def test_dashboard_screen_has_widgets(self, fresh_db: Path) -> None:
         app = EmeraudeApp()
         root = app.build()
-        screen = root.get_screen(PLACEHOLDER_SCREEN_NAME)
+        screen = root.get_screen(DASHBOARD_SCREEN_NAME)
         assert isinstance(screen, Screen)
-        # Placeholder Label is the only child for now ; later screens will
-        # carry real widgets. We only check the tree is non-empty.
+        # Dashboard wraps a BoxLayout holding the 5 themed Labels.
         assert len(screen.children) >= 1
 
     def test_app_title_constant(self) -> None:
