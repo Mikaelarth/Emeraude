@@ -1,18 +1,30 @@
-"""Web-based UI bootstrap — démarre le serveur HTTP et la WebView.
+"""Web-based UI bootstrap — démarre le serveur HTTP et c'est tout.
 
-Iter #78 (cf. ADR-0004) — point d'entrée alternatif à l'ancien
-:mod:`emeraude.ui.app` (Kivy widgets). Les responsabilités :
+Iter #79 (cf. ADR-0004) — bascule de bootstrap p4a ``sdl2`` ->
+``webview``. La Java side (``PythonActivity`` du bootstrap webview)
+crée la WebView nativement, lance Python en thread, et redirige la
+WebView sur ``http://127.0.0.1:<port>/`` quand le serveur Python
+répond. Conséquences pour ce module :
 
-* Composer l'``AppContext`` (services).
-* Démarrer le serveur HTTP local.
-* Sur Android : ouvrir une WebView native via ``pyjnius`` et la
-  pointer sur le serveur. La Kivy ``App`` reste un shell minimal
-  pour que python-for-android garde le process alive.
-* Sur desktop : log l'URL et bloque sur le serveur. L'utilisateur
-  ouvre `http://127.0.0.1:8765/` dans son navigateur.
+* **Plus de Kivy** : ni ``App``, ni ``mainthread``, ni ``Window``.
+  Le bootstrap webview ne dépend pas de Kivy.
+* **Plus de pyjnius** : on n'instancie plus la WebView nous-mêmes,
+  donc plus besoin d'``autoclass("android.webkit.WebView")`` ni de
+  ``run_on_ui_thread``. Tout est natif Java côté bootstrap.
+* **Plus de ``ERR_CLEARTEXT_NOT_PERMITTED``** : le manifest
+  auto-généré par le bootstrap webview inclut nativement
+  ``android:usesCleartextTraffic="true"``.
 
-Anti-règle A1 : aucune fonctionnalité fictive. Les routes API
-exposées par le serveur reflètent l'état réel des services Python.
+Sur **Android**, le rôle de ce module est minimal : composer
+l'``AppContext``, démarrer le serveur HTTP, et bloquer (la
+``PythonActivity`` Java continue à tourner et la WebView est gérée
+côté Java).
+
+Sur **desktop**, comportement identique : démarre le serveur, log
+l'URL, bloque sur ``serve_forever``. L'utilisateur ouvre
+``http://127.0.0.1:8765/`` dans son navigateur.
+
+Anti-règle A1 : aucune fonctionnalité fictive.
 """
 
 from __future__ import annotations
@@ -20,14 +32,12 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import Final
 
 from emeraude.api.context import AppContext
 from emeraude.api.server import (
     DEFAULT_HOST,
     DEFAULT_PORT,
     create_server,
-    serve_in_thread,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -40,23 +50,6 @@ def _is_android() -> bool:
     (``/data/data/<pkg>/files``). On desktop this env var is absent.
     """
     return "ANDROID_PRIVATE" in os.environ
-
-
-# ─── Web root resolution ────────────────────────────────────────────────────
-
-#: Search order for the bundled ``web/`` directory. We check several
-#: candidate locations to support both the Android packaged context
-#: (where p4a unpacks ``source.dir`` contents under
-#: ``$ANDROID_PRIVATE/app/``) and the desktop dev context (where
-#: ``web/`` lives at the project root, sibling of ``src/``).
-_WEB_ROOT_CANDIDATES: Final[tuple[str, ...]] = (
-    # Android : ``ANDROID_APP_PATH`` points to ``files/app`` ; web/
-    # ships there alongside the emeraude package.
-    "${ANDROID_APP_PATH}/web",
-    # Desktop : same place after ``buildozer.spec`` source.dir = src
-    # mapping ; the web/ directory is added via include_patterns.
-    "$(repo_root)/web",
-)
 
 
 def _resolve_web_root() -> Path:
@@ -83,102 +76,28 @@ def _resolve_web_root() -> Path:
     raise FileNotFoundError(msg)
 
 
-# ─── Android WebView ────────────────────────────────────────────────────────
-
-
-def _open_android_webview(url: str, auth_token: str) -> None:
-    """Replace the Kivy ContentView with an Android WebView pointed at ``url``.
-
-    The Android :class:`WebView` constructor requires a thread with an
-    attached :class:`Looper` — the **Android UI thread**, not the Kivy
-    main thread (which is the SDL2 native thread on p4a). We use
-    ``android.runnable.run_on_ui_thread`` to post via the Activity's
-    JVM ``runOnUiThread`` (cf. iter #78bis, fixed
-    ``JavaException: NullPointerException ... Looper.mQueue``).
-
-    Note iter #78quater : the v0.0.79 install showed
-    ``ERR_CLEARTEXT_NOT_PERMITTED`` because Android 9+ refuses HTTP
-    cleartext in the WebView by default. The fix needs either a
-    manifest patch (broken via Buildozer's
-    ``extra_manifest_application_arguments`` mechanism for unclear
-    reasons), an HTTPS server with a Java-compiled
-    ``TrustingWebViewClient`` helper, or a JS bridge avoiding HTTP
-    entirely. Iter #78quater ships only the manifest-patch revert ;
-    the real cleartext fix is its own iter.
-
-    Keeps :mod:`pyjnius` and :mod:`android` imports lazy (this module
-    must remain importable on desktop without a JVM).
-    """
-    # Android-only imports — jnius and android.runnable are provided
-    # by python-for-android only ; no stubs available on host.
-    from android.runnable import run_on_ui_thread  # type: ignore[import-not-found]  # noqa: PLC0415
-    from jnius import autoclass  # type: ignore[import-not-found]  # noqa: PLC0415
-
-    # Java class names follow the JVM convention (PascalCase) ;
-    # ruff N806 is silenced explicitly per autoclass call.
-    PythonActivity = autoclass("org.kivy.android.PythonActivity")  # noqa: N806
-    WebView = autoclass("android.webkit.WebView")  # noqa: N806
-    WebViewClient = autoclass("android.webkit.WebViewClient")  # noqa: N806
-    CookieManager = autoclass("android.webkit.CookieManager")  # noqa: N806
-
-    @run_on_ui_thread  # type: ignore[untyped-decorator]
-    def _create() -> None:
-        activity = PythonActivity.mActivity
-
-        # Pre-set the auth cookie so the first GET / can use it.
-        cm = CookieManager.getInstance()
-        cm.setAcceptCookie(True)
-        cookie_value = f"emeraude_auth={auth_token}; Path=/"
-        cm.setCookie(url, cookie_value)
-
-        wv = WebView(activity)
-        settings = wv.getSettings()
-        settings.setJavaScriptEnabled(True)
-        settings.setDomStorageEnabled(True)
-        settings.setAllowFileAccess(False)
-        settings.setAllowContentAccess(False)
-        wv.setWebViewClient(WebViewClient())
-        wv.loadUrl(url)
-        activity.setContentView(wv)
-        _LOGGER.info("Android WebView attached to %s", url)
-
-    _create()
-
-
-# ─── Entry points ───────────────────────────────────────────────────────────
-
-
 def run_web_app() -> None:  # pragma: no cover  (entry point, runtime only)
-    """Boot the Emeraude UI : HTTP server + WebView (Android) or print URL (desktop)."""
+    """Boot the Emeraude UI : compose context, start HTTP server, block.
+
+    The Java side (Android) or the user (desktop) handles the WebView
+    that consumes this server.
+    """
     context = AppContext()
     web_root = _resolve_web_root()
-    server, auth_token = create_server(context=context, web_root=web_root)
+    server, _auth_token = create_server(context=context, web_root=web_root)
     url = f"http://{DEFAULT_HOST}:{DEFAULT_PORT}/"
 
     if _is_android():
-        # Android : background the server, run a minimal Kivy shell so
-        # python-for-android keeps the process alive. The shell's
-        # on_start replaces the ContentView with the Android WebView.
-        serve_in_thread(server)
-
-        from kivy.app import App  # noqa: PLC0415  (Android-only path)
-        from kivy.uix.widget import Widget  # noqa: PLC0415
-
-        class _Shell(App):  # type: ignore[misc]  # Kivy classes untyped.
-            """Tiny Kivy shell — its only job is to host the WebView."""
-
-            def build(self) -> Widget:
-                # Empty placeholder. The WebView replaces this in on_start.
-                return Widget()
-
-            def on_start(self) -> None:
-                _open_android_webview(url, auth_token)
-
-        _Shell().run()
+        # Android — the webview bootstrap's WebViewLoader.testConnection
+        # is polling localhost:port in a Java thread ; once we accept
+        # the first connection it'll loadUrl() the WebView. Block here
+        # so the Python process stays alive (the bootstrap calls Python
+        # via JNI in its own thread but doesn't keep it alive on its own).
+        _LOGGER.info("Emeraude HTTP server starting at %s (Android)", url)
+        server.serve_forever()
         return
 
-    # Desktop : block in main thread serving the HTTP. User opens the
-    # URL in any browser. Ctrl-C stops the server.
+    # Desktop — print the URL for the dev's browser, block.
     msg = f"\n  Emeraude UI ready\n  Open this URL in your browser : {url}\n  (Ctrl-C to quit)\n"
     print(msg, flush=True)  # noqa: T201  (entry point user-visible output)
     try:

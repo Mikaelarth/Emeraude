@@ -37,18 +37,23 @@ source.exclude_dirs = tests, docs, .venv, .buildozer, bin, __pycache__
 # Manual sync with pyproject.toml. We don't use ``version.regex`` because
 # emeraude/__init__.py reads its version dynamically via importlib.metadata
 # (works in pip-installed contexts but not parseable by buildozer).
-version = 0.0.81
+version = 0.0.82
 
 # (list) Application requirements
-# Pinned to the same versions as pyproject.toml's runtime deps (kivy 2.3,
-# certifi, requests). Python is implicit.
-# Iter #74 : ``filetype`` ajouté car Kivy 2.3.x importe
-# ``filetype`` au load de ``kivy.core.image`` (transitive dep).
-# Sans, la première import de Kivy lève ``ModuleNotFoundError: No
-# module named 'filetype'`` — c'est le crash qu'on a capturé sur
-# l'émulateur (run 25115412399, last_crash.log iter #71).
-# La recette p4a de kivy ne bundle pas filetype par défaut.
-requirements = python3,kivy==2.3.1,requests==2.32.3,certifi==2024.8.30,filetype==1.2.0
+# Iter #79 (cf. ADR-0004) : bascule de bootstrap ``sdl2`` -> ``webview``.
+# Le bootstrap ``webview`` p4a fournit déjà une Activity Java qui crée
+# une WebView fullscreen, lance Python en thread, et redirige la
+# WebView sur ``http://127.0.0.1:<port>/`` une fois le serveur prêt.
+# Le manifest généré inclut nativement ``android:usesCleartextTraffic=
+# "true"`` — fini les ``ERR_CLEARTEXT_NOT_PERMITTED`` (cf. iter #78
+# multi-step debug).
+# Conséquences sur les requirements :
+# * ``kivy`` retiré : plus utilisé (le SPA Vuetify côté JS rend
+#   l'UI, le coeur Python sert le HTTP via ``http.server`` stdlib).
+# * ``filetype`` retiré : c'était une transitive de Kivy 2.3.x.
+# Restent : ``requests`` + ``certifi`` (utilisés par les services
+# Binance et le résolveur SSL infra).
+requirements = python3,requests==2.32.3,certifi==2024.8.30
 
 # (str) Custom source folders for requirements
 # Set this if you want to include some custom python distribution
@@ -129,7 +134,24 @@ android.accept_sdk_license = True
 # injecter, et c'est plus propre architecturellement.
 
 # (str) Bootstrap to use for android builds
-p4a.bootstrap = sdl2
+# Iter #79 : bascule ``sdl2`` -> ``webview``. Cf. ADR-0004 :
+# * ``sdl2`` était la voie pour les apps Kivy avec rendering OpenGL
+#   custom. Notre UI est désormais en HTML/Vue/Vuetify dans une
+#   WebView (iter #78), donc SDL2 + Kivy event loop ne servent plus
+#   à rien.
+# * ``webview`` ship une PythonActivity Java qui crée la WebView
+#   nativement, lance Python en thread, et redirige sur
+#   ``http://127.0.0.1:<port>/`` quand le serveur Python répond. Le
+#   manifest auto-généré inclut ``android:usesCleartextTraffic="true"``,
+#   ce qui résout le ``ERR_CLEARTEXT_NOT_PERMITTED`` qu'on a passé
+#   3 iters à essayer de bypasser.
+p4a.bootstrap = webview
+
+# (int) Port utilisé par le bootstrap webview pour parler au serveur
+# Python local. Doit matcher :data:`emeraude.api.server.DEFAULT_PORT`.
+# Buildozer le passe à p4a via ``--port=<value>`` qui est interpolé
+# dans le template ``WebViewLoader.tmpl.java`` (cf. p4a master).
+p4a.port = 8765
 
 # (str) python-for-android branch to use
 # ``master`` = latest stable Buildozer pulls. python-for-android tags

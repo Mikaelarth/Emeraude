@@ -6,6 +6,69 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.82] - 2026-04-30
+
+### Changed — pivot bootstrap p4a (cf. ADR-0004)
+
+Découverte clé : python-for-android ship un bootstrap **`webview`**
+spécifiquement conçu pour notre architecture (Python web server +
+WebView frontend). Ses caractéristiques résolvent toutes les
+difficultés des iters #78bis/ter/quater :
+
+* La `PythonActivity` Java fournie par le bootstrap crée la WebView
+  fullscreen elle-même, lance Python en thread, et redirige sur
+  `http://127.0.0.1:<port>/` quand le serveur Python répond.
+* Le `WebViewLoader.tmpl.java` interpole le port depuis l'arg
+  `--port=<value>` que Buildozer transmet via `p4a.port` (config
+  `[app]`).
+* **Le manifest auto-généré inclut nativement
+  `android:usesCleartextTraffic="true"`** — fini le combat avec
+  `extra_manifest_application_arguments` et les
+  `ManifestMerger2$MergeFailureException` du iter #80.
+* Pas besoin de pyjnius ni de Kivy côté Python : tout est natif Java.
+
+### Changed
+
+- `buildozer.spec` :
+  - `p4a.bootstrap = sdl2` -> `webview`.
+  - Nouveau : `p4a.port = 8765` (matche `DEFAULT_PORT` de
+    `emeraude.api.server`).
+  - `requirements` : retrait de `kivy==2.3.1` (plus utilisé) et de
+    `filetype==1.2.0` (était une transitive Kivy). Restent
+    `python3,requests==2.32.3,certifi==2024.8.30`.
+  - Version `0.0.81` -> `0.0.82`.
+- `pyproject.toml` : version `0.0.81` -> `0.0.82`. Kivy reste en
+  dep dev (les tests UI Kivy iter #61-#77 ne sont pas encore
+  supprimés ; iter #82+ les nettoiera).
+- `src/emeraude/web_app.py` : **simplification massive** (~175 LOC ->
+  ~110 LOC). Suppression des imports `kivy`, `jnius`,
+  `android.runnable`, des classes `_Shell` (Kivy App), de la fonction
+  `_open_android_webview`. Sur Android comme sur desktop, le module
+  se contente désormais de :
+  1. Composer `AppContext`.
+  2. Démarrer le serveur HTTP.
+  3. Bloquer sur `serve_forever()` pour garder Python alive.
+  La WebView Android est gérée intégralement par la PythonActivity
+  Java du bootstrap webview.
+- `src/emeraude/main.py` : retrait des env vars `KIVY_NO_ARGS` et
+  `KIVY_NO_CONSOLELOG` qui n'ont plus de sens.
+
+### Notes
+
+- **Suite stable à 1 733 tests, coverage 99.50 %**, ruff + ruff
+  format + mypy strict + bandit OK.
+- **Iter clôt le multi-step iter #78** (5 fixes successifs sur le
+  même symptôme : crash JVM Looper, ERR_CLEARTEXT, manifest patch
+  cassé, etc.). La solution finale est radicalement plus simple
+  que toutes les tentatives précédentes parce qu'on utilise un
+  bootstrap p4a spécialement conçu pour ce cas.
+- **À valider sur P30 lite** : la WebView devrait afficher la SPA
+  Vuetify (`Capital : 20.00 USDT`, etc.) directement sans message
+  d'erreur Android.
+- **Iters suivants** : #80 endpoints `/api/journal` + `/api/config`
+  + pages Vuetify ; #81 modal de confirmation Réel + saisie API
+  keys ; #82 cleanup `src/emeraude/ui/` Kivy widgets obsolètes.
+
 ## [0.0.81] - 2026-04-29
 
 ### Reverted

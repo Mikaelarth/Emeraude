@@ -66,38 +66,26 @@ def _write_crash_log(exc_text: str) -> None:
 def main() -> None:  # pragma: no cover  (entry point, runtime-only)
     """Bootstrap the Emeraude application.
 
-    Iter #78 (cf. ADR-0004) — la couche UI bascule du Kivy widget
-    tree à une WebView Android pointée sur un serveur HTTP local
-    (Vue 3 + Vuetify). Le coeur Python (``agent``, ``infra``,
-    ``services``) est inchangé.
-
-    Two environment guards are set **before** importing :mod:`web_app`
-    to keep Kivy quiet — Kivy reste utilisé sur Android comme shell
-    porteur du process (la WebView Android remplace son ContentView)
-    mais on ne veut ni argv parsing ni banner console (ADR-0002 §7) :
-
-    * ``KIVY_NO_ARGS`` : Kivy must not parse ``sys.argv`` (which
-      collides with our own CLI).
-    * ``KIVY_NO_CONSOLELOG`` : silence the Kivy banner ; the app emits
-      its own audit + log lines via :mod:`emeraude.infra.audit`.
+    Iter #79 (cf. ADR-0004) — la couche UI utilise désormais le p4a
+    bootstrap ``webview`` : la PythonActivity Java crée la WebView,
+    lance Python en thread, et redirige sur le serveur HTTP local.
+    On ne touche plus à Kivy ni à pyjnius côté Python — d'où
+    l'absence des guards ``KIVY_NO_ARGS`` / ``KIVY_NO_CONSOLELOG``
+    qu'on avait avant.
 
     Any exception raised during the bootstrap (import errors, DB
-    init failures, missing recipes on Android, etc.) is captured to
-    ``last_crash.log`` (iter #71 crash logger) before being re-raised.
-    Cela fait triager les Android first-launch crashes accessible
-    sans ADB.
+    init failures, etc.) is captured to ``last_crash.log`` (iter #71
+    crash logger) before being re-raised. Cela rend triageable un
+    Android first-launch crash sans ADB.
     """
-    os.environ.setdefault("KIVY_NO_ARGS", "1")
-    os.environ.setdefault("KIVY_NO_CONSOLELOG", "1")
-
     try:
         from emeraude.web_app import run_web_app  # noqa: PLC0415
 
         run_web_app()
     except Exception:
         _write_crash_log(traceback.format_exc())
-        # Re-raise so Kivy / Android emit their normal crash report
-        # AND so the user sees the app close with a clear error.
+        # Re-raise so Android emits its normal crash report AND so
+        # the user sees the app close with a clear error.
         raise
 
 
