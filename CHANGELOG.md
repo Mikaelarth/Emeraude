@@ -6,6 +6,89 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.77] - 2026-04-29
+
+### Added
+
+- **Système de design Material Design 3 maison** (en pure Kivy 2.3,
+  ADR-0002 §4 — pas de KivyMD). Premier lot de l'iter #77, focus
+  visuel + UX du Dashboard et du Journal.
+- `ui/theme.py` : extension majeure (was ~10 constantes, est ~50
+  tokens) :
+  - **Palette MD3** : surfaces tri-niveaux (background → surface →
+    surface_variant), couleurs de marque + containers (primary,
+    on-primary, primary_container, on-primary-container), états +
+    containers (success, danger, warning, chacun avec sa version
+    container atténuée), texte tri-niveaux (primary, secondary,
+    tertiary), outline.
+  - **Typographie MD3 scale** : 5 niveaux fonctionnels (display,
+    headline, title, body, label) avec 1-3 tailles chacun. Le hero
+    metric Capital passe de 32 sp à 64 sp.
+  - **Espacement** grille 4 dp : xs=4, sm=8, md=12, lg=16, xl=24,
+    2xl=32, 3xl=48.
+  - **Radius** : none, sm=8, md=12, lg=16, xl=28, full (pilule).
+  - **Motion** : short=150ms, medium=250ms, transition=300ms.
+  - Anciens noms (`FONT_SIZE_BODY`, `FONT_SIZE_HEADING`, etc.)
+    conservés en alias pour compat ascendante.
+- `ui/components/` : nouveau package de composants réutilisables :
+  - **`Card`** — surface container Material 3 à coins arrondis (16 dp
+    par défaut, override via kwarg). Background dessiné en
+    Canvas instructions (Color + RoundedRectangle) re-bound sur
+    pos/size pour suivre le layout. Méthode `set_surface_color`
+    pour animer le toggle de mode.
+  - **`EmptyState`** — placeholder vide centré (icône Unicode
+    optionnelle + titre headline + sous-titre body wrappé).
+    Remplace les phrases orphelines en haut d'écran (cf. doc
+    Journal pre-iter-#77).
+  - **`MetricHero`** — métrique-roi avec caption au-dessus + valeur
+    en typo display 64 sp. Utilisé pour Capital et P&L sur le
+    Dashboard. Properties `value_text` et `value_color` settables
+    pour les refresh.
+- `tests/unit/test_components.py` — 18 tests unitaires couvrant les
+  3 composants (defaults, custom args, mutations runtime). Gating
+  L2 par `_DISPLAY_AVAILABLE` (ADR-0002 §7).
+
+### Changed
+
+- `pyproject.toml` : version `0.0.76` -> `0.0.77`.
+- `buildozer.spec` : version `0.0.76` -> `0.0.77`.
+- **`ui/screens/dashboard.py`** — refonte complète :
+  - Composition : 2 `MetricHero` (Capital + P&L) + 2 `Card` (Position
+    actuelle, Statut bot) + filler iter #76 conservé.
+  - La position card affiche un `EmptyState` ("Aucune position
+    ouverte" + sous-titre explicatif) tant qu'il n'y a pas de
+    position open.
+  - P&L coloré selon signe (success / danger / secondary) propagé
+    au `MetricHero.value_color` au lieu d'un Label brut.
+  - Backwards compat : attributs `_capital_label`, `_pnl_label`,
+    `_mode_badge_label` exposés en alias des labels internes des
+    composants — les tests `test_dashboard_screen.py` passent
+    inchangés (1695 tests + 18 nouveaux = 1713 tests verts).
+- **`ui/screens/journal.py`** — refonte empty state :
+  - Quand le journal est vide, l'écran rend un `EmptyState` complet
+    (titre "Journal vide" + sous-titre explicatif) au lieu d'une
+    phrase orpheline en haut.
+  - Quand non-vide, header + ScrollView de rows comme avant.
+  - Le swap se fait par `clear_widgets` + `add_widget` du
+    composant approprié dans `_outer`.
+  - `_make_row_widget` migre vers `dp()` / `sp()` pour respecter la
+    densité d'écran réelle (avant : pixels bruts → texte trop petit
+    sur device 480 dpi).
+
+### Notes
+
+- **Coverage 99.72 %, suite stable à 1713 tests** (+18).
+- Quality gates : ruff check + ruff format + mypy strict + bandit
+  passent tous.
+- **Iters suivants UX** : #78 ajoute icônes Material Symbols (font
+  shippée dans l'APK) + redesign nav bar avec icônes au-dessus des
+  labels + Top App Bar. #79 refonte Config en cards + modal de
+  confirmation pour mode Réel (anti-règle A5 — double-tap + délai
+  5 s).
+- **À valider sur P30 lite** : screenshots before/after pour vérifier
+  hiérarchie visuelle (Capital domine), padding device-correct,
+  empty state Journal présentable.
+
 ## [0.0.76] - 2026-04-29
 
 ### Fixed

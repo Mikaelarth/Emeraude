@@ -103,3 +103,4 @@ binance_keys.*
 
 # ─── Claude Code (user-specific settings) ───────────────────────────────────
 .claude/
+.tmp-apk-*/
