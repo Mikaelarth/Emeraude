@@ -175,10 +175,26 @@ os.environ.setdefault("KIVY_NO_ARGS", "1")
 os.environ.setdefault("KIVY_NO_CONSOLELOG", "1")
 ```
 
-`Window` n'est créée qu'à `App.run()`, donc `App.build()` n'a pas
-besoin de display. Si une exécution CI déclenche quand même un
-besoin de display (futur écran avec canvas custom), on tranchera
-au cas par cas (xvfb ou `KIVY_GL_BACKEND=mock`).
+**Empirique Kivy 2.3** : contrairement à ce que la doc Kivy laisse
+entendre, instancier une `Label` (ou tout widget qui consomme du
+texte) déclenche la création du `Window` SDL2 — même sans
+`App.run()`. Sur un runner Linux sans `$DISPLAY`, SDL2 ne trouve pas
+de provider et le test crashe. Solution adoptée :
+
+- Les tests qui ne touchent **que** des classes (imports,
+  constantes thème) tournent partout (`TestImports`,
+  `TestThemeShape`).
+- Les tests qui appellent `App.build()` sont gardés par un skipif
+  conditionnel à la disponibilité d'un display (Windows / macOS /
+  Linux+`$DISPLAY` / `$WAYLAND_DISPLAY`). Ils tournent sur les
+  machines de développement et sont skippés sur le runner
+  `ubuntu-latest` sans xvfb.
+
+Si un futur besoin justifie l'exécution de la build-path en CI
+(ex. screenshot diff), on activera xvfb dans le job pytest et on
+retirera le skipif. Pour l'iter #58 le coût xvfb (apt install,
+3-5 s) est jugé excessif au regard de la valeur (les imports +
+théme couvrent déjà le canary "le bootstrap ne casse pas").
 
 ## Alternatives considérées
 

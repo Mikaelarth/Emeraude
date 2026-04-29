@@ -8,9 +8,23 @@ Coverage of ``ui/*`` is excluded by ``pyproject.toml`` ; this file
 ensures the bootstrap doesn't silently break despite that exclusion.
 The L2 per-screen logic tests will arrive iter #59+ when the first
 real screen (Dashboard) lands.
+
+Note on headless CI : Kivy 2.3 instantiates a Window as soon as a
+:class:`Label` (or any widget that uses text rendering) is created,
+even without :meth:`App.run`. On Linux CI runners without an X
+display, SDL2 cannot pick a video driver and the build path can't
+execute. The :class:`TestAppBuild` class is therefore guarded by
+:data:`_DISPLAY_AVAILABLE` so the tests run on developer machines
+(Windows / desktop Linux with X / WSLg) and are skipped on the
+headless ubuntu-latest CI runner. The :class:`TestImports` and
+:class:`TestThemeShape` classes do not touch Window and run
+everywhere.
 """
 
 from __future__ import annotations
+
+import os
+import platform
 
 import pytest
 from kivy.uix.screenmanager import Screen, ScreenManager
@@ -22,6 +36,18 @@ from emeraude.ui.app import (
     PLACEHOLDER_SCREEN_NAME,
     EmeraudeApp,
 )
+
+# True iff the current environment can host a Kivy Window. Windows /
+# macOS desktops have a default driver ; Linux needs ``$DISPLAY`` (X)
+# or ``$WAYLAND_DISPLAY``. CI runners (ubuntu-latest, no xvfb) leave
+# both unset. Developers running WSLg / X-server-on-Windows expose
+# ``$DISPLAY`` and these tests run end-to-end.
+_DISPLAY_AVAILABLE: bool = (
+    platform.system() in {"Windows", "Darwin"}
+    or bool(os.environ.get("DISPLAY"))
+    or bool(os.environ.get("WAYLAND_DISPLAY"))
+)
+_NO_DISPLAY_REASON = "Kivy Window cannot init without a display backend (headless CI)"
 
 # ─── Module imports ─────────────────────────────────────────────────────────
 
@@ -47,6 +73,7 @@ class TestImports:
 
 
 @pytest.mark.unit
+@pytest.mark.skipif(not _DISPLAY_AVAILABLE, reason=_NO_DISPLAY_REASON)
 class TestAppBuild:
     def test_build_returns_screen_manager(self) -> None:
         app = EmeraudeApp()
