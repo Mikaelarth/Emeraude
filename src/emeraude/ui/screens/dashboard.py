@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Final
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.label import Label
 from kivy.uix.screenmanager import Screen
+from kivy.uix.widget import Widget
 
 from emeraude.services.dashboard_types import format_dashboard_labels
 from emeraude.ui import theme
@@ -124,6 +125,17 @@ class DashboardScreen(Screen):  # type: ignore[misc]  # Kivy classes are untyped
         layout.add_widget(self._open_position_label)
         layout.add_widget(self._n_trades_label)
         layout.add_widget(self._mode_badge_label)
+        # Iter #76 : filler that absorbs all remaining vertical space.
+        # Without it, a vertical ``BoxLayout`` whose children all have
+        # ``size_hint_y=None`` (here the 5 fixed-height labels) places
+        # them at the BOTTOM of the layout, leaving an empty area above —
+        # observed visually on Redmi 2409BRN2CA Android 16 and Huawei P30
+        # lite Android 10 once the boot finally succeeded post-iter #75.
+        # The default ``size_hint=(1, 1)`` of a bare ``Widget()`` makes
+        # it absorb the leftover height, which pushes the labels back to
+        # the top where the ``do_layout`` algorithm naturally places them
+        # when at least one child stretches.
+        layout.add_widget(Widget())
         self.add_widget(layout)
 
         self.refresh()

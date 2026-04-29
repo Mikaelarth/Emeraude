@@ -6,6 +6,48 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.76] - 2026-04-29
+
+### Fixed
+
+- **Layout Dashboard / Config plaqué en bas de l'écran** : sur Redmi
+  2409BRN2CA Android 16 et Huawei P30 lite Android 10 (premiers boots
+  end-to-end réussis post-iter #75), le contenu des écrans Dashboard et
+  Config s'affichait collé en bas avec une grande zone vide en haut.
+  - **Cause** : `BoxLayout(orientation='vertical')` dont *tous* les
+    enfants ont `size_hint_y=None`. Dans ce cas dégénéré, l'algorithme
+    `do_layout` Kivy calcule la position des enfants à partir de
+    `self.y` (= bas du layout en repère Kivy où Y croît vers le haut),
+    sans aucun enfant pour absorber l'espace restant — donc les
+    widgets se retrouvent ancrés en bas.
+  - **Pourquoi Journal n'avait PAS le bug** : il contient un
+    `ScrollView` (size_hint=(1,1) par défaut) qui absorbe l'espace
+    vertical restant, ce qui force le header au-dessus à se placer en
+    haut où l'algo le veut naturellement.
+  - **Fix** : ajouter un `Widget()` filler en dernière position dans
+    le `BoxLayout` racine de Dashboard et Config. Son
+    `size_hint=(1, 1)` par défaut avale l'espace résiduel et pousse
+    les widgets size-fixe vers le haut, qui est la position normale
+    quand au moins un enfant stretche.
+
+### Changed
+
+- `pyproject.toml` : version `0.0.75` -> `0.0.76`.
+- `buildozer.spec` : version `0.0.75` -> `0.0.76`.
+- `ui/screens/dashboard.py` : import `Widget` + filler après les 5
+  Labels (commentaire iter #76 explique le pourquoi).
+- `ui/screens/config.py` : import `Widget` + filler après les 5
+  panels enfants de `_outer` (mêmes commentaires).
+
+### Notes
+
+- **Suite stable à 1695 tests, coverage 99.72 %** — aucun test
+  n'asserte sur `len(layout.children)` côté outer/root, donc le filler
+  ne casse rien.
+- **À valider** : réinstaller v0.0.76 sur P30 lite (USB ADB) ET sur
+  Redmi (sideload) — vérifier que les écrans Dashboard et Config
+  rendent maintenant le contenu en haut de l'écran.
+
 ## [0.0.75] - 2026-04-29
 
 ### Fixed

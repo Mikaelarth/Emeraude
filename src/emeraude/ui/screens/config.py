@@ -40,6 +40,7 @@ from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
 from kivy.uix.label import Label
 from kivy.uix.screenmanager import Screen
+from kivy.uix.widget import Widget
 
 from emeraude.services.binance_credentials import (
     ENV_PASSPHRASE,
@@ -266,6 +267,11 @@ class ConfigScreen(Screen):  # type: ignore[misc]  # Kivy classes are untyped (A
         self._outer.add_widget(self._toggle_panel)
         self._outer.add_widget(self._refresh_hint)
         self._outer.add_widget(self._binance_panel)
+        # Iter #76 : filler ; cf. ``DashboardScreen`` for the rationale.
+        # All children of ``_outer`` are size_hint_y=None, so without a
+        # stretching child the panels otherwise pile up at the bottom
+        # of the screen on real devices (observed P30 lite + Redmi).
+        self._outer.add_widget(Widget())
         self.add_widget(self._outer)
 
         self.refresh()
