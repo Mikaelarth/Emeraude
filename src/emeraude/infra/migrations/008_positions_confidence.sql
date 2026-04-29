@@ -13,9 +13,11 @@
 --   calibration loop with zero-confidence "win-rate ~ 50 %" data points
 --   that distort the ECE. NULL says "no observation" and the loop
 --   filters those out.
--- * SQLite STRICT mode allows nullable TEXT columns ; the application
---   layer (`PositionTracker.open_position`) accepts confidence as an
---   optional argument, defaulting to None, so the surface API matches.
+-- * The application layer (`PositionTracker.open_position`) accepts
+--   confidence as an optional argument, defaulting to None, so the
+--   surface API matches.
+-- (Note iter #75 : STRICT tables removed — see
+-- ``migrations/__init__.py`` docstring.)
 --
 -- Doc 10 R1 critère mesurable I1 ("ECE < 5 % sur 100 trades") will be
 -- computable as soon as 100 closed trades carry a non-null confidence.

@@ -14,6 +14,7 @@
 -- (cf. regime_memory, sum_r/sum_r2).
 -- ============================================================================
 
+-- ``STRICT`` removed iter #75 (SQLite 3.37+ only — Android 14+).
 CREATE TABLE IF NOT EXISTS champion_history (
     id                  INTEGER PRIMARY KEY,
     champion_id         TEXT    NOT NULL,
@@ -24,7 +25,7 @@ CREATE TABLE IF NOT EXISTS champion_history (
     sharpe_live         TEXT,
     expiry_reason       TEXT,
     parameters_json     TEXT    NOT NULL DEFAULT '{}'
-) STRICT;
+);
 
 CREATE INDEX IF NOT EXISTS champion_history_state_idx
     ON champion_history(state);

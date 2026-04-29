@@ -267,10 +267,11 @@ wheels = [
 
 [[package]]
 name = "emeraude"
-version = "0.0.71"
+version = "0.0.75"
 source = { editable = "." }
 dependencies = [
     { name = "certifi" },
+    { name = "filetype" },
     { name = "kivy" },
     { name = "requests" },
 ]
@@ -297,6 +298,7 @@ requires-dist = [
     { name = "certifi", specifier = ">=2024.0" },
     { name = "commitizen", marker = "extra == 'dev'", specifier = ">=3.30.0" },
     { name = "detect-secrets", marker = "extra == 'dev'", specifier = ">=1.5.0" },
+    { name = "filetype", specifier = ">=1.2.0" },
     { name = "hypothesis", marker = "extra == 'dev'", specifier = ">=6.115.0" },
     { name = "kivy", specifier = ">=2.3.0,<3.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.13.0" },

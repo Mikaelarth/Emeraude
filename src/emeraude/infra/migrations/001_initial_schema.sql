@@ -9,11 +9,14 @@
 --                jamais hardcodé.
 -- ════════════════════════════════════════════════════════════════════════════
 
+-- ``STRICT`` removed iter #75 : SQLite 3.37+ only (Android 14+).
+-- Cf. ``migrations/__init__.py`` docstring for the version-constraint
+-- rationale. Type safety is enforced at the Python layer.
 CREATE TABLE IF NOT EXISTS settings (
     key        TEXT    PRIMARY KEY,
     value      TEXT    NOT NULL,
     updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
-) STRICT;
+);
 
 -- Auto-record dans schema_version.
 INSERT OR IGNORE INTO schema_version (version, name)

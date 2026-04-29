@@ -6,6 +6,60 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.75] - 2026-04-29
+
+### Fixed
+
+- **Crash au démarrage Android < 14** :
+  `sqlite3.OperationalError: near "STRICT": syntax error` levé par
+  `infra/migrations/__init__.py:84` dès la première `apply_migrations`.
+  Cause : nos 6 migrations (`001_initial_schema`, `002_audit_log`,
+  `003_regime_memory`, `004_strategy_performance`, `005_champion_history`,
+  `006_positions`) déclaraient leurs tables avec `) STRICT;`. Le mot-clé
+  `STRICT` a été ajouté dans **SQLite 3.37.0** (Nov 2021), donc seulement
+  dispo dans **Android 14+ (API 34+)**. Or `buildozer.spec` déclare
+  `android.minapi = 24` (Android 7) → contradiction silencieuse, l'app
+  bootait jusqu'à la 1re query DB puis crashait, retour launcher.
+  - **Diagnostic en 2 temps** :
+    1. Émulateur AOSP API 30 SQLite 3.28 (run 25115412399, post-iter #74) :
+       trace capturée par crash logger.
+    2. Confirmé sur **Huawei P30 lite Android 10 (SQLite 3.22)** via
+       ADB USB local : même `OperationalError`, même chemin
+       (PositionTracker.history → DashboardScreen.refresh).
+  - **Fix** : retrait de `STRICT` sur les 6 `CREATE TABLE`. La discipline
+    de typage est garantie au niveau Python (mypy strict + conversions
+    `Decimal`/`int` explicites dans les data-access modules), pas par
+    SQLite. Note de rationale ajoutée dans `migrations/__init__.py`
+    docstring sous "SQLite version constraint".
+
+### Changed
+
+- `pyproject.toml` : version `0.0.74` -> `0.0.75`.
+- `buildozer.spec` : version `0.0.74` -> `0.0.75`.
+- `infra/migrations/__init__.py` : docstring élargi avec section
+  "SQLite version constraint" listant les features 3.7+ qu'on n'utilise
+  PAS (STRICT, RETURNING, IIF) et la règle d'engagement pour ajouter
+  une feature 3.37+ à l'avenir (gate runtime + fallback SQL).
+- 6 fichiers `*.sql` : `) STRICT;` -> `);` + commentaire local
+  référençant l'iter.
+- 2 fichiers `*.sql` (007, 008) : commentaires mentionnant "STRICT mode"
+  réécrits.
+
+### Notes
+
+- **Chaîne complète des iters Android** :
+  - #68 build APK Buildozer/p4a
+  - #71 crash logger fichier dans `$ANDROID_PRIVATE`
+  - #72 workflow CI émulateur AOSP
+  - #73 ABI x86_64 dans l'APK pour bypass `libndk_translation`
+  - #74 dep `filetype` (kivy.core.image)
+  - **#75 retrait `STRICT` (compat SQLite < 3.37)**
+  Chaque iter a fixé exactement un problème identifié par le précédent.
+- **Suite stable à 1695 tests, coverage 99.72 %**.
+- **À valider sur P30 lite après build** : si l'app boote sans crash
+  jusqu'au dashboard, on a du end-to-end Android sur un device réel
+  (Android 10) — première fois.
+
 ## [0.0.74] - 2026-04-29
 
 ### Fixed

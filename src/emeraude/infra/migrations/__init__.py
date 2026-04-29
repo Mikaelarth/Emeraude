@@ -14,6 +14,24 @@ not by runner ceremony).
 
 The bootstrap step ensures ``schema_version`` exists before any user
 migration runs.
+
+SQLite version constraint
+=========================
+
+Migrations target **SQLite >= 3.7** (the version bundled with Android 4.0,
+API 14, far below our ``android.minapi = 24``). Specifically :
+
+* No ``STRICT`` table option (added SQLite 3.37.0, Nov 2021 = Android 14+).
+  Iter #75 removed ``) STRICT;`` clauses from the schema after observing
+  ``sqlite3.OperationalError: near "STRICT": syntax error`` on Android 10
+  (SQLite 3.22) and on the AOSP API 30 emulator (SQLite 3.28). Type
+  discipline is enforced at the Python layer (mypy strict + explicit
+  Decimal/int conversions in the data-access modules), not by SQLite.
+* No ``RETURNING`` (added 3.35).
+* No ``IIF`` / ``UPSERT`` extensions beyond ``INSERT OR IGNORE``.
+
+If you ever need a 3.37+ feature, gate it behind a runtime version check
+and provide a fallback SQL path — never assume a recent SQLite at runtime.
 """
 
 from __future__ import annotations

@@ -11,13 +11,14 @@
 --                                   sur les 7 derniers jours"
 -- ════════════════════════════════════════════════════════════════════════════
 
+-- ``STRICT`` removed iter #75 (SQLite 3.37+ only — Android 14+).
 CREATE TABLE IF NOT EXISTS audit_log (
     id           INTEGER PRIMARY KEY,
     ts           INTEGER NOT NULL,
     event_type   TEXT    NOT NULL,
     payload_json TEXT    NOT NULL DEFAULT '{}',
     version      INTEGER NOT NULL DEFAULT 1
-) STRICT;
+);
 
 CREATE INDEX IF NOT EXISTS audit_log_ts_idx
     ON audit_log(ts);

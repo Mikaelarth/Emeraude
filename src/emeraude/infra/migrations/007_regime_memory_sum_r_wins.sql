@@ -21,8 +21,11 @@
 -- layer's `adaptive_min_trades` threshold (default 30) keeps the
 -- fallback_win_loss_ratio active during this re-warmup window.
 --
--- SQLite STRICT mode supports ALTER TABLE ADD COLUMN with DEFAULT
--- since 3.36.0 ; the existing column types remain unchanged.
+-- ``ALTER TABLE ADD COLUMN`` with a constant ``DEFAULT`` is supported
+-- since SQLite 3.2.0 (2005), so this works on all Android versions we
+-- target (minapi = 24 = SQLite 3.8+).
+-- (Note iter #75 : we no longer use STRICT tables — see
+-- ``migrations/__init__.py`` docstring.)
 -- ============================================================================
 
 ALTER TABLE regime_memory ADD COLUMN sum_r_wins TEXT NOT NULL DEFAULT '0';

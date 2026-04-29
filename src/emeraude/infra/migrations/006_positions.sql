@@ -14,6 +14,7 @@
 -- (cf. regime_memory, sum_r/sum_r2 ; champion_history, sharpes).
 -- ============================================================================
 
+-- ``STRICT`` removed iter #75 (SQLite 3.37+ only — Android 14+).
 CREATE TABLE IF NOT EXISTS positions (
     id            INTEGER PRIMARY KEY,
     strategy      TEXT    NOT NULL,
@@ -29,7 +30,7 @@ CREATE TABLE IF NOT EXISTS positions (
     exit_price    TEXT,
     exit_reason   TEXT,
     r_realized    TEXT
-) STRICT;
+);
 
 -- Partial index on the (single, in doc-04 mode) currently-open row :
 -- ``WHERE closed_at IS NULL`` is the canonical "open positions" query.

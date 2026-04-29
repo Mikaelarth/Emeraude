@@ -11,6 +11,7 @@
 -- outcome.
 -- ============================================================================
 
+-- ``STRICT`` removed iter #75 (SQLite 3.37+ only — Android 14+).
 CREATE TABLE IF NOT EXISTS regime_memory (
     strategy     TEXT    NOT NULL,
     regime       TEXT    NOT NULL,
@@ -20,7 +21,7 @@ CREATE TABLE IF NOT EXISTS regime_memory (
     sum_r2       TEXT    NOT NULL DEFAULT '0',
     last_updated INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
     PRIMARY KEY (strategy, regime)
-) STRICT;
+);
 
 CREATE INDEX IF NOT EXISTS regime_memory_regime_idx ON regime_memory(regime);
 
