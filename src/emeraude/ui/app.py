@@ -34,6 +34,7 @@ the refresh logic is exercised directly by calling
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING, Final
 
 from kivy.app import App
@@ -43,7 +44,11 @@ from kivy.uix.screenmanager import ScreenManager
 
 from emeraude.agent.execution.position_tracker import PositionTracker
 from emeraude.infra import database
-from emeraude.services.binance_credentials import BinanceCredentialsService
+from emeraude.services.binance_balance_provider import BinanceBalanceProvider
+from emeraude.services.binance_credentials import (
+    ENV_PASSPHRASE,
+    BinanceCredentialsService,
+)
 from emeraude.services.config_data_source import SettingsConfigDataSource
 from emeraude.services.config_types import SETTING_KEY_MODE
 from emeraude.services.dashboard_data_source import TrackerDashboardDataSource
@@ -170,12 +175,22 @@ class EmeraudeApp(App):  # type: ignore[misc]  # Kivy classes are untyped (kivy.
             persisted = database.get_setting(SETTING_KEY_MODE)
             return persisted if persisted is not None else self._mode
 
+        # Live Binance balance provider (iter #67). Décrypte les clés
+        # à chaque tick + appelle ``BinanceClient.get_account_balance``,
+        # cache 60 s. Mode REAL délègue à ce provider via le wallet.
+        # Si aucune clé saisie ou passphrase manquante, retourne None
+        # → UI affiche ``—`` (anti-A1).
+        balance_provider = BinanceBalanceProvider(
+            passphrase_provider=lambda: os.environ.get(ENV_PASSPHRASE),
+        )
+
         # Wallet : either the injected one (tests) or a fresh
         # tracker-backed one (production).
         wallet = self._wallet or WalletService(
             tracker=tracker,
             mode_provider=_read_mode,
             starting_capital=self._starting_capital,
+            real_balance_provider=balance_provider.current_balance_usdt,
         )
 
         data_source = TrackerDashboardDataSource(

@@ -6,6 +6,110 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.67] - 2026-04-29
+
+### Added
+
+- **`BinanceBalanceProvider` — live Binance USDT balance avec cache TTL**
+  (iter #67). Brancher mode REAL du `WalletService` sur l'API Binance
+  réelle. La chaîne saisie (iter #66) → usage est désormais complète :
+  un toggle Config → real propage au prochain refresh tick (iter #65)
+  et le Dashboard affiche la balance Binance live au lieu de `—`.
+- **`src/emeraude/services/binance_balance_provider.py`** (~190 LOC,
+  100 % coverage) :
+  - `BinanceClientLike` Protocol structural pour permettre des fakes
+    en test (sans réseau).
+  - `BinanceBalanceProvider` :
+    - `current_balance_usdt() -> Decimal | None` : cache TTL (60 s
+      par défaut) + decrypt + signed HTTP via
+      `BinanceClient.get_account_balance("USDT")`.
+    - `invalidate_cache()` : force le prochain appel à hit HTTP.
+    - Defense in depth : passphrase manquant / credentials non
+      saisies / decrypt fail (wrong passphrase) / HTTP error /
+      JSON shape error → tous retournent ``None`` + audit explicite.
+  - **Audit events** :
+    - `WALLET_REAL_BALANCE_FETCHED` sur succès (avec `asset`,
+      `balance` stringifié).
+    - `WALLET_REAL_BALANCE_FAILED` sur échec avec `reason` stable
+      pour filtering :
+      `no_passphrase` / `no_credentials` / `decrypt_failed` /
+      `http_error` / `invalid_response`.
+- **`tests/unit/test_binance_balance_provider.py`** : **20 tests, 5
+  classes** :
+  - `TestValidation` (2) : ttl > 0.
+  - `TestFailurePaths` (10) : passphrase manquant / no creds /
+    wrong passphrase / HTTP URLError / JSON KeyError / ValueError —
+    chacun avec retour None + audit assertion.
+  - `TestSuccessPath` (3) : returns balance, audit event avec asset
+    + balance, decrypted keys passed to client_factory.
+  - `TestCacheTTL` (4) : default ttl 60 s, hit cache within ttl,
+    invalidate forces refetch, failure NOT cached.
+  - `TestIdempotence` (1) : invalidate sur cache vide safe.
+- **`tests/unit/test_wallet.py`** classe `TestRealModeDelegation`
+  (5 tests) :
+  - Real mode + provider → wallet retourne provider value.
+  - Real mode + provider returns None → wallet propage None.
+  - Real mode + no provider → None (backward-compat).
+  - Provider invoqué uniquement en real mode (pas paper /
+    unconfigured).
+  - Provider re-évalué à chaque call (cache porté côté provider,
+    pas wallet).
+
+### Changed (BREAKING vs iter #65 — service-layer API)
+
+- **`WalletService.__init__`** : nouveau param optionnel
+  `real_balance_provider: Callable[[], Decimal | None] | None = None`.
+  - Backward-compat : tests existants qui n'injectent pas le
+    provider continuent à fonctionner (real mode → None).
+- **`WalletService.current_capital()`** : dispatch tripartite explicite
+  (paper / real-with-provider / fallback None).
+- **`EmeraudeApp.build()`** : instancie `BinanceBalanceProvider` avec
+  `passphrase_provider=lambda: os.environ.get(ENV_PASSPHRASE)`,
+  passe `provider.current_balance_usdt` au wallet via
+  `real_balance_provider`.
+- `services/__init__.py` : re-exports `BinanceBalanceProvider`,
+  `AUDIT_BALANCE_FETCHED`, `AUDIT_BALANCE_FAILED`.
+- `pyproject.toml` : version `0.0.66` -> `0.0.67`.
+
+### Notes
+
+- **Architecture du cache** : TTL 60 s. Le cycle pump UI tick à 5 s ;
+  le cache absorbe ~12 ticks entre 2 calls HTTP. Sans cache, chaque
+  refresh tick déclencherait un appel signed → saturation Binance
+  + UI freeze 500 ms-2 s. Avec cache TTL, on a au plus 1 appel HTTP
+  par minute en mode real actif.
+- **Decision : pas de poll asynchrone cet iter** : le call HTTP
+  bloque le thread Kivy quand le cache expire (toutes les 60 s).
+  Acceptable pour iter #67 — l'extraction d'un poll background via
+  threading + queue arrive iter #68+ si la latence réelle sur device
+  Android se révèle problématique. R2 — un changement à la fois.
+- **Defense in depth** : la fonction `_fetch_live_balance` valide
+  les clés décryptées via `validate_credential` AVANT de construire
+  le `BinanceClient`. Wrong passphrase produit du UTF-8 garbled qui
+  échoue le format check → audit `decrypt_failed` au lieu de
+  payload Binance suspect. Aussi : un futur exchange-rebrand qui
+  changerait le format des clés s'auto-détecterait via cette
+  validation.
+- **Pas de plaintext caching côté provider** : les clés sont
+  re-décryptées à chaque cache miss. La fenêtre de plaintext en
+  mémoire = durée d'un appel HTTP signed (~500 ms-2 s). Le client
+  Binance lui-même garde les clés en attribut, mais l'instance est
+  discardée juste après l'appel.
+- **Anti-règles respectées** :
+  - **A1** : aucune fake balance. ``None`` partout où la chaîne
+    n'est pas complète (passphrase / clés / réseau).
+  - **A8** : 5 reasons d'échec stables avec audit explicite. Pas de
+    silence sur erreur transitoire.
+  - **A11** : pas de capital hardcodé côté provider — tout vient de
+    Binance.
+  - **A14** : 25 tests sur l'API publique du provider + le wiring
+    wallet.
+  - **R5** : `BinanceClientLike` Protocol structural ; le module
+    `binance_balance_provider` ne dépend que de
+    `infra/{audit,crypto,exchange}` (jamais de Kivy).
+- Suite **1670 → 1695 tests (+25)**, coverage global stable à
+  **99.76 %**.
+
 ## [0.0.66] - 2026-04-29
 
 ### Added

@@ -275,3 +275,77 @@ class TestLiveModeProvider:
 
         current_mode[0] = MODE_REAL
         assert wallet.current_capital() is None
+
+
+# ─── Real mode delegation (iter #67) ───────────────────────────────────────
+
+
+@pytest.mark.unit
+class TestRealModeDelegation:
+    def test_real_mode_uses_provider_when_set(self, fresh_db: Path) -> None:
+        # Real mode + provider injected -> wallet returns provider's value.
+        wallet = WalletService(
+            tracker=PositionTracker(),
+            mode_provider=lambda: MODE_REAL,
+            real_balance_provider=lambda: Decimal("123.45"),
+        )
+        assert wallet.current_capital() == Decimal("123.45")
+
+    def test_real_mode_provider_returning_none(self, fresh_db: Path) -> None:
+        # Provider returns None (e.g. HTTP failure) -> wallet propagates.
+        wallet = WalletService(
+            tracker=PositionTracker(),
+            mode_provider=lambda: MODE_REAL,
+            real_balance_provider=lambda: None,
+        )
+        assert wallet.current_capital() is None
+
+    def test_real_mode_no_provider_returns_none(self, fresh_db: Path) -> None:
+        # No provider injected -> backward-compatible behavior.
+        wallet = WalletService(
+            tracker=PositionTracker(),
+            mode_provider=lambda: MODE_REAL,
+        )
+        assert wallet.current_capital() is None
+
+    def test_provider_only_called_in_real_mode(self, fresh_db: Path) -> None:
+        # Provider must NOT be invoked in paper / unconfigured mode.
+        provider_calls = [0]
+
+        def _provider() -> Decimal | None:
+            provider_calls[0] += 1
+            return Decimal("999")
+
+        current_mode = [MODE_PAPER]
+        wallet = WalletService(
+            tracker=PositionTracker(),
+            mode_provider=lambda: current_mode[0],
+            real_balance_provider=_provider,
+        )
+
+        wallet.current_capital()  # paper
+        assert provider_calls[0] == 0
+
+        current_mode[0] = MODE_UNCONFIGURED
+        wallet.current_capital()
+        assert provider_calls[0] == 0
+
+        current_mode[0] = MODE_REAL
+        wallet.current_capital()
+        assert provider_calls[0] == 1
+
+    def test_provider_re_evaluated_each_call(self, fresh_db: Path) -> None:
+        # Like mode_provider, real_balance_provider is invoked at
+        # every current_capital() call — pas de cache côté wallet.
+        # Le cache est porté par le provider lui-même (iter #67
+        # BinanceBalanceProvider TTL).
+        balances = iter([Decimal("10"), Decimal("20"), Decimal("30")])
+
+        wallet = WalletService(
+            tracker=PositionTracker(),
+            mode_provider=lambda: MODE_REAL,
+            real_balance_provider=lambda: next(balances),
+        )
+        assert wallet.current_capital() == Decimal("10")
+        assert wallet.current_capital() == Decimal("20")
+        assert wallet.current_capital() == Decimal("30")

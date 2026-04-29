@@ -50,7 +50,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import TYPE_CHECKING, Final
 
-from emeraude.services.dashboard_types import MODE_PAPER
+from emeraude.services.dashboard_types import MODE_PAPER, MODE_REAL
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -97,6 +97,12 @@ class WalletService:
             Must be ``>= 0``.
         history_limit: maximum number of closed trades to aggregate
             for the paper-mode running balance. Default 200.
+        real_balance_provider: callable returning the live Binance
+            balance in quote currency, or ``None`` si non disponible
+            (passphrase manquante, credentials non saisies, HTTP
+            failure). Default ``None`` — mode REAL retourne ``None``
+            tant que ce provider n'est pas câblé. Iter #67 le branche
+            via :class:`BinanceBalanceProvider`.
 
     Raises:
         ValueError: on negative ``starting_capital`` or
@@ -110,6 +116,7 @@ class WalletService:
         mode_provider: Callable[[], str],
         starting_capital: Decimal = DEFAULT_COLD_START_CAPITAL,
         history_limit: int = _DEFAULT_HISTORY_LIMIT,
+        real_balance_provider: Callable[[], Decimal | None] | None = None,
     ) -> None:
         if starting_capital < _ZERO:
             msg = f"starting_capital must be >= 0, got {starting_capital}"
@@ -121,6 +128,7 @@ class WalletService:
         self._mode_provider = mode_provider
         self._starting_capital = starting_capital
         self._history_limit = history_limit
+        self._real_balance_provider = real_balance_provider
 
     @property
     def mode(self) -> str:
@@ -147,12 +155,20 @@ class WalletService:
         Returns:
             * Paper mode : ``starting_capital + cumulative_realized_pnl``
               (always a non-None ``Decimal``).
-            * Real / unconfigured : ``None`` (the UI shows ``—``).
+            * Real mode : valeur du ``real_balance_provider`` si
+              câblé, sinon ``None``.
+            * Unconfigured : ``None``.
+
+        Le UI affiche ``—`` sur ``None``, jamais une fake value
+        (anti-règle A1).
         """
-        if self._mode_provider() == MODE_PAPER:
+        mode = self._mode_provider()
+        if mode == MODE_PAPER:
             return self._starting_capital + self._cumulative_realized_pnl()
-        # Real-mode live balance + unconfigured both return None until
-        # their respective wiring lands. Honest cold-start (anti-A1).
+        if mode == MODE_REAL and self._real_balance_provider is not None:
+            return self._real_balance_provider()
+        # Real-mode sans provider + unconfigured + mode inconnu :
+        # tous retournent None. Honest cold-start (anti-A1).
         return None
 
     def _cumulative_realized_pnl(self) -> Decimal:

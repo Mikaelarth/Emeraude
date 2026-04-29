@@ -31,6 +31,11 @@ from emeraude.services.backup import (
     BackupRecord,
     BackupService,
 )
+from emeraude.services.binance_balance_provider import (
+    AUDIT_BALANCE_FAILED,
+    AUDIT_BALANCE_FETCHED,
+    BinanceBalanceProvider,
+)
 from emeraude.services.binance_credentials import (
     BinanceCredentialsService,
     BinanceCredentialsStatus,
@@ -106,6 +111,8 @@ from emeraude.services.wallet import (
 
 __all__ = [
     "AUDIT_ADVERSARIAL_VALIDATION",
+    "AUDIT_BALANCE_FAILED",
+    "AUDIT_BALANCE_FETCHED",
     "AUDIT_CHAMPION_PROMOTION_DECISION",
     "AUDIT_COVERAGE_VALIDATION",
     "AUDIT_DRIFT_DETECTED",
@@ -116,6 +123,7 @@ __all__ = [
     "AutoTrader",
     "BackupRecord",
     "BackupService",
+    "BinanceBalanceProvider",
     "BinanceCredentialsService",
     "BinanceCredentialsStatus",
     "CoverageValidationDecision",
