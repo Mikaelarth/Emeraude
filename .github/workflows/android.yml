@@ -85,9 +85,16 @@ jobs:
       # ``android debug`` produces an unsigned APK suitable for sideload
       # on a physical device. ``android release`` would require keystore
       # signing — out of scope for iter #68.
+      #
+      # Iter #69 : Gradle 8.0.2 (pulled by p4a) requires Java 17. The
+      # Ubuntu 22.04 default is Java 11. GitHub's Ubuntu 22.04 image
+      # ships Temurin 17 at the path below ; point JAVA_HOME / PATH
+      # at it so the gradlew invocation picks the right JDK.
       - name: Buildozer android debug
         run: |
-          export PATH=$PATH:~/.local/bin/
+          export JAVA_HOME=/usr/lib/jvm/temurin-17-jdk-amd64
+          export PATH=$JAVA_HOME/bin:$PATH:~/.local/bin/
+          java -version
           buildozer android debug
 
       # ── Publish the APK as a workflow artifact ──────────────────────────
