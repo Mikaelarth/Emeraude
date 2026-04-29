@@ -89,18 +89,26 @@ def _resolve_web_root() -> Path:
 def _open_android_webview(url: str, auth_token: str) -> None:
     """Replace the Kivy ContentView with an Android WebView pointed at ``url``.
 
-    Must run on the Android UI thread — we wrap the body with
-    :func:`kivy.clock.mainthread`. Keeps :mod:`pyjnius` and :mod:`kivy`
-    imports lazy (this module must remain importable on desktop).
+    The Android :class:`WebView` constructor requires a thread that
+    has a :class:`Looper` attached — that's the **Android UI thread**,
+    not the Kivy main thread. Iter #78 first attempt used Kivy's
+    ``@mainthread`` decorator (from ``kivy.clock``) which schedules
+    on the Kivy main thread → ``WebView(activity)`` raised
+    ``JavaException: NullPointerException ... Looper.mQueue`` on
+    Huawei P30 lite (cf. last_crash.log of the v0.0.78 first install).
 
-    The ``auth_token`` is set as a cookie before ``loadUrl`` so the
-    SPA's first ``fetch('/api/...')`` includes it (cf. ADR-0004
-    sécurité loopback).
+    The correct primitive is ``android.runnable.run_on_ui_thread``
+    (provided by ``python-for-android`` android stubs). It posts to
+    the Activity's UI thread via the JVM's standard
+    ``runOnUiThread`` mechanism.
+
+    Keeps :mod:`pyjnius` and :mod:`android` imports lazy (this module
+    must remain importable on desktop).
     """
-    # Android-only imports — jnius has no type stubs (we ignore[import-not-found])
-    # and the mainthread decorator from Kivy is untyped (ignore[misc]).
+    # Android-only imports — jnius and android.runnable are provided
+    # by python-for-android only ; no stubs available on host.
+    from android.runnable import run_on_ui_thread  # type: ignore[import-not-found]  # noqa: PLC0415
     from jnius import autoclass  # type: ignore[import-not-found]  # noqa: PLC0415
-    from kivy.clock import mainthread  # noqa: PLC0415
 
     # Java class names follow the JVM convention (PascalCase) ;
     # ruff N806 is silenced explicitly per autoclass call.
@@ -109,14 +117,14 @@ def _open_android_webview(url: str, auth_token: str) -> None:
     WebViewClient = autoclass("android.webkit.WebViewClient")  # noqa: N806
     CookieManager = autoclass("android.webkit.CookieManager")  # noqa: N806
 
-    @mainthread  # type: ignore[untyped-decorator]
+    @run_on_ui_thread  # type: ignore[untyped-decorator]
     def _create() -> None:
         activity = PythonActivity.mActivity
 
-        # Pre-set the auth cookie so the first GET / can use it. We
-        # also set it for /api/ since the SPA fetches with
-        # credentials: 'include'. Set-Cookie via Set-Cookie header on
-        # GET / works too — belt-and-suspenders.
+        # Pre-set the auth cookie so the first GET / can use it.
+        # The SPA's fetch('/api/...') calls with credentials='include'
+        # will then send the cookie. The Set-Cookie header on GET /
+        # is a belt-and-suspenders backup.
         cm = CookieManager.getInstance()
         cm.setAcceptCookie(True)
         cookie_value = f"emeraude_auth={auth_token}; Path=/"

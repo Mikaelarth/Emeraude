@@ -6,6 +6,40 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.79] - 2026-04-29
+
+### Fixed
+
+- **Crash au démarrage Android sur v0.0.78** :
+  ``JavaException: NullPointerException ... Looper.mQueue`` à
+  l'instanciation de la ``WebView`` Android.
+  - **Cause** : iter #78 utilisait ``kivy.clock.mainthread`` pour
+    poster la création de la WebView. Mais sur python-for-android,
+    le ``main thread`` Kivy est le thread SDL2, **pas le thread UI
+    Android**. La constructor de :class:`android.webkit.WebView`
+    lit le ``Looper`` du thread courant et crashe si absent.
+  - **Diagnostic** : capturé end-to-end via le crash logger iter #71
+    sur Huawei P30 lite (USB ADB local), traceback complet écrit
+    dans ``last_crash.log``.
+  - **Fix** : remplacement par
+    ``android.runnable.run_on_ui_thread`` (fourni par
+    python-for-android), qui poste effectivement sur le thread UI
+    Android via le mécanisme JVM standard ``runOnUiThread``.
+
+### Changed
+
+- `pyproject.toml` : version `0.0.78` -> `0.0.79`.
+- `buildozer.spec` : version `0.0.78` -> `0.0.79`.
+- `src/emeraude/web_app.py` : import
+  ``android.runnable.run_on_ui_thread`` au lieu de
+  ``kivy.clock.mainthread``. Commentaire détaillé du pourquoi
+  pour qu'aucune itération future ne refasse l'erreur.
+
+### Notes
+
+- Suite stable à 1 733 tests, coverage 99.05 %, quality gates OK.
+- Fix de continuation immédiate de l'iter #78 — pas un nouvel iter.
+
 ## [0.0.78] - 2026-04-29
 
 ### Added — pivot architectural majeur (cf. ADR-0004)

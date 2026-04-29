@@ -37,7 +37,7 @@ source.exclude_dirs = tests, docs, .venv, .buildozer, bin, __pycache__
 # Manual sync with pyproject.toml. We don't use ``version.regex`` because
 # emeraude/__init__.py reads its version dynamically via importlib.metadata
 # (works in pip-installed contexts but not parseable by buildozer).
-version = 0.0.78
+version = 0.0.79
 
 # (list) Application requirements
 # Pinned to the same versions as pyproject.toml's runtime deps (kivy 2.3,
