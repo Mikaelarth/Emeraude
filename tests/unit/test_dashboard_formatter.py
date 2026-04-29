@@ -16,7 +16,7 @@ from emeraude.agent.execution.position_tracker import (
 )
 from emeraude.agent.perception.regime import Regime
 from emeraude.agent.reasoning.risk_manager import Side
-from emeraude.ui.screens.dashboard import (
+from emeraude.services.dashboard_types import (
     MODE_PAPER,
     MODE_REAL,
     MODE_UNCONFIGURED,

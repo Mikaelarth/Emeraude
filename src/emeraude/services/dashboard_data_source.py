@@ -29,7 +29,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import TYPE_CHECKING, Final
 
-from emeraude.ui.screens.dashboard import (
+from emeraude.services.dashboard_types import (
     DashboardSnapshot,
 )
 

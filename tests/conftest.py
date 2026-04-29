@@ -19,13 +19,24 @@ os.environ.setdefault("KIVY_NO_CONSOLELOG", "1")
 # non-atomic ``if not exists(home): mkdir(home)`` (and same for the
 # ``mods`` subdir) which races under pytest-xdist (multiple workers
 # attempting to create ~/.kivy simultaneously, only one wins, others
-# crash with FileExistsError). Keying on the process PID guarantees
-# uniqueness without depending on ``PYTEST_XDIST_WORKER`` (which xdist
-# sets via plugin hooks AFTER conftest.py module-level code runs, so
-# it is empty here when xdist forks workers).
+# crash with FileExistsError). Three guards :
+#
+# 1. Key on ``os.getpid()`` so each worker process gets its own
+#    directory unconditionally.
+# 2. **Override** rather than ``setdefault`` : workers spawned by the
+#    pytest-xdist controller inherit ``KIVY_HOME`` via env, so a
+#    setdefault would make them all share the controller's home and
+#    race on its ``mods`` subdir. Forcing the override per-PID breaks
+#    the inheritance.
+# 3. Pre-create ``KIVY_HOME/mods`` ourselves so kivy.__init__'s
+#    ``if not exists: mkdir`` is a no-op even if the worker only
+#    creates the parent dir at conftest time.
 _kivy_home = Path(tempfile.gettempdir()) / f"emeraude-kivy-{os.getpid()}"
 _kivy_home.mkdir(parents=True, exist_ok=True)
-os.environ.setdefault("KIVY_HOME", str(_kivy_home))
+(_kivy_home / "mods").mkdir(parents=True, exist_ok=True)
+(_kivy_home / "logs").mkdir(parents=True, exist_ok=True)
+(_kivy_home / "icon").mkdir(parents=True, exist_ok=True)
+os.environ["KIVY_HOME"] = str(_kivy_home)
 
 import pytest  # noqa: E402  # Imports must follow the env guards above.
 

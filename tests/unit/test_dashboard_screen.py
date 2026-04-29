@@ -18,12 +18,14 @@ from decimal import Decimal
 
 import pytest
 
+from emeraude.services.dashboard_types import (
+    MODE_PAPER,
+    DashboardSnapshot,
+)
 from emeraude.ui import theme
 from emeraude.ui.screens.dashboard import (
     DASHBOARD_SCREEN_NAME,
-    MODE_PAPER,
     DashboardScreen,
-    DashboardSnapshot,
 )
 
 # ─── Display gating (cf. test_ui_smoke.py) ────────────────────────────────

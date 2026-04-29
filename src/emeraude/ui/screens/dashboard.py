@@ -1,221 +1,50 @@
-"""Dashboard Screen — 1er écran fonctionnel Pilier #1 (iter #59).
+"""Dashboard Screen widget — 1er écran fonctionnel Pilier #1 (iter #59).
 
 Mission UX (doc 02 §"📊 DASHBOARD — Voir d'un coup d'œil") :
 
     afficher en 3 secondes l'état de mon argent et des opportunités
     du moment.
 
-Itération #59 livre le **sous-ensemble fondateur** que les services
-existants peuvent alimenter sans I/O externe :
-
-* Capital quote-currency (USDT / USD selon mode), avec ``—`` si non
-  renseigné (cold start, anti-règle A1 : pas de fake feature).
-* Position ouverte unique (doc 04 ``max_positions = 1``) ou message
-  "Aucune position ouverte".
-* P&L cumulé réalisé sur les positions fermées (somme signée).
-* Nombre de trades fermés (compteur audit-friendly).
-* Mode courant : paper / real / unconfigured (badge).
-
-Les éléments doc 02 non encore livrés (variation 24h, top opportunité,
-8 cryptos avec signal) attendent les services qui les alimentent —
-``MarketDataService.fetch_24h_ticker``, ``Orchestrator.last_signals``.
-Anti-règle A1 : on ne fait pas figurer de placeholder "Coming soon"
-dans l'UI.
+Ce module héberge **uniquement** le widget Kivy :class:`DashboardScreen`.
+La logique pure (snapshot, labels, formatter, Protocol) vit dans
+:mod:`emeraude.services.dashboard_types` — Kivy-free, importable
+partout sans déclencher l'init Kivy.
 
 ADR-0002 §6 + §7 — séparation des concerns :
 
-1. :class:`DashboardSnapshot` — structure pure des données affichées
-   (frozen dataclass). Pas de Kivy.
-2. :class:`DashboardLabels` — strings prêtes à l'affichage. Pas de
-   Kivy. Produites par :func:`format_dashboard_labels`.
-3. :class:`DashboardDataSource` — Protocol consommé par l'écran.
-   Implémentations concrètes vivent dans :mod:`emeraude.services`.
-4. :class:`DashboardScreen` — widget Kivy. Tests L2 gated par
-   ``_DISPLAY_AVAILABLE`` (cf. ADR-0002 §7 — Kivy 2.3 instancie un
-   Window dès qu'un Label est créé).
+* :mod:`emeraude.services.dashboard_types` : :class:`DashboardSnapshot`,
+  :class:`DashboardLabels`, :class:`DashboardDataSource` Protocol,
+  :func:`format_dashboard_labels`, ``MODE_*``. Testable sans display.
+* Ce module : :class:`DashboardScreen` widget — composition de 5 Labels
+  thémés. Tests L2 gated par ``_DISPLAY_AVAILABLE`` (ADR-0002 §7).
 
-Cette structure permet d'avoir **fat tests sur la logique pure**
-(formatter exécuté partout) et **slim tests sur le widget**
-(seulement les bindings Kivy).
+Anti-règle A1 : on ne fait pas figurer de placeholder "Coming soon"
+dans l'UI. Les éléments doc 02 non encore livrés (variation 24h, top
+opportunité, 8 cryptos avec signal) attendent les services qui les
+alimentent.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from decimal import Decimal
-from typing import TYPE_CHECKING, Final, Protocol
+from typing import TYPE_CHECKING, Final
 
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.label import Label
 from kivy.uix.screenmanager import Screen
 
+from emeraude.services.dashboard_types import format_dashboard_labels
 from emeraude.ui import theme
 
 if TYPE_CHECKING:
-    from emeraude.agent.execution.position_tracker import Position
+    from emeraude.services.dashboard_types import DashboardDataSource
 
 
 #: Nom stable de l'écran dans le ScreenManager. Tests + composition
 #: root l'utilisent comme identifier unique.
 DASHBOARD_SCREEN_NAME: Final[str] = "dashboard"
 
-#: Modes UX exposés au badge (lowercase pour audit / filtres).
-MODE_PAPER: Final[str] = "paper"
-MODE_REAL: Final[str] = "real"
-MODE_UNCONFIGURED: Final[str] = "unconfigured"
-
-#: Placeholder d'affichage quand un champ n'est pas renseigné — un
-#: tiret moyen ASCII, lisible partout (Android Roboto inclus).
-_UNAVAILABLE: Final[str] = "—"
-
 _ZERO: Final[Decimal] = Decimal("0")
-
-
-# ─── Snapshot (data-only) ──────────────────────────────────────────────────
-
-
-@dataclass(frozen=True, slots=True)
-class DashboardSnapshot:
-    """Read-only state que l'écran consomme à chaque ``refresh()``.
-
-    Attributes:
-        capital_quote: capital actuel en quote currency (USDT) ou
-            ``None`` si l'utilisateur n'a pas configuré son wallet
-            (cold start). Anti-règle A11 : pas de valeur magique en
-            défaut côté UI ; ``None`` doit s'afficher comme
-            :data:`_UNAVAILABLE`.
-        open_position: position actuellement ouverte (``Position``)
-            ou ``None`` si flat. Doc 04 ``max_positions = 1`` :
-            jamais plus d'une.
-        cumulative_pnl: somme signée
-            ``r_realized * risk_per_unit * quantity`` sur tout
-            l'historique fermé. ``Decimal("0")`` au cold start.
-        n_closed_trades: cardinal de l'historique fermé.
-        mode: :data:`MODE_PAPER`, :data:`MODE_REAL` ou
-            :data:`MODE_UNCONFIGURED`.
-    """
-
-    capital_quote: Decimal | None
-    open_position: Position | None
-    cumulative_pnl: Decimal
-    n_closed_trades: int
-    mode: str
-
-
-# ─── Labels (formatted strings) ────────────────────────────────────────────
-
-
-@dataclass(frozen=True, slots=True)
-class DashboardLabels:
-    """Sortie pure du formatter : une string par widget de l'écran.
-
-    Cette indirection permet de tester le formatage **sans Kivy**.
-    Les tests L1 (pures) couvrent toutes les branches d'affichage
-    sans dépendre d'un display.
-    """
-
-    capital: str
-    open_position: str
-    pnl: str
-    n_trades: str
-    mode_badge: str
-
-
-# ─── DataSource Protocol ───────────────────────────────────────────────────
-
-
-class DashboardDataSource(Protocol):
-    """Contract consumed by :class:`DashboardScreen`.
-
-    Implementations vivent côté ``services/`` (cf.
-    :class:`emeraude.services.dashboard_data_source.TrackerDashboardDataSource`).
-    Tests passent un fake implémentant ce Protocol — pas besoin de
-    construire un :class:`PositionTracker` complet.
-    """
-
-    def fetch_snapshot(self) -> DashboardSnapshot:
-        """Snapshot frais. Appelé par :meth:`DashboardScreen.refresh`."""
-        ...
-
-
-# ─── Pure formatter ─────────────────────────────────────────────────────────
-
-
-def format_dashboard_labels(snapshot: DashboardSnapshot) -> DashboardLabels:
-    """Convert a snapshot to displayable strings.
-
-    Pure function — no I/O, no Kivy, no global state. Testable in any
-    environment (no display required).
-
-    Args:
-        snapshot: read-only state à afficher.
-
-    Returns:
-        Une :class:`DashboardLabels` avec une string par widget.
-    """
-    return DashboardLabels(
-        capital=_format_capital(snapshot.capital_quote),
-        open_position=_format_open_position(snapshot.open_position),
-        pnl=_format_pnl(snapshot.cumulative_pnl),
-        n_trades=_format_n_trades(snapshot.n_closed_trades),
-        mode_badge=_format_mode_badge(snapshot.mode),
-    )
-
-
-def _format_capital(capital: Decimal | None) -> str:
-    """``Capital : 20.00 USDT`` ou ``Capital : —`` si inconnu."""
-    if capital is None:
-        return f"Capital : {_UNAVAILABLE}"
-    # Format simple, 2 décimales, sans float (Decimal -> str avec
-    # quantize pour stabilité d'affichage entre runs).
-    quantized = capital.quantize(Decimal("0.01"))
-    return f"Capital : {quantized} USDT"
-
-
-def _format_open_position(position: Position | None) -> str:
-    """``Aucune position ouverte`` ou ``LONG 0.001 BTC @ 100000 USDT``."""
-    if position is None:
-        return "Aucune position ouverte"
-    # Pas de quantize sur la quantité : la lecture exacte est utile
-    # pour rapprocher avec Binance ; le ``str`` Decimal est assez
-    # propre pour les valeurs typiques.
-    return f"{position.side.value} {position.quantity} {position.strategy} @ {position.entry_price}"
-
-
-def _format_pnl(pnl: Decimal) -> str:
-    """``P&L cumulé : +1.42 USDT`` (signe explicite, vert/rouge côté widget)."""
-    quantized = pnl.quantize(Decimal("0.01"))
-    sign = "+" if pnl > _ZERO else ""
-    return f"P&L cumulé : {sign}{quantized} USDT"
-
-
-def _format_n_trades(count: int) -> str:
-    """``0 trade fermé`` / ``1 trade fermé`` / ``17 trades fermés``."""
-    if count == 0:
-        return "0 trade fermé"
-    if count == 1:
-        return "1 trade fermé"
-    return f"{count} trades fermés"
-
-
-def _format_mode_badge(mode: str) -> str:
-    """``Mode : Paper`` / ``Mode : Réel`` / ``Mode : Non configuré``.
-
-    Tolère les modes inconnus en fallback "Mode : <raw>" plutôt que
-    de lever une exception, pour ne pas crasher l'UI sur un état
-    inattendu (anti-règle A8 : pas de except: pass mais pas
-    d'exception en cascade non plus pour un simple label).
-    """
-    if mode == MODE_PAPER:
-        return "Mode : Paper"
-    if mode == MODE_REAL:
-        return "Mode : Réel"
-    if mode == MODE_UNCONFIGURED:
-        return "Mode : Non configuré"
-    return f"Mode : {mode}"
-
-
-# ─── Kivy widget ───────────────────────────────────────────────────────────
 
 
 def _make_label(*, font_size: int, color: tuple[float, float, float, float]) -> Label:
@@ -246,7 +75,8 @@ class DashboardScreen(Screen):  # type: ignore[misc]  # Kivy classes are untyped
     :meth:`refresh` on subsequent cycles.
 
     Args:
-        data_source: any object implementing :class:`DashboardDataSource`.
+        data_source: any object implementing
+            :class:`~emeraude.services.dashboard_types.DashboardDataSource`.
         **kwargs: forwarded to :class:`Screen` (typically ``name=``).
     """
 

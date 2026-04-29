@@ -30,9 +30,9 @@ from kivy.uix.screenmanager import ScreenManager
 
 from emeraude.agent.execution.position_tracker import PositionTracker
 from emeraude.services.dashboard_data_source import TrackerDashboardDataSource
+from emeraude.services.dashboard_types import MODE_UNCONFIGURED
 from emeraude.ui.screens.dashboard import (
     DASHBOARD_SCREEN_NAME,
-    MODE_UNCONFIGURED,
     DashboardScreen,
 )
 
