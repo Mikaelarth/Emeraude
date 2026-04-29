@@ -29,6 +29,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Final
 
 from kivy.app import App
+from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.screenmanager import ScreenManager
 
 from emeraude.agent.execution.position_tracker import PositionTracker
@@ -44,6 +45,7 @@ from emeraude.ui.screens.journal import (
     JOURNAL_SCREEN_NAME,
     JournalScreen,
 )
+from emeraude.ui.widgets.navigation_bar import NavigationBar, NavTab
 
 if TYPE_CHECKING:
     from decimal import Decimal
@@ -91,15 +93,26 @@ class EmeraudeApp(App):  # type: ignore[misc]  # Kivy classes are untyped (kivy.
         self._mode = mode
         self._starting_capital = starting_capital
         self._wallet = wallet
+        self._screen_manager: ScreenManager | None = None
+
+    @property
+    def screen_manager(self) -> ScreenManager | None:
+        """The :class:`ScreenManager` instantiated by :meth:`build`.
+
+        ``None`` until :meth:`build` has been called. Tests use this
+        to assert against ``screen_names`` / ``current`` without
+        traversing the BoxLayout tree.
+        """
+        return self._screen_manager
 
     def build(self) -> Widget:
         """Build the root widget tree.
 
         Returns:
-            A :class:`ScreenManager` containing the Dashboard. As iter
-            #61+ ships, this method will instantiate the other 4
-            screens (Configuration, Backtest, Audit, Learning) and
-            register them under their stable names.
+            A vertical :class:`BoxLayout` containing the
+            :class:`ScreenManager` (with all registered screens) and
+            the bottom :class:`NavigationBar`. The ScreenManager is
+            also accessible via :attr:`screen_manager`.
         """
         sm = ScreenManager()
 
@@ -137,4 +150,23 @@ class EmeraudeApp(App):  # type: ignore[misc]  # Kivy classes are untyped (kivy.
             name=JOURNAL_SCREEN_NAME,
         )
         sm.add_widget(journal)
-        return sm
+
+        # Bottom navigation bar — switches between Dashboard / Journal.
+        # Future screens (Signaux, Portfolio, IA, Config) will add
+        # tabs here. The order in the tuple is the order on screen.
+        nav = NavigationBar(
+            tabs=(
+                NavTab(screen_name=DASHBOARD_SCREEN_NAME, label="Tableau"),
+                NavTab(screen_name=JOURNAL_SCREEN_NAME, label="Journal"),
+            ),
+            screen_manager=sm,
+        )
+
+        # Vertical compose : screens take remaining height, nav fixed
+        # at the bottom (mobile-first thumb-reachable position).
+        root = BoxLayout(orientation="vertical")
+        root.add_widget(sm)
+        root.add_widget(nav)
+
+        self._screen_manager = sm
+        return root

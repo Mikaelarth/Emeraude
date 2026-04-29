@@ -121,3 +121,11 @@ SPACING_SM: Final[int] = 4
 
 #: Durée d'une transition d'écran (secondes).
 TRANSITION_DURATION: Final[float] = 0.25
+
+
+# ─── Navigation ─────────────────────────────────────────────────────────────
+
+#: Hauteur (px) de la barre de navigation bas-écran. Suffisamment haute
+#: pour respecter la cible tactile Android (48 dp = ~48 px sur écrans
+#: classiques) avec une petite marge pour le padding du tab.
+NAV_BAR_HEIGHT: Final[int] = 56

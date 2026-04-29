@@ -6,6 +6,71 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.62] - 2026-04-29
+
+### Added
+
+- **NavigationBar — bottom-nav widget Pilier #1** (iter #62). Premier
+  widget réutilisable dans `src/emeraude/ui/widgets/`, débloque la
+  **navigation utilisateur** entre les écrans Dashboard et Journal
+  livrés iter #59/#61.
+- **`src/emeraude/ui/widgets/__init__.py`** — nouveau sous-package
+  prévu par ADR-0002 §2.
+- **`src/emeraude/ui/widgets/navigation_bar.py`** (~150 LOC, exclu
+  coverage) :
+  - **`NavTab`** frozen dataclass (screen_name, label) — pure data,
+    décrit un onglet.
+  - **`NavigationBar(BoxLayout)`** — widget Kivy horizontal, hauteur
+    fixe :data:`theme.NAV_BAR_HEIGHT`, un :class:`Button` par tab.
+    Tap → `ScreenManager.current = screen_name`. Bidirectionnel :
+    un changement externe de `current` repaint l'onglet actif.
+  - Active tab : `COLOR_PRIMARY` (vert émeraude) sur `COLOR_BACKGROUND`.
+  - Inactive tab : `COLOR_TEXT_SECONDARY` sur `COLOR_SURFACE`.
+  - Validation : `tabs` non vide (ValueError sinon).
+- **`emeraude.ui.theme.NAV_BAR_HEIGHT = 56`** : nouvelle constante
+  (cible tactile Android 48 dp + marge padding).
+- **`tests/unit/test_navigation_bar.py`** : **13 tests, 6 classes** :
+  - `TestValidation` (1) : empty tabs rejected.
+  - `TestConstruction` (4) : button count, labels, theme height,
+    orientation.
+  - `TestActiveSync` (3) : initial sync + external change repaints.
+  - `TestTapDispatch` (3) : switch on press, repaint after, idempotent.
+  - `TestNavTabDataclass` (2, **non gated**) : frozen + passthrough —
+    pure dataclass run partout.
+
+### Changed
+
+- **`EmeraudeApp.build()`** :
+  - Le root devient un `BoxLayout` vertical contenant
+    `ScreenManager` (au-dessus, prend la hauteur restante) +
+    `NavigationBar` (en bas, hauteur fixe). Pattern mobile-first
+    thumb-reachable conformément à doc 02 §"Utilisable d'une main".
+  - Nouvelle property `EmeraudeApp.screen_manager` exposant le
+    `ScreenManager` instancié — facilite les tests qui veulent
+    accéder à `screen_names` / `current` sans traverser la BoxLayout.
+- **`tests/unit/test_ui_smoke.py`** mis à jour : root est désormais
+  un `BoxLayout` (et plus un `ScreenManager`) ; les tests passent par
+  `app.screen_manager` + 2 nouveaux tests (root contient 2 enfants,
+  `screen_manager` est `None` avant `build()`).
+- `pyproject.toml` : version `0.0.61` -> `0.0.62`.
+
+### Notes
+
+- **Pas de KivyMD** — ADR-0002 §4 maintenu. `NavigationBar` est ~150
+  LOC pure Kivy 2.3 sans dépendance tierce. Les futurs onglets
+  (Signaux, Portfolio, IA, Config) s'ajoutent comme `NavTab`
+  supplémentaires dans le tuple, sans changement de pattern.
+- **Bidirectional sync** : la NavigationBar bind sur
+  `ScreenManager.current` — un changement programmatique de l'écran
+  actif repaint l'onglet automatiquement. Préparé pour les futures
+  swipe gestures + deep-links.
+- **Anti-règle A1** honorée : empty `tabs` lève `ValueError`
+  immédiatement au lieu de silently créer une nav inutilisable.
+- Coverage `widgets/navigation_bar.py` est exclu par design (ui/*
+  global). Le L2 widget testing assure la couverture comportementale.
+- Suite **1562 → 1578 tests (+16)**, coverage global stable à
+  **99.79 %**.
+
 ## [0.0.61] - 2026-04-29
 
 ### Added

@@ -28,6 +28,7 @@ import platform
 from pathlib import Path
 
 import pytest
+from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.screenmanager import Screen, ScreenManager
 
 from emeraude import main as emeraude_main
@@ -96,30 +97,56 @@ class TestImports:
 @pytest.mark.unit
 @pytest.mark.skipif(not _DISPLAY_AVAILABLE, reason=_NO_DISPLAY_REASON)
 class TestAppBuild:
-    def test_build_returns_screen_manager(self, fresh_db: Path) -> None:
+    def test_build_returns_box_layout_root(self, fresh_db: Path) -> None:
+        # Iter #62 : root devient un BoxLayout vertical contenant le
+        # ScreenManager (au-dessus) + la NavigationBar (en bas). Le
+        # ScreenManager reste accessible via app.screen_manager.
         app = EmeraudeApp()
         root = app.build()
-        assert isinstance(root, ScreenManager)
+        assert isinstance(root, BoxLayout)
+
+    def test_app_exposes_screen_manager(self, fresh_db: Path) -> None:
+        app = EmeraudeApp()
+        app.build()
+        assert isinstance(app.screen_manager, ScreenManager)
 
     def test_screen_manager_has_dashboard_screen(self, fresh_db: Path) -> None:
         # Iter #59 : Dashboard est le 1er ecran fonctionnel.
         app = EmeraudeApp()
-        root = app.build()
-        assert DASHBOARD_SCREEN_NAME in root.screen_names
+        app.build()
+        sm = app.screen_manager
+        assert sm is not None
+        assert DASHBOARD_SCREEN_NAME in sm.screen_names
 
     def test_screen_manager_has_journal_screen(self, fresh_db: Path) -> None:
         # Iter #61 : Journal est le 2eme ecran (slice de PORTFOLIO doc 02 §6).
         app = EmeraudeApp()
-        root = app.build()
-        assert JOURNAL_SCREEN_NAME in root.screen_names
+        app.build()
+        sm = app.screen_manager
+        assert sm is not None
+        assert JOURNAL_SCREEN_NAME in sm.screen_names
 
     def test_dashboard_screen_has_widgets(self, fresh_db: Path) -> None:
         app = EmeraudeApp()
-        root = app.build()
-        screen = root.get_screen(DASHBOARD_SCREEN_NAME)
+        app.build()
+        sm = app.screen_manager
+        assert sm is not None
+        screen = sm.get_screen(DASHBOARD_SCREEN_NAME)
         assert isinstance(screen, Screen)
         # Dashboard wraps a BoxLayout holding the 5 themed Labels.
         assert len(screen.children) >= 1
+
+    def test_root_contains_screen_manager_and_nav(self, fresh_db: Path) -> None:
+        # Iter #62 : compose root = BoxLayout(ScreenManager + NavigationBar).
+        app = EmeraudeApp()
+        root = app.build()
+        # 2 children : ScreenManager + NavigationBar.
+        assert len(root.children) == 2
+
+    def test_screen_manager_before_build_is_none(self) -> None:
+        # Defensive : the property is None until build() runs.
+        app = EmeraudeApp()
+        assert app.screen_manager is None
 
     def test_app_title_constant(self) -> None:
         # Stable identifier for the OS task switcher / window manager.
