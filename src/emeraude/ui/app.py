@@ -43,6 +43,7 @@ from kivy.uix.screenmanager import ScreenManager
 
 from emeraude.agent.execution.position_tracker import PositionTracker
 from emeraude.infra import database
+from emeraude.services.binance_credentials import BinanceCredentialsService
 from emeraude.services.config_data_source import SettingsConfigDataSource
 from emeraude.services.config_types import SETTING_KEY_MODE
 from emeraude.services.dashboard_data_source import TrackerDashboardDataSource
@@ -202,8 +203,9 @@ class EmeraudeApp(App):  # type: ignore[misc]  # Kivy classes are untyped (kivy.
         sm.add_widget(journal)
 
         # Config : status panel + persisted mode toggle (iter #64,
-        # propagation live iter #65). Other doc 02 sections (clés
-        # Binance, Telegram, Emergency Stop, Backtest) ship in
+        # propagation live iter #65) + Binance credentials form
+        # (iter #66, env-passphrase transitoire). Other doc 02
+        # sections (Telegram, Emergency Stop, Backtest) ship in
         # subsequent iters. ``default_mode`` est le cold-start
         # constructor (anti-A11) ; le SettingsConfigDataSource lit
         # ensuite le settings persisté à chaque snapshot.
@@ -211,8 +213,10 @@ class EmeraudeApp(App):  # type: ignore[misc]  # Kivy classes are untyped (kivy.
             starting_capital_provider=lambda: wallet.starting_capital,
             default_mode=self._mode,
         )
+        binance_credentials_service = BinanceCredentialsService()
         config = ConfigScreen(
             data_source=config_data_source,
+            binance_credentials_service=binance_credentials_service,
             name=CONFIG_SCREEN_NAME,
         )
         sm.add_widget(config)

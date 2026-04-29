@@ -40,7 +40,13 @@ from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
 from kivy.uix.label import Label
 from kivy.uix.screenmanager import Screen
+from kivy.uix.textinput import TextInput
 
+from emeraude.services.binance_credentials import (
+    ENV_PASSPHRASE,
+    CredentialFormatError,
+    PassphraseUnavailableError,
+)
 from emeraude.services.config_types import (
     format_audit_count_label,
     format_mode_label,
@@ -50,6 +56,9 @@ from emeraude.services.dashboard_types import MODE_PAPER, MODE_REAL
 from emeraude.ui import theme
 
 if TYPE_CHECKING:
+    from emeraude.services.binance_credentials import (
+        BinanceCredentialsServiceProtocol,
+    )
     from emeraude.services.config_types import ConfigDataSource
 
 
@@ -197,10 +206,13 @@ class ConfigScreen(Screen):  # type: ignore[misc]  # Kivy classes are untyped (A
         self,
         *,
         data_source: ConfigDataSource,
+        binance_credentials_service: BinanceCredentialsServiceProtocol,
         **kwargs: object,
     ) -> None:
         super().__init__(**kwargs)
         self._data_source = data_source
+        self._binance_service = binance_credentials_service
+        self._binance_status_message = ""
 
         self._outer = BoxLayout(
             orientation="vertical",
@@ -241,11 +253,20 @@ class ConfigScreen(Screen):  # type: ignore[misc]  # Kivy classes are untyped (A
             halign="left",
             valign="middle",
         )
+        self._binance_panel = BoxLayout(
+            orientation="vertical",
+            size_hint_y=None,
+            spacing=theme.SPACING_SM,
+        )
+        self._binance_panel.bind(
+            minimum_height=self._binance_panel.setter("height"),
+        )
 
         self._outer.add_widget(self._header_label)
         self._outer.add_widget(self._status_panel)
         self._outer.add_widget(self._toggle_panel)
         self._outer.add_widget(self._refresh_hint)
+        self._outer.add_widget(self._binance_panel)
         self.add_widget(self._outer)
 
         self.refresh()
@@ -286,6 +307,134 @@ class ConfigScreen(Screen):  # type: ignore[misc]  # Kivy classes are untyped (A
                 current_mode=snapshot.mode,
             )
         )
+
+        self._rebuild_binance_panel()
+
+    # ─── Binance credentials section (iter #66) ────────────────────────────
+
+    def _rebuild_binance_panel(self) -> None:
+        """Rebuild the Binance credentials panel from the current status.
+
+        Two main branches :
+
+        * :data:`ENV_PASSPHRASE` set : show status rows + form.
+        * :data:`ENV_PASSPHRASE` missing : show status (read-only)
+          + hint.
+        """
+        self._binance_panel.clear_widgets()
+        status = self._binance_service.get_status()
+
+        # Section header.
+        header = Label(
+            text="Cles API Binance",
+            font_size=theme.FONT_SIZE_HEADING,
+            color=theme.COLOR_TEXT_PRIMARY,
+            size_hint_y=None,
+            height=theme.FONT_SIZE_HEADING * 2,
+            halign="left",
+            valign="middle",
+        )
+        self._binance_panel.add_widget(header)
+
+        # Status rows : key + secret.
+        if status.api_key_set and status.api_key_suffix is not None:
+            api_key_value = f"...{status.api_key_suffix}  [definie]"
+        elif status.api_key_set:
+            api_key_value = "[definie - decryptage indisponible]"
+        else:
+            api_key_value = "[non definie]"
+        self._binance_panel.add_widget(_make_status_row("API Key", api_key_value))
+
+        api_secret_value = "[definie]" if status.api_secret_set else "[non definie]"
+        self._binance_panel.add_widget(
+            _make_status_row("API Secret", api_secret_value),
+        )
+
+        if not status.passphrase_available:
+            # Form disabled — surface the env var instruction.
+            hint = Label(
+                text=(
+                    f"Definissez {ENV_PASSPHRASE} dans votre environnement "
+                    "pour activer la saisie securisee."
+                ),
+                font_size=theme.FONT_SIZE_CAPTION,
+                color=theme.COLOR_WARNING,
+                size_hint_y=None,
+                height=theme.FONT_SIZE_CAPTION * 4,
+                halign="left",
+                valign="middle",
+            )
+            self._binance_panel.add_widget(hint)
+            return
+
+        # Form active : 2 TextInputs + Save 2-stage.
+        self._api_key_input = TextInput(
+            hint_text="Cle API (alphanumerique, 16-128 chars)",
+            multiline=False,
+            password=False,  # API key is not the secret-of-secrets.
+            font_size=theme.FONT_SIZE_BODY,
+            size_hint_y=None,
+            height=theme.FONT_SIZE_BODY * 2,
+        )
+        self._api_secret_input = TextInput(
+            hint_text="Cle API secrete (masquee)",
+            multiline=False,
+            password=True,  # Strict masking on the secret.
+            font_size=theme.FONT_SIZE_BODY,
+            size_hint_y=None,
+            height=theme.FONT_SIZE_BODY * 2,
+        )
+        self._binance_panel.add_widget(self._api_key_input)
+        self._binance_panel.add_widget(self._api_secret_input)
+
+        save_button = _TwoStageButton(
+            idle_text="Sauvegarder les cles",
+            armed_text="Confirmer la sauvegarde (5s)",
+            on_confirm=self._apply_binance_save,
+            size_hint_y=None,
+            height=theme.FONT_SIZE_BODY * 2,
+        )
+        self._binance_panel.add_widget(save_button)
+
+        if self._binance_status_message:
+            status_label = Label(
+                text=self._binance_status_message,
+                font_size=theme.FONT_SIZE_CAPTION,
+                color=theme.COLOR_TEXT_SECONDARY,
+                size_hint_y=None,
+                height=theme.FONT_SIZE_CAPTION * 2,
+                halign="left",
+                valign="middle",
+            )
+            self._binance_panel.add_widget(status_label)
+
+    def _apply_binance_save(self) -> None:
+        """Called on confirmed double-tap of the Save button.
+
+        Validates + persists ; surfaces format errors as a status
+        message under the form. The form is rebuilt either way so
+        the inputs are cleared on success and the new ``api_key_suffix``
+        appears in the status row.
+        """
+        api_key = self._api_key_input.text.strip()
+        api_secret = self._api_secret_input.text.strip()
+        try:
+            self._binance_service.save_credentials(
+                api_key=api_key,
+                api_secret=api_secret,
+            )
+        except CredentialFormatError as exc:
+            self._binance_status_message = f"Erreur format : {exc}"
+        except PassphraseUnavailableError as exc:  # pragma: no cover  (UI guard catches it)
+            self._binance_status_message = str(exc)
+        else:
+            self._binance_status_message = "Cles sauvegardees (chiffrees)."
+            # Clear the inputs ONLY on success — a format error keeps
+            # the user's typing so they can fix it.
+            self._api_key_input.text = ""
+            self._api_secret_input.text = ""
+        # Rebuild so the new status (suffix or error) is visible.
+        self._rebuild_binance_panel()
 
     def _make_mode_button(
         self,

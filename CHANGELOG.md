@@ -6,6 +6,100 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.66] - 2026-04-29
+
+### Added
+
+- **`BinanceCredentialsService` — saisie sécurisée des clés API**
+  (doc 02 §"⚙ CONFIG" §"Connexion Binance" + garde-fous). Pilier #1
+  passe de 60 % à **65 %** (Configuration screen complétée du form
+  Binance).
+- **`src/emeraude/services/binance_credentials.py`** (~225 LOC,
+  100 % coverage) :
+  - **`BinanceCredentialsService`** : stateless, chiffre via
+    `infra/crypto.set_secret_setting` (PBKDF2 + XOR par-bytes).
+  - **`BinanceCredentialsServiceProtocol`** : structural pour
+    permettre l'injection de fakes en test (pattern habituel).
+  - **`BinanceCredentialsStatus`** frozen dataclass : `api_key_set`,
+    `api_secret_set`, `api_key_suffix` (4 derniers chars,
+    masquage), `passphrase_available`.
+  - **`PassphraseUnavailableError`** + **`CredentialFormatError`**
+    exceptions explicites (anti-A8).
+  - **`validate_credential(value, *, field)`** pure function :
+    16-128 chars alphanumériques (Binance émet 64).
+  - **Constants** : `ENV_PASSPHRASE = "EMERAUDE_API_PASSPHRASE"`,
+    `SETTING_KEY_API_KEY = "binance.api_key"`, etc.
+- **`ConfigScreen` Binance section** :
+  - Status rows (API Key + Secret) avec suffix masqué post-save.
+  - Form 2 `TextInput` (`password=True` sur le secret) +
+    `_TwoStageButton` Save (réutilise iter #64).
+  - Hint conditionnel "Définissez `EMERAUDE_API_PASSPHRASE`" si
+    env var manquante (form désactivé).
+  - Status message après save : succès ou format error.
+- **`tests/unit/test_binance_credentials.py`** : **24 tests, 5
+  classes** :
+  - `TestValidateCredential` (8) : empty / too-short / too-long /
+    special-chars (5 patterns paramétrés) / valid / boundaries.
+  - `TestStatusWithoutPassphrase` (2) : cold start + persisted
+    keys sans passphrase.
+  - `TestStatusWithPassphrase` (3) : cold start, post-save suffix,
+    wrong passphrase yields None suffix.
+  - `TestSaveCredentials` (5) : round-trip encrypted, raise sans
+    passphrase, raise sur bad format (key + secret), overwrite.
+  - `TestClearCredentials` (3) : after-save, idempotent, no-passphrase.
+- **`tests/unit/test_config_screen.py`** classe `TestBinanceSection`
+  (5 tests, gated) :
+  - Panel présent avec passphrase, désactivé sans.
+  - Suffix affiché dans la status row.
+  - Save button double-tap appelle `save_credentials` avec les
+    bons args.
+  - Erreur de format affichée dans le status message.
+
+### Changed
+
+- **`ConfigScreen.__init__`** : nouveau param obligatoire
+  `binance_credentials_service: BinanceCredentialsServiceProtocol`.
+- **`EmeraudeApp.build()`** : instancie `BinanceCredentialsService()`
+  + l'injecte dans le `ConfigScreen`.
+- `services/__init__.py` : re-export `BinanceCredentialsService` +
+  `BinanceCredentialsStatus`.
+- `pyproject.toml` : version `0.0.65` -> `0.0.66`.
+
+### Notes
+
+- **Stratégie passphrase transitoire** : `EMERAUDE_API_PASSPHRASE`
+  env var lu à chaque opération. Quand l'env n'est pas set, le
+  service rapporte `passphrase_available=False` et lève
+  `PassphraseUnavailableError` sur `save_credentials`. **Anti-A1
+  honoré** : pas de fallback silencieux à un secret hardcodé. La
+  migration vers Android KeyStore (E7) remplacera l'env var par un
+  secret hardware-backed sans changer l'API publique du service.
+- **Sécurité** : les clés stockées dans `settings` sont **toujours
+  chiffrées** (préfixe `enc:`). Les tests vérifient
+  explicitement que `_VALID_KEY not in raw_key` après save.
+  L'API key suffix (4 derniers chars) est le **seul** retour de
+  l'UI ; la secret n'est jamais lue en retour côté UI.
+- **Wrong passphrase handling** : `crypto.decrypt` retourne du UTF-8
+  garbled au lieu de raise. Le service détecte via le regex
+  alphanumérique : si la "key" décodée n'est pas alphanumérique,
+  `api_key_suffix=None` et l'UI affiche "[définie - décryptage
+  indisponible]". Comportement honnête : le user voit qu'il y a un
+  problème de passphrase sans crash.
+- **Validation format** : 16-128 chars alphanumériques. Binance
+  émet 64 mixed-case ; on accepte une fenêtre plus large pour
+  tolérer d'éventuels formats futurs ou exchanges connexes (rebranding
+  vers `CredentialsService` générique sera trivial).
+- **Anti-règles respectées** :
+  - **A1** : pas de fallback secret hardcodé. L'env var est requis,
+    la friction est explicite.
+  - **A5** : double-tap (réutilise `_TwoStageButton` iter #64).
+  - **A8** : exceptions explicites + valeurs de retour None
+    documentées sur passphrase mismatch.
+  - **A14** : 29 tests sur l'API publique du service.
+- Suite **1641 → 1670 tests (+29)**, coverage global stable à
+  **99.76 %** (légère baisse due à `binance_credentials.py` 100 %
+  + nouveau widget non couvert par design).
+
 ## [0.0.65] - 2026-04-29
 
 ### Changed (BREAKING — service-layer API)

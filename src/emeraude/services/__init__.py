@@ -31,6 +31,10 @@ from emeraude.services.backup import (
     BackupRecord,
     BackupService,
 )
+from emeraude.services.binance_credentials import (
+    BinanceCredentialsService,
+    BinanceCredentialsStatus,
+)
 from emeraude.services.calibration_tracker import (
     compute_calibration_from_positions,
     extract_predictions_outcomes,
@@ -112,6 +116,8 @@ __all__ = [
     "AutoTrader",
     "BackupRecord",
     "BackupService",
+    "BinanceCredentialsService",
+    "BinanceCredentialsStatus",
     "CoverageValidationDecision",
     "CycleDecision",
     "CycleReport",
