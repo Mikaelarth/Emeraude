@@ -6,6 +6,69 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.63] - 2026-04-29
+
+### Added
+
+- **Cycle pump : refresh automatique des écrans** (iter #63). Levée
+  du verrou T3 "app desktop sans crash 1h" — sans cycle pump, les
+  écrans restent statiques en runtime malgré l'évolution des trades
+  fermés (Dashboard) et des audit events (Journal). Désormais l'écran
+  actif est rafraîchi périodiquement par
+  :class:`kivy.clock.Clock.schedule_interval`.
+- **`emeraude.ui.app.DEFAULT_REFRESH_INTERVAL_SECONDS = 5.0`** :
+  cadence par défaut. Empirical sweet spot : assez rapide pour que
+  les nouveaux événements apparaissent sans sentir l'écran figé, assez
+  lent pour garder la charge DB négligeable (1 SELECT par tick).
+- **`EmeraudeApp.refresh_active_screen()`** : duck-typed dispatcher
+  qui appelle `current_screen.refresh()` si la méthode existe. No-op
+  défensif sur 3 chemins :
+  - `screen_manager` est `None` (avant `build()`)
+  - `current_screen` est `None` (transient deep-link, Kivy invariant
+    pragma:nocover)
+  - le screen n'a pas de méthode `refresh` (placeholder, debug screens)
+- **`EmeraudeApp.on_start()`** : Kivy lifecycle hook qui registre
+  `Clock.schedule_interval(self._tick, refresh_interval_seconds)`.
+  Tests n'invoquent pas `App.run()` donc cette méthode reste
+  unexecuted en CI ; le refresh logic est exercé directement via
+  `refresh_active_screen()` depuis les tests L2.
+- **`EmeraudeApp._tick(_dt)`** : callback du Clock, forwarde à
+  `refresh_active_screen()`. ``_dt`` (delta time) volontairement
+  ignoré — refresh inconditionnel.
+- **`refresh_interval_seconds` paramètre du constructeur** (default
+  :data:`DEFAULT_REFRESH_INTERVAL_SECONDS`). Validation : `> 0` ou
+  ValueError immédiat.
+- **`tests/unit/test_refresh_cycle.py`** : **10 tests, 4 classes** :
+  - `TestValidation` (3) : negative / zero / positive interval —
+    runs partout (constructor seul).
+  - `TestConstants` (2) : default > 0 + default == 5.0 — runs partout.
+  - `TestRefreshBeforeBuild` (1) : `refresh_active_screen()` no-op
+    avant `build()` — runs partout.
+  - `TestRefreshAfterBuild` (4, gated `_DISPLAY_AVAILABLE`) :
+    dashboard counter incrémente, only active screen refreshed,
+    bare Screen sans `refresh()` accepté, `_tick(dt)` forwarde.
+
+### Changed
+
+- `pyproject.toml` : version `0.0.62` -> `0.0.63`.
+
+### Notes
+
+- **Test contract** : on a délibérément choisi de **ne pas** tester
+  l'enregistrement `Clock.schedule_interval` lui-même. `App.run()`
+  bloquerait le test process sur le main loop Kivy ; le 1-line de
+  plumbing entre `on_start` et `Clock` est couvert par le runtime
+  manuel (T3 desktop sans crash 1h, future iter).
+- **Anti-règle A8 honorée** : 3 chemins de no-op explicites + 1
+  pragma:nocover sur l'invariant Kivy. Pas de `except: pass`
+  silencieux.
+- **Anti-règle A14 honorée** : 10 tests sur l'API publique refresh
+  cycle.
+- **DB load** : ~1 SELECT toutes les 5 s par utilisateur actif.
+  Trivial même sur smartphone bas de gamme.
+- Suite **1578 → 1588 tests (+10)**, coverage global stable à
+  **99.79 %**.
+
 ## [0.0.62] - 2026-04-29
 
 ### Added
