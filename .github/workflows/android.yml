@@ -21,7 +21,14 @@ permissions:
 jobs:
   android-debug-apk:
     name: Buildozer android debug APK
-    runs-on: ubuntu-latest
+    # Iter #69 : pin to ubuntu-22.04 (autoconf 2.71). Iter #68 first
+    # build on ubuntu-latest (= ubuntu-24.04, autoconf 2.72) failed on
+    # the libffi recipe : ``autoreconf`` rejects the old
+    # ``AC_CANONICAL_SYSTEM`` macro that python-for-android's libffi
+    # 3.4.2 recipe still uses. Ubuntu 22.04 ships autoconf 2.71 which
+    # tolerates it. Bump back to ``ubuntu-latest`` once p4a's libffi
+    # recipe is updated (track upstream).
+    runs-on: ubuntu-22.04
     # Iter #68 ships the workflow as a canary : we want visibility on
     # build status without blocking releases on first-attempt flakiness.
     # Once 3 consecutive runs succeed cleanly, this flag is removed.

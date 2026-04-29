@@ -6,6 +6,32 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.69] - 2026-04-29
+
+### Changed
+
+- **`.github/workflows/android.yml`** : downgrade runner de
+  `ubuntu-latest` (= ubuntu-24.04) à **`ubuntu-22.04`**. L'iter
+  #68 a révélé que libffi 3.4.2 (recipe python-for-android master)
+  utilise la macro autotools `AC_CANONICAL_SYSTEM` qui est rejetée
+  par autoconf 2.72 (livré sur Ubuntu 24). Ubuntu 22.04 ship
+  autoconf 2.71 qui la tolère.
+- `buildozer.spec` : `version = 0.0.69`.
+- `pyproject.toml` : version `0.0.68` -> `0.0.69`.
+
+### Notes
+
+- **Pourquoi pas pin p4a à un commit antérieur** : la recipe
+  master de p4a pourrait avoir des fixes pour d'autres recipes
+  (sdl2, sqlite3, etc.) ; downgrader le runner est le moins
+  intrusif. Si la solution échoue, on revisitera l'option pin
+  p4a comme stratégie iter #70.
+- **Tracking upstream** : quand p4a mettra à jour sa libffi recipe
+  (probablement vers libffi 3.5.x compatible autoconf 2.72), on
+  pourra revenir à `ubuntu-latest`. ADR-0003 §1 sera mis à jour.
+- **Pas de changement code applicatif** : iter strictement
+  packaging. Suite stable à 1695 tests, coverage 99.76 %.
+
 ## [0.0.68] - 2026-04-29
 
 ### Added
