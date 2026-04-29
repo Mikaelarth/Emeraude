@@ -38,6 +38,7 @@ from emeraude.ui.app import (
     EmeraudeApp,
 )
 from emeraude.ui.screens.dashboard import DASHBOARD_SCREEN_NAME
+from emeraude.ui.screens.journal import JOURNAL_SCREEN_NAME
 
 # True iff the current environment can host a Kivy Window. Windows /
 # macOS desktops have a default driver ; Linux needs ``$DISPLAY`` (X)
@@ -101,12 +102,16 @@ class TestAppBuild:
         assert isinstance(root, ScreenManager)
 
     def test_screen_manager_has_dashboard_screen(self, fresh_db: Path) -> None:
-        # Iter #59 : Dashboard est le 1er ecran fonctionnel et la
-        # screen courante par defaut. Les 4 autres (Configuration,
-        # Backtest, Audit, Learning) arriveront iter #60+.
+        # Iter #59 : Dashboard est le 1er ecran fonctionnel.
         app = EmeraudeApp()
         root = app.build()
         assert DASHBOARD_SCREEN_NAME in root.screen_names
+
+    def test_screen_manager_has_journal_screen(self, fresh_db: Path) -> None:
+        # Iter #61 : Journal est le 2eme ecran (slice de PORTFOLIO doc 02 §6).
+        app = EmeraudeApp()
+        root = app.build()
+        assert JOURNAL_SCREEN_NAME in root.screen_names
 
     def test_dashboard_screen_has_widgets(self, fresh_db: Path) -> None:
         app = EmeraudeApp()

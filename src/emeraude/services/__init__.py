@@ -58,6 +58,9 @@ from emeraude.services.gate_factories import (
     make_correlation_gate,
     make_microstructure_gate,
 )
+from emeraude.services.journal_data_source import (
+    QueryEventsJournalDataSource,
+)
 from emeraude.services.linucb_strategy_adapter import (
     LinUCBStrategyAdapter,
     build_regime_context,
@@ -115,6 +118,7 @@ __all__ = [
     "MonitorId",
     "Orchestrator",
     "PromotionDecision",
+    "QueryEventsJournalDataSource",
     "RiskCheckResult",
     "RiskMonitor",
     "RobustnessValidationDecision",

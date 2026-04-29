@@ -34,10 +34,15 @@ from kivy.uix.screenmanager import ScreenManager
 from emeraude.agent.execution.position_tracker import PositionTracker
 from emeraude.services.dashboard_data_source import TrackerDashboardDataSource
 from emeraude.services.dashboard_types import MODE_PAPER
+from emeraude.services.journal_data_source import QueryEventsJournalDataSource
 from emeraude.services.wallet import DEFAULT_COLD_START_CAPITAL, WalletService
 from emeraude.ui.screens.dashboard import (
     DASHBOARD_SCREEN_NAME,
     DashboardScreen,
+)
+from emeraude.ui.screens.journal import (
+    JOURNAL_SCREEN_NAME,
+    JournalScreen,
 )
 
 if TYPE_CHECKING:
@@ -123,4 +128,13 @@ class EmeraudeApp(App):  # type: ignore[misc]  # Kivy classes are untyped (kivy.
             name=DASHBOARD_SCREEN_NAME,
         )
         sm.add_widget(dashboard)
+
+        # Journal : audit-log viewer (doc 02 §"PORTFOLIO" §6
+        # "Journal du bot"). Read-only, uses audit.query_events.
+        journal_data_source = QueryEventsJournalDataSource()
+        journal = JournalScreen(
+            data_source=journal_data_source,
+            name=JOURNAL_SCREEN_NAME,
+        )
+        sm.add_widget(journal)
         return sm

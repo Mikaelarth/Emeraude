@@ -6,6 +6,103 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.61] - 2026-04-29
+
+### Added
+
+- **Journal Screen — 2ème écran fonctionnel Pilier #1**
+  (doc 02 §"💼 PORTFOLIO" §6 "Journal du bot"). Premier consommateur
+  visible des audit events (`audit.query_events`) ; affiche les N
+  derniers événements en `ScrollView` mobile-friendly avec
+  `HH:MM:SS | EVENT_TYPE | summary` par ligne. Pattern L1/L2
+  identique au Dashboard (ADR-0002 §6 + §7).
+- **`src/emeraude/services/journal_types.py`** (~155 LOC, 97.73 %
+  coverage — la branche restante est un `...` Protocol marqué
+  pragma) :
+  - `JournalEventRow` frozen dataclass : event_id, ts, event_type,
+    time_label (HH:MM:SS UTC), summary (payload aplati).
+  - `JournalSnapshot` frozen dataclass : `tuple[JournalEventRow]`
+    + total_returned. Tuple plutôt que list pour deep immutability.
+  - `JournalDataSource` Protocol consommé par l'écran.
+  - **`format_event_row(event_dict)`** : pure function, runs
+    everywhere. Anti-A8 — surface KeyError loud sur schema mismatch.
+  - **`format_payload_summary(payload, max_len)`** : key=value join
+    + ASCII ellipsis `...` si > max_len. Validation
+    `max_len > len(ellipsis)`.
+  - Constants : `DEFAULT_HISTORY_LIMIT=50`,
+    `DEFAULT_SUMMARY_MAX_LEN=80`.
+- **`src/emeraude/services/journal_data_source.py`** (~50 LOC,
+  100 % coverage) :
+  - `QueryEventsJournalDataSource` wraps `audit.query_events`.
+    Read-only. Args : `history_limit` (default 50),
+    `event_type` (optional filter).
+- **`src/emeraude/ui/screens/journal.py`** (~120 LOC, exclu
+  coverage) :
+  - `JournalScreen(Screen)` : `BoxLayout` vertical avec un header
+    label (count badge ou empty-state message) + `ScrollView`
+    wrapping un `BoxLayout` de rangs.
+  - Chaque rang : 3 Labels horizontaux (time / type / summary)
+    avec ratios `0.18 / 0.32 / 0.50`.
+  - `refresh()` : `clear_widgets` + rebuild from snapshot. Cheap
+    pour ~50 events.
+  - Empty-state : `"Aucun événement enregistré pour l'instant."`
+    (anti-A1).
+- **`EmeraudeApp.build()`** : enregistre désormais aussi
+  `JournalScreen` (name=`journal`) à côté de Dashboard (name=
+  `dashboard`). 2 écrans dans le ScreenManager.
+- **3 fichiers de tests, 39 nouveaux tests** :
+  - `test_journal_types.py` (19 tests, 6 classes) — pure logic,
+    runs partout :
+    - `TestTimeLabel` (2) : epoch 0 + noon.
+    - `TestPayloadSummary` (7) : empty, single, multi, truncate,
+      decimal, max_len validation.
+    - `TestEventRow` (4) : passthrough, missing payload, None
+      payload, missing event_type.
+    - `TestContainers` (3) : immutables + tuple shape.
+    - `TestConstants` (3) : default limits + dataclass shape.
+  - `test_journal_data_source.py` (12 tests, 5 classes) — concrete
+    runs partout :
+    - `TestValidation` (2) : history_limit >= 1.
+    - `TestEmpty` (1) : cold start no events.
+    - `TestSnapshotShape` (4) : type, ordering, passthrough, ids
+      distinct.
+    - `TestHistoryLimit` (2) : default + cap.
+    - `TestEventTypeFilter` (2) : matching + no-match.
+  - `test_journal_screen.py` (8 tests, 2 classes, gated) — Kivy
+    widget L2 :
+    - `TestConstruction` (3) : name + eager fetch + empty msg.
+    - `TestRefresh` (5) : count header, singular form, rebuild,
+      multiple fetch, clear-after-empty.
+
+### Changed
+
+- `services/__init__.py` : re-export
+  `QueryEventsJournalDataSource`.
+- `tests/unit/test_ui_smoke.py` : assertion supplémentaire pour le
+  screen `journal` au côté de `dashboard`.
+- `pyproject.toml` : version `0.0.60` -> `0.0.61`.
+
+### Notes
+
+- **Cadrage doc 02** : la cartographie officielle des 5 écrans est
+  Dashboard / Signaux / Portfolio / IA / Config — il n'y a pas
+  d'écran "Audit" dédié (le `audit_log` est un service back-end,
+  T14/E14). L'écran `journal` livré ici est positionné comme la
+  première slice de **PORTFOLIO §6 "Journal du bot"** ; les autres
+  sections de PORTFOLIO (positions ouvertes, historique trades,
+  vue d'ensemble) arrivent en iters suivantes et seront
+  rassemblées sous le toit `portfolio` quand la migration sera
+  utile. L'identifiant technique reste `journal` pour matcher la
+  responsabilité actuelle.
+- **Anti-règle A1 honorée** : empty-state UI ne dit pas
+  "Coming soon" mais décrit l'état réel ("Aucun événement
+  enregistré pour l'instant.").
+- **Coverage `journal_data_source.py` : 100 %** ;
+  `journal_types.py` : 97.73 % (la branche restante est le `...`
+  Protocol pragma:nocover, jamais invoqué).
+- Suite **1523 → 1562 tests (+39)**, coverage global stable à
+  **99.77 %**.
+
 ## [0.0.60] - 2026-04-29
 
 ### Added
