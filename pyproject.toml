@@ -11,7 +11,7 @@ build-backend = "hatchling.build"
 # ─── Projet (PEP 621) ────────────────────────────────────────────────────────
 [project]
 name = "emeraude"
-version = "0.0.73"
+version = "0.0.74"
 description = "Agent de trading crypto autonome, mobile-first Android, 100% local, evolutif"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
@@ -43,6 +43,11 @@ dependencies = [
     # Declared explicitly meme si requests le tire transitivement, pour ne pas
     # disparaitre silencieusement si requests est remplace ou retire.
     "certifi>=2024.0",
+    # filetype : transitive dep de kivy.core.image (Kivy 2.3.x le tire pour
+    # detecter les formats d'image au load). p4a's Kivy recipe ne le bundle
+    # pas, donc l'APK doit le declarer explicitement (cf. iter #74,
+    # crash ModuleNotFoundError captured run 25115412399).
+    "filetype>=1.2.0",
 ]
 
 [project.optional-dependencies]
@@ -220,7 +225,7 @@ skips = []  # ne rien skipper par defaut ; documenter au cas par cas
 # ═════════════════════════════════════════════════════════════════════════════
 [tool.commitizen]
 name = "cz_conventional_commits"
-version = "0.0.73"
+version = "0.0.74"
 tag_format = "v$version"
 version_scheme = "semver"
 update_changelog_on_bump = true

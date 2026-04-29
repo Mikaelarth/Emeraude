@@ -6,6 +6,49 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.74] - 2026-04-29
+
+### Fixed
+
+- **Crash au démarrage Android** : `ModuleNotFoundError: No module
+  named 'filetype'` levée au premier import de `kivy.app` (chaîne
+  `kivy.app` → `kivy.uix.widget` → `kivy.graphics` → `kivy.core.image`
+  ligne 65 → `import filetype`). Kivy 2.3.x utilise `filetype` pour
+  détecter les formats d'image au load, mais la recette
+  python-for-android de kivy ne le bundle PAS automatiquement.
+  Conséquence : l'app crashe instantanément au démarrage, l'utilisateur
+  voit "se lance puis se ferme" — c'est exactement le symptôme rapporté
+  sur Redmi 2409BRN2CA.
+  - **Diagnostic** : capturé via le crash logger iter #71
+    (`last_crash.log` dans `$ANDROID_PRIVATE`) sur le workflow
+    émulateur iter #72-#73 (run 25115412399, après ajout de x86_64
+    pour bypasser le translator AOSP).
+  - **Fix** : ajouter `filetype` dans `buildozer.spec` requirements
+    (pinned à 1.2.0) ET dans `pyproject.toml` dependencies (>= 1.2.0).
+    `filetype` est pure-Python, pas de C extension, pas de problème
+    Buildozer.
+- **Iter #71 a fonctionné** : le crash logger a écrit
+  `last_crash.log` exactement comme prévu (1633 octets, bien lisible
+  via `adb shell run-as`). Confirmé par les artifacts emulator-test.
+
+### Changed
+
+- `pyproject.toml` : version `0.0.73` -> `0.0.74` ; ajout dep runtime
+  `filetype>=1.2.0`.
+- `buildozer.spec` : version `0.0.73` -> `0.0.74` ; ajout `filetype==1.2.0`
+  dans `requirements`.
+
+### Notes
+
+- **Iter #74 ferme la boucle de diagnostic Android** : iter #68 a
+  livré le build APK Buildozer/p4a, iter #71 le crash logger, iter
+  #72 le workflow émulateur, iter #73 le bypass de translator (x86_64
+  natif), iter #74 la cause-racine du "se lance puis se ferme".
+- **Suite stable à 1695 tests** (pas de modif code applicatif).
+- **Le tag v0.0.74 va trigger** `android.yml` (build APK ~20 min) PUIS
+  `android-emulator-test.yml` (~5 min sur AVD caché). Si la nouvelle
+  APK boote sans crash sur l'émulateur, le bug est confirmé fixé.
+
 ## [0.0.73] - 2026-04-29
 
 ### Added

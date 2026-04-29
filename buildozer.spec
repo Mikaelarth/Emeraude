@@ -30,12 +30,18 @@ source.exclude_dirs = tests, docs, .venv, .buildozer, bin, __pycache__
 # Manual sync with pyproject.toml. We don't use ``version.regex`` because
 # emeraude/__init__.py reads its version dynamically via importlib.metadata
 # (works in pip-installed contexts but not parseable by buildozer).
-version = 0.0.73
+version = 0.0.74
 
 # (list) Application requirements
 # Pinned to the same versions as pyproject.toml's runtime deps (kivy 2.3,
 # certifi, requests). Python is implicit.
-requirements = python3,kivy==2.3.1,requests==2.32.3,certifi==2024.8.30
+# Iter #74 : ``filetype`` ajouté car Kivy 2.3.x importe
+# ``filetype`` au load de ``kivy.core.image`` (transitive dep).
+# Sans, la première import de Kivy lève ``ModuleNotFoundError: No
+# module named 'filetype'`` — c'est le crash qu'on a capturé sur
+# l'émulateur (run 25115412399, last_crash.log iter #71).
+# La recette p4a de kivy ne bundle pas filetype par défaut.
+requirements = python3,kivy==2.3.1,requests==2.32.3,certifi==2024.8.30,filetype==1.2.0
 
 # (str) Custom source folders for requirements
 # Set this if you want to include some custom python distribution
