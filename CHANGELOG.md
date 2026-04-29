@@ -6,6 +6,113 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.78] - 2026-04-29
+
+### Added — pivot architectural majeur (cf. ADR-0004)
+
+Bascule de la couche UI : Kivy widgets remplacés par une **WebView
+Android pointée sur un serveur HTTP local servant une SPA Vue 3 +
+Vuetify**. Le coeur Python (15 939 LOC, 1 695 tests) reste intact.
+
+- `docs/adr/0004-revisit-kivymd.md` — ADR documentant le pivot. Liste
+  les faits vérifiés (KivyMD 1.2.0 PyPI, pas de 2.0 stable),
+  alternatives considérées (Flutter+Chaquopy, Kotlin Compose, KivyMD
+  1.2, Toga), choix retenu (WebView+Vuetify+http.server stdlib),
+  plan de migration sur 4 iters.
+- `src/emeraude/api/` — nouveau module API :
+  - `context.py` (~140 LOC) : `AppContext` factorise la composition
+    root des services (tracker, wallet, balance provider, data
+    sources). Injecté dans le serveur HTTP.
+  - `server.py` (~330 LOC) : `EmeraudeHTTPServer` (subclass de
+    `ThreadingHTTPServer` stdlib) + `_RequestHandler` qui dispatch
+    les routes :
+    - `GET /`               -> `index.html` + cookie auth aléatoire.
+    - `GET /static/<path>`  -> assets statiques (JS, CSS, fonts).
+    - `GET /api/dashboard`  -> `DashboardSnapshot` JSON.
+    Sécurité loopback : token aléatoire généré au boot, requis comme
+    cookie `HttpOnly` pour les requêtes `/api/*`. Une autre app
+    locale qui essaierait de lire `/api/dashboard` se prend un 403.
+  - `_serialise()` helper : `Decimal` -> `str` (préserve la
+    précision), dataclasses -> dict récursif, tuples -> listes.
+- `src/emeraude/web_app.py` — nouveau bootstrap :
+  - Sur **Android** (détecté via `ANDROID_PRIVATE`) : démarre le
+    serveur en thread daemon, lance un Kivy `App` minimal, et au
+    `on_start` ouvre la WebView native via `pyjnius`
+    (`android.webkit.WebView`). La WebView remplace le ContentView
+    de la `PythonActivity` ; Kivy continue son event loop sous le
+    capot pour garder le process Python alive.
+  - Sur **desktop** : log l'URL + bloque sur `serve_forever`. Le
+    développeur ouvre `http://127.0.0.1:8765/` dans son navigateur
+    (preview natif, hot reload via F5 — fini le cycle Buildozer
+    20 min pour voir une couleur).
+- `src/emeraude/web/index.html` (~280 LOC) — SPA Vue 3 + Vuetify 3 :
+  - Top app bar avec titre + chip mode (Paper/Réel).
+  - Hero card Capital (display 56sp, MD3).
+  - Hero card P&L Cumulé (color-coded selon signe : success / error
+    / medium-emphasis).
+  - Card "Position actuelle" avec empty state propre + icône.
+  - Card "Statut du bot" avec mode chip + nombre de trades.
+  - Bottom navigation bar avec icônes Material Symbols
+    (`mdi-view-dashboard` / `mdi-format-list-bulleted` / `mdi-cog`)
+    — Journal et Config désactivés en iter #78, livrés iter #79.
+  - Refresh auto toutes les 5 s (équivalent du Clock pump iter #65).
+- `tests/unit/test_api_server.py` — 20 tests unitaires :
+  - `_serialise` (Decimal precision, dataclass nesting, JSON round-trip).
+  - `create_server` (wiring, auth token randomness).
+  - HTTP integration (real server in thread + http.client probes) :
+    GET /, static asset, path traversal blocked, /api/dashboard
+    requires auth, /api/dashboard returns snapshot, unknown route
+    returns 404.
+  - `web_app` helpers (`_is_android` env detection,
+    `_resolve_web_root`).
+
+### Changed
+
+- `pyproject.toml` : version `0.0.77` -> `0.0.78`. Aucune nouvelle
+  dépendance runtime — tout en stdlib.
+- `buildozer.spec` :
+  - `source.include_exts` étendu pour bundler la SPA :
+    `py,sql,html,js,css,json,woff2,woff,ttf,svg,png`.
+  - `source.include_patterns` ajoute `emeraude/web/index.html` et
+    `emeraude/web/static/**/*`.
+  - Version `0.0.77` -> `0.0.78`.
+- `src/emeraude/main.py` : appelle désormais
+  `emeraude.web_app.run_web_app()` au lieu de
+  `emeraude.ui.app.EmeraudeApp().run()`. Le crash logger iter #71
+  reste actif et capture toujours `last_crash.log`.
+
+### Notes
+
+- **Statut de `src/emeraude/ui/`** : conservé en l'état pour iter #78
+  (rollback safety). Les tests `test_dashboard_screen.py`,
+  `test_journal_screen.py`, `test_config_screen.py`,
+  `test_navigation_bar.py`, `test_components.py`, `test_ui_smoke.py`
+  passent toujours (le code reste importable, juste plus invoqué
+  par le bootstrap). Iter #81 livrera la suppression complète une
+  fois la migration de tous les écrans terminée.
+- **Suite stable à 1733 tests** (+20), coverage 99.05 %.
+- Quality gates : ruff check + ruff format + mypy strict + bandit
+  passent tous.
+- **Architecture rendue testable** : 16 des 20 tests iter #78 sont
+  L1 (sans display) — alors que le test surface UI Kivy nécessitait
+  un display backend (gating L2). On gagne en CI rapidité + couverture.
+- **Iter suivants** :
+  - #79 : routes `/api/journal` + `/api/config` + pages Vuetify
+    correspondantes (composant `<v-list>` avec rows audit_log).
+  - #80 : routes `POST /api/toggle-mode` (avec `<v-dialog>` de
+    confirmation pour le mode Réel — anti-règle A5 double-tap +
+    délai 5 s) et `POST /api/credentials` (avec `<v-text-field>`
+    pour API key + secret).
+  - #81 : suppression du dossier `src/emeraude/ui/` (Kivy widgets) +
+    des tests UI Kivy obsolètes ; ajout d'un Top App Bar Vuetify
+    avec actions menu (refresh manuel, à propos).
+- **À valider** sur P30 lite (USB ADB local) puis Redmi : screenshot
+  attendu = Dashboard Vuetify Material Design 3 sombre, hero Capital
+  56sp dominant, cards arrondies à coins, chip "Paper" en couleur
+  warning, nav bar avec 3 icônes Material Symbols. Saut visuel
+  drastique vs le screenshot v0.0.77 que l'utilisateur a qualifié de
+  "très inconfortable, brouillon".
+
 ## [0.0.77] - 2026-04-29
 
 ### Added

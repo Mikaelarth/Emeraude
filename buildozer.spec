@@ -14,11 +14,18 @@ package.domain = org.mikaelarth
 source.dir = src
 
 # (list) Source files to include (let empty to include all the files)
-source.include_exts = py,sql
+# Iter #78 (cf. ADR-0004) : ajout html, js, css, json, woff2, woff,
+# ttf, svg, png pour bundler la web app (Vue 3 + Vuetify) qui vit
+# désormais sous src/emeraude/web/. ico exclu : pas de favicon (la
+# WebView Android ne l'affiche jamais en fullscreen).
+source.include_exts = py,sql,html,js,css,json,woff2,woff,ttf,svg,png
 
 # (list) List of source files to include — paths relative to source.dir.
 # Migrations SQL must ship inside the APK (loaded at first DB use).
-source.include_patterns = emeraude/infra/migrations/*.sql
+# Iter #78 : web/** ajouté pour la WebView. La répétition est utile
+# car ``source.include_exts`` filtre par extension globalement, alors
+# que les patterns ciblent explicitement les sous-arborescences.
+source.include_patterns = emeraude/infra/migrations/*.sql,emeraude/web/index.html,emeraude/web/static/**/*
 
 # (list) Source files to exclude (let empty to not exclude anything)
 source.exclude_exts = pyc
@@ -30,7 +37,7 @@ source.exclude_dirs = tests, docs, .venv, .buildozer, bin, __pycache__
 # Manual sync with pyproject.toml. We don't use ``version.regex`` because
 # emeraude/__init__.py reads its version dynamically via importlib.metadata
 # (works in pip-installed contexts but not parseable by buildozer).
-version = 0.0.77
+version = 0.0.78
 
 # (list) Application requirements
 # Pinned to the same versions as pyproject.toml's runtime deps (kivy 2.3,

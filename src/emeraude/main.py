@@ -64,10 +64,17 @@ def _write_crash_log(exc_text: str) -> None:
 
 
 def main() -> None:  # pragma: no cover  (entry point, runtime-only)
-    """Bootstrap the Kivy application.
+    """Bootstrap the Emeraude application.
 
-    Two environment guards are set **before** importing the UI module to
-    keep Kivy quiet in CI / headless contexts (ADR-0002 §7) :
+    Iter #78 (cf. ADR-0004) — la couche UI bascule du Kivy widget
+    tree à une WebView Android pointée sur un serveur HTTP local
+    (Vue 3 + Vuetify). Le coeur Python (``agent``, ``infra``,
+    ``services``) est inchangé.
+
+    Two environment guards are set **before** importing :mod:`web_app`
+    to keep Kivy quiet — Kivy reste utilisé sur Android comme shell
+    porteur du process (la WebView Android remplace son ContentView)
+    mais on ne veut ni argv parsing ni banner console (ADR-0002 §7) :
 
     * ``KIVY_NO_ARGS`` : Kivy must not parse ``sys.argv`` (which
       collides with our own CLI).
@@ -76,19 +83,17 @@ def main() -> None:  # pragma: no cover  (entry point, runtime-only)
 
     Any exception raised during the bootstrap (import errors, DB
     init failures, missing recipes on Android, etc.) is captured to
-    ``last_crash.log`` before being re-raised. This makes triaging
-    Android first-launch crashes possible without ADB access.
+    ``last_crash.log`` (iter #71 crash logger) before being re-raised.
+    Cela fait triager les Android first-launch crashes accessible
+    sans ADB.
     """
     os.environ.setdefault("KIVY_NO_ARGS", "1")
     os.environ.setdefault("KIVY_NO_CONSOLELOG", "1")
 
     try:
-        # Imported here, after the env guards, so Kivy never sees our argv
-        # and never spams the console banner. ``noqa PLC0415`` : the
-        # placement is intentional and documented in ADR-0002 §7.
-        from emeraude.ui.app import EmeraudeApp  # noqa: PLC0415
+        from emeraude.web_app import run_web_app  # noqa: PLC0415
 
-        EmeraudeApp().run()
+        run_web_app()
     except Exception:
         _write_crash_log(traceback.format_exc())
         # Re-raise so Kivy / Android emit their normal crash report
