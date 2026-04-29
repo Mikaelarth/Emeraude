@@ -6,6 +6,52 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.73] - 2026-04-29
+
+### Added
+
+- `buildozer.spec` : `x86_64` dans `android.archs` (en plus de
+  `arm64-v8a` et `armeabi-v7a`).
+  - **Pourquoi** : iter #72 a montré que le workflow CI émulateur
+    sur ARM-only APK est invalide. Deux runs successifs :
+    - **API 30 google_apis x86_64** (run 25108820295) : `libc :
+      Fatal signal 4 (SIGILL), code -6 (SI_TKILL) in tid SDLThread`,
+      backtrace 100 % à l'intérieur de `libndk_translation.so`
+      (`DecodeSimdScalarTwoRegMisc+642` → `DecodeDataProcessingSimd
+      AndFp+2374` → `Decode+1114` → `InterpretInsn+118`). Ce n'est
+      PAS un bug de notre code : c'est le translator AOSP v0.2.2 qui
+      ne supporte pas certaines instructions ARM NEON SIMD scalaires
+      utilisées par Python 3.11 / Kivy / SDL2.
+    - **API 33 google_apis x86_64** (run 25109106985) : pas de
+      translator du tout, install rejeté avec
+      `INSTALL_FAILED_NO_MATCHING_ABIS`.
+  - **Effet** : avec `x86_64` dans l'APK, l'émulateur charge
+    directement le `.so` natif x86_64, sans passer par la couche de
+    translation. On obtient un vrai run Python (succès ou
+    traceback dans `last_crash.log`), au lieu d'un faux positif
+    SIGILL côté translator.
+  - **Trade-off taille APK** : +30 % (~50 MB vs ~35 MB). Production
+    pourra split-by-abi plus tard si besoin (Play Store bundles).
+
+### Changed
+
+- `pyproject.toml` : version `0.0.72` -> `0.0.73`.
+- `buildozer.spec` : version `0.0.72` -> `0.0.73`.
+
+### Notes
+
+- **Suite des iters #71/#72** : iter #71 a livré le crash logger,
+  iter #72 le workflow émulateur (avec deux fixes correctifs :
+  `set -eu` POSIX + lignes pipées sur 1 seule ligne pour dash).
+  Iter #73 ferme la boucle en garantissant que l'APK est exécutable
+  nativement par l'émulateur CI.
+- **Tests** : pas de modif code applicatif. Suite stable à 1695
+  tests, coverage 99.76 %.
+- **Le tag v0.0.73 va trigger** `android.yml` (build APK ~15 min,
+  3 archs au lieu de 2 — possiblement 18-20 min) PUIS
+  `android-emulator-test.yml` (15 min). Total ~35 min pour avoir un
+  diagnostic Python valide.
+
 ## [0.0.72] - 2026-04-29
 
 ### Added

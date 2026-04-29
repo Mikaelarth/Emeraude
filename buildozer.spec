@@ -30,7 +30,7 @@ source.exclude_dirs = tests, docs, .venv, .buildozer, bin, __pycache__
 # Manual sync with pyproject.toml. We don't use ``version.regex`` because
 # emeraude/__init__.py reads its version dynamically via importlib.metadata
 # (works in pip-installed contexts but not parseable by buildozer).
-version = 0.0.72
+version = 0.0.73
 
 # (list) Application requirements
 # Pinned to the same versions as pyproject.toml's runtime deps (kivy 2.3,
@@ -85,10 +85,20 @@ android.minapi = 24
 android.ndk = 25b
 
 # (list) The Android archs to build for
-# arm64-v8a covers all modern phones. armeabi-v7a covers older 32-bit
-# devices (still ~10 % of the fleet en 2026). We ship both — bundle
-# split-by-abi serait plus efficace mais nécessite Play Store distrib.
-android.archs = arm64-v8a,armeabi-v7a
+# arm64-v8a : tous les smartphones modernes (Redmi, Samsung, etc.).
+# armeabi-v7a : devices 32-bit anciens (~10 % du parc en 2026).
+# x86_64 : ajouté iter #73 pour permettre aux émulateurs CI x86_64
+# de lancer l'app NATIVEMENT, sans passer par libndk_translation.
+# Iter #72 a montré que le translator AOSP API 30 (v0.2.2) crash
+# avec SIGILL sur certaines instructions ARM NEON SIMD utilisées
+# par Python/Kivy (run 25108820295, backtrace 100 % dans
+# libndk_translation::DecodeSimdScalarTwoRegMisc). API 33 google_apis
+# x86_64 n'a même plus de translation et refuse l'install d'un APK
+# arm-only avec INSTALL_FAILED_NO_MATCHING_ABIS (run 25109106985).
+# Conséquence : APK +30 % de taille (~50 MB vs ~35 MB) mais c'est le
+# prix d'un workflow CI émulateur fiable. Production-only build via
+# split-by-abi pourra retirer x86_64 plus tard si besoin.
+android.archs = arm64-v8a,armeabi-v7a,x86_64
 
 # (bool) If True, then automatically accept SDK license agreements.
 # Required for headless CI builds.
