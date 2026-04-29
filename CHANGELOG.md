@@ -6,6 +6,50 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.70] - 2026-04-29
+
+### Added
+
+- **`docs/T4_TEST_PROTOCOL.md`** — protocole complet de validation
+  T4 (APK Android sans crash 24h). Iter #69 a livré le **binaire**
+  (35 MB APK debug) ; iter #70 livre **le protocole pour le tester**
+  côté device physique. Le test runtime lui-même reste manuel
+  (out of scope IDE).
+  - **Pré-requis** : Android API 24+, ADB ou sideload manuel.
+  - **Récupération APK** : via GitHub UI (Actions → workflow
+    "Android APK" → artifact) ou `gh run download`.
+  - **Smoke test 5 min** : checklist 14 items couvrant install,
+    démarrage, 3 écrans, navigation, active tab styling, absence
+    de crash.
+  - **Observation 24h** : checklist H+0 / H+1 / H+6 / H+12 / H+24
+    avec captures screenshot + logcat + meminfo + battery drain.
+  - **Test mode REAL optionnel** : guide passphrase via Termux
+    (Android n'a pas de mécanisme natif d'env var pour app
+    graphique) + checklist 8 items end-to-end.
+  - **Template bug report** : structure standard pour issue
+    GitHub.
+  - **Critères de succès T4** : T4.1 install OK, T4.2 smoke OK,
+    T4.3 24h sans crash, T4.4 memory stable, T4.5 (opt) mode REAL.
+  - **Politique de re-test** : smoke à chaque tag `v*`, 24h sur
+    changements runtime majeurs, mode REAL sur changements touchant
+    BinanceClient / Credentials / BalanceProvider.
+
+### Changed
+
+- `pyproject.toml` : version `0.0.69` -> `0.0.70`.
+- `buildozer.spec` : version `0.0.69` -> `0.0.70`.
+
+### Notes
+
+- **Pas de changement code applicatif** : iter purement
+  documentation. Suite stable à 1695 tests, coverage 99.76 %.
+- **Le test T4 attend l'utilisateur** : iter #71 sera de fix
+  (si bugs détectés) ou Onboarding wizard (si T4 passe).
+- **Anti-règles respectées** :
+  - **A1** : la procédure mode REAL avertit explicitement de **ne
+    pas** utiliser de clés Binance avec fonds significatifs sur le
+    device test tant que la chaîne n'est pas auditée. Honnêteté UX.
+
 ## [0.0.69] - 2026-04-29
 
 ### Changed
