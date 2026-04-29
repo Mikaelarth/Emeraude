@@ -143,7 +143,15 @@ jobs:
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -no-boot-anim -camera-back none -no-audio
           disable-animations: true
           script: |
-            set -euo pipefail
+            # reactivecircus/android-emulator-runner@v2 invokes the script via
+            # ``/usr/bin/sh`` (dash on Ubuntu), not bash. ``set -o pipefail`` is
+            # a bashism — using it here aborts the script immediately with
+            # ``Illegal option -o pipefail`` and produces zero diagnostic output
+            # (iter #72 first attempt, run 25106369964). ``set -eu`` is portable
+            # POSIX and sufficient here : every pipeline that could legitimately
+            # fail (``pm list packages | grep ...``, ``logcat | grep ...``)
+            # already has explicit ``|| ...`` handling.
+            set -eu
             echo "=== ADB devices ==="
             adb devices
             echo "=== Install APK ==="
