@@ -143,14 +143,17 @@ jobs:
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -no-boot-anim -camera-back none -no-audio
           disable-animations: true
           script: |
-            # reactivecircus/android-emulator-runner@v2 invokes the script via
-            # ``/usr/bin/sh`` (dash on Ubuntu), not bash. ``set -o pipefail`` is
-            # a bashism — using it here aborts the script immediately with
-            # ``Illegal option -o pipefail`` and produces zero diagnostic output
-            # (iter #72 first attempt, run 25106369964). ``set -eu`` is portable
-            # POSIX and sufficient here : every pipeline that could legitimately
-            # fail (``pm list packages | grep ...``, ``logcat | grep ...``)
-            # already has explicit ``|| ...`` handling.
+            # NOTE: the action's runner runs each YAML line through a separate
+            # ``/usr/bin/sh -c`` (dash on Ubuntu), so :
+            #   1. backslash line continuations don't work — the second physical
+            #      line is parsed in isolation, e.g. ``| grep ...`` raises
+            #      ``Syntax error: "|" unexpected`` (iter #72 attempt #2, run
+            #      25108143068). Keep every pipeline on ONE physical line.
+            #   2. ``set -o pipefail`` is a bashism that aborts dash with
+            #      ``Illegal option -o pipefail`` (iter #72 attempt #1, run
+            #      25106369964). Use ``set -eu`` (POSIX). The two pipelines
+            #      that could legitimately fail (``pm list | grep``, ``logcat
+            #      | grep``) already have explicit ``|| ...`` handling.
             set -eu
             echo "=== ADB devices ==="
             adb devices
@@ -161,22 +164,22 @@ jobs:
             echo "=== Launch the activity ==="
             adb logcat -c
             adb shell am start -n org.mikaelarth.emeraude/org.kivy.android.PythonActivity
-            echo "=== Wait 15s for bootstrap to complete or crash ==="
-            sleep 15
+            # 45s : Python init takes ~10-13s on this emulator (run 25108143068
+            # printed "Run user program" at +13s) ; we need extra time for the
+            # main.py import + EmeraudeApp().run() to either succeed (window
+            # shown, Clock pump tick) or crash (write last_crash.log). 15s was
+            # too short — we caught the buffer 0.8s after entrypoint exec.
+            echo "=== Wait 45s for bootstrap to complete or crash ==="
+            sleep 45
             echo "=== Capture logcat (filtered) ==="
             adb logcat -d > emulator_logcat_full.txt
-            adb logcat -d \
-              | grep -iE 'emeraude|mikael|python|kivy|androidruntime|libc|sigsegv|fatal' \
-              > emulator_logcat_filtered.txt || true
+            adb logcat -d | grep -iE 'emeraude|mikael|python|kivy|androidruntime|libc|sigsegv|fatal' > emulator_logcat_filtered.txt || true
             echo "=== Capture crash log via run-as (debug APK) ==="
-            adb shell run-as org.mikaelarth.emeraude cat files/last_crash.log \
-              > emulator_last_crash.log 2>&1 || echo "no last_crash.log present"
+            adb shell run-as org.mikaelarth.emeraude cat files/last_crash.log > emulator_last_crash.log 2>&1 || echo "no last_crash.log present"
             echo "=== Capture private dir listing ==="
-            adb shell run-as org.mikaelarth.emeraude ls -la files/ \
-              > emulator_files_listing.txt 2>&1 || true
+            adb shell run-as org.mikaelarth.emeraude ls -la files/ > emulator_files_listing.txt 2>&1 || true
             echo "=== Capture currently visible activity ==="
-            adb shell dumpsys activity activities | grep -iE 'topResumed|RealActivity|mResumed' \
-              > emulator_topactivity.txt || true
+            adb shell dumpsys activity activities | grep -iE 'topResumed|RealActivity|mResumed' > emulator_topactivity.txt || true
 
       - name: Upload diagnostic artifacts
         if: always()
