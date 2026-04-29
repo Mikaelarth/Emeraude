@@ -40,7 +40,6 @@ from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
 from kivy.uix.label import Label
 from kivy.uix.screenmanager import Screen
-from kivy.uix.textinput import TextInput
 
 from emeraude.services.binance_credentials import (
     ENV_PASSPHRASE,
@@ -366,6 +365,15 @@ class ConfigScreen(Screen):  # type: ignore[misc]  # Kivy classes are untyped (A
             )
             self._binance_panel.add_widget(hint)
             return
+
+        # Lazy import : ``kivy.uix.textinput`` initialization is heavier
+        # than Label/Button (cursor blink Clock + selection handles).
+        # On headless Linux CI without ``$DISPLAY``, importing it at
+        # module level can crash workers during test collection. Pull
+        # it in only when the form is actually being built — gated by
+        # ``passphrase_available`` and the L2 ``_DISPLAY_AVAILABLE``
+        # skipif.
+        from kivy.uix.textinput import TextInput  # noqa: PLC0415
 
         # Form active : 2 TextInputs + Save 2-stage.
         self._api_key_input = TextInput(

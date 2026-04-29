@@ -22,7 +22,6 @@ from decimal import Decimal
 import pytest
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.label import Label
-from kivy.uix.textinput import TextInput
 
 from emeraude.services.binance_credentials import (
     BinanceCredentialsStatus,
@@ -367,6 +366,11 @@ class TestBinanceSection:
         assert len(screen._binance_panel.children) >= 6
 
     def test_form_disabled_when_passphrase_missing(self) -> None:
+        # Lazy import — kivy.uix.textinput is heavier than other Kivy
+        # widgets and triggers Window init on Linux headless CI even
+        # at module import. Loaded only inside the gated test.
+        from kivy.uix.textinput import TextInput  # noqa: PLC0415
+
         screen, _, _ = _make_screen(passphrase_available=False)
         # Panel must contain header + 2 status rows + hint = 4 widgets,
         # NO TextInput / TwoStageButton.
@@ -395,6 +399,8 @@ class TestBinanceSection:
         assert "definie" in joined
 
     def test_save_button_double_tap_calls_service(self) -> None:
+        from kivy.uix.textinput import TextInput  # noqa: PLC0415
+
         screen, _, binance = _make_screen(passphrase_available=True)
         # Find the inputs + the 2-stage save button.
         inputs = [w for w in screen._binance_panel.children if isinstance(w, TextInput)]
@@ -416,6 +422,8 @@ class TestBinanceSection:
         assert binance.save_calls == [(valid_key, valid_secret)]
 
     def test_save_invalid_key_shows_error_message(self) -> None:
+        from kivy.uix.textinput import TextInput  # noqa: PLC0415
+
         # Use the REAL service to exercise format validation.
         # Easiest path : monkey-patch the fake to raise on save.
         screen, _, binance = _make_screen(passphrase_available=True)
