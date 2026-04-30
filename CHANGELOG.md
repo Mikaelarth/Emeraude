@@ -6,6 +6,64 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.98] - 2026-04-30
+
+### Fixed — iter #94 : version "vunknown" affichée sur l'APK runtime
+
+Le test runtime sur smartphone (PR #1, iter #93 build APK v0.0.94)
+a révélé que l'écran Configuration affichait ``Version: vunknown`` au
+lieu de la vraie version. Cause : ``importlib.metadata.version`` ne
+résout pas en p4a-packaged APK (pas de ``.dist-info``), et le fallback
+historique était ``"unknown"``.
+
+### Added
+
+- ``src/emeraude/__init__.py`` :
+  - Constante module ``_FALLBACK_VERSION = "0.0.98"`` qui sert de
+    fallback when ``importlib.metadata.version`` échoue (cas APK).
+  - **Maintenance contract** documenté dans le docstring : la
+    constante DOIT rester synchronisée avec
+    ``pyproject.toml [project] version`` et
+    ``buildozer.spec version =``. Trois copies, un seul vrai
+    "single source of truth" maintenu par un test pytest qui
+    fait rougir la suite si désync.
+  - Fallback final dans le ``except`` : ``__version__ =
+    _FALLBACK_VERSION`` au lieu de ``"unknown"``.
+
+- ``tests/unit/test_version_sync.py`` (nouveau) — **+4 tests** :
+  - ``test_fallback_matches_pyproject`` : compare
+    ``_FALLBACK_VERSION`` à ``pyproject.toml`` parsé via
+    :mod:`tomllib`.
+  - ``test_buildozer_matches_pyproject`` : compare la ligne
+    ``version =`` de ``buildozer.spec`` (regex) à ``pyproject.toml``.
+  - ``test_fallback_matches_buildozer`` : transitive, kept explicit
+    pour pointer la pair exacte qui diverge en CI.
+  - ``test_runtime_version_is_set`` : assert ``__version__ !=
+    "unknown"`` — verrou anti-régression du fix iter #94.
+
+### Changed
+
+- ``pyproject.toml`` + ``buildozer.spec`` : ``0.0.97`` -> ``0.0.98``.
+- ``src/emeraude/__init__.py`` : ``_FALLBACK_VERSION = "0.0.98"``.
+
+### Notes
+
+- **Suite stable** (test count à confirmer après run, +4 vs v0.0.97),
+  ruff + ruff format + mypy strict + bandit + pip-audit OK.
+- **Mesure objectif iter #94** :
+  - Avant : APK affiche ``Version: vunknown`` sur la page Config
+    (capture utilisateur, iter #93 runtime test).
+  - Après : APK doit afficher ``v0.0.98`` (à confirmer après
+    re-build CI Android APK + install). Le test
+    ``test_runtime_version_is_set`` empêche tout retour à
+    ``"unknown"``.
+- **Maintenance** : à chaque iter, **3 endroits à bumper**
+  (pyproject + buildozer + __init__). Le test pytest fail-fast les
+  oublis. C'est le compromis "DRY pragmatique vs read pyproject.toml
+  at runtime" — la lecture runtime aurait nécessité d'embarquer
+  ``pyproject.toml`` dans l'APK + parser tomllib au boot, ce qui
+  n'est pas l'idiome p4a et ajoute du fragile pour gagner une copie.
+
 ## [0.0.97] - 2026-04-30
 
 ### Added — iter #93 : backtest fill simulator (1er morceau backtest engine)
