@@ -28,6 +28,7 @@ from emeraude.services.auto_trader import (
     _interval_to_ms,
 )
 from emeraude.services.drift_monitor import DriftMonitor
+from emeraude.services.live_executor import LiveOrderResult, PaperLiveExecutor
 from emeraude.services.orchestrator import Orchestrator
 from emeraude.services.risk_monitor import RiskMonitor
 
@@ -1228,3 +1229,185 @@ class TestOutlierRangeWiringLive:
         # No OUTLIER on a uniform series — wiring active, no false
         # positive.
         assert "outlier_range" not in bar_quality
+
+
+# ─── LiveExecutor wiring (iter #96) ──────────────────────────────────────────
+
+
+class _RecordingExecutor:
+    """Test double that records each call and returns a programmable fill.
+
+    Lets us verify that ``AutoTrader._maybe_open`` delegates to the
+    executor with the right args (symbol/side/quantity/intended_price)
+    and feeds the executor's ``fill_price`` and ``executed_qty`` to
+    the tracker (anti-règle A1 : the DB row must reflect the real fill,
+    not the orchestrator's intended price).
+    """
+
+    def __init__(
+        self,
+        *,
+        fill_price: Decimal,
+        executed_qty: Decimal | None = None,
+    ) -> None:
+        self.fill_price = fill_price
+        self.executed_qty = executed_qty
+        self.calls: list[dict[str, object]] = []
+
+    def open_market_position(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        quantity: Decimal,
+        intended_price: Decimal,
+    ) -> LiveOrderResult:
+        self.calls.append(
+            {
+                "symbol": symbol,
+                "side": side,
+                "quantity": quantity,
+                "intended_price": intended_price,
+            },
+        )
+        return LiveOrderResult(
+            fill_price=self.fill_price,
+            order_id="test-order-1",
+            status="FILLED",
+            executed_qty=self.executed_qty if self.executed_qty is not None else quantity,
+            is_paper=False,
+        )
+
+
+@pytest.mark.unit
+class TestLiveExecutorWiring:
+    """:class:`AutoTrader` delegates to the injected :class:`LiveExecutor`."""
+
+    def test_default_executor_is_paper(self, fresh_db: Path) -> None:
+        # No injection → AutoTrader uses PaperLiveExecutor by default,
+        # so pre-iter-#96 callers see no behavior change.
+        at = AutoTrader()
+        # Internal attribute exposed for the smoke test ; not part of
+        # the public API.
+        assert isinstance(at._live_executor, PaperLiveExecutor)
+
+    def test_executor_receives_correct_args(self, fresh_db: Path) -> None:
+        recorder = _RecordingExecutor(fill_price=Decimal("210"))
+        klines = _bull_klines()
+        orchestrator = Orchestrator(
+            strategies=[
+                _FakeStrategy("a", _signal(0.9, confidence=0.9)),
+                _FakeStrategy("b", _signal(0.9, confidence=0.9)),
+            ],
+        )
+        tracker = PositionTracker()
+        at = AutoTrader(
+            symbol="BTCUSDT",
+            interval="1h",
+            klines_limit=len(klines),
+            capital_provider=lambda: Decimal("1000"),
+            orchestrator=orchestrator,
+            tracker=tracker,
+            live_executor=recorder,
+            fetch_klines=lambda _symbol, _interval, _limit: klines,
+            fetch_current_price=lambda _symbol: Decimal("210"),
+        )
+        report = at.run_cycle(now=1_700_000_000)
+        assert report.opened_position is not None
+        # Executor was called once with the right args.
+        assert len(recorder.calls) == 1
+        call = recorder.calls[0]
+        assert call["symbol"] == "BTCUSDT"
+        # The orchestrator yielded a LONG decision on a bull series ; the
+        # AutoTrader translates LONG -> "BUY" before delegating.
+        assert call["side"] == "BUY"
+        assert isinstance(call["quantity"], Decimal)
+        assert isinstance(call["intended_price"], Decimal)
+
+    def test_tracker_uses_fill_price_not_intended_price(self, fresh_db: Path) -> None:
+        # The whole point of iter #96 : a 5 USD slippage between the
+        # orchestrator price and the Binance fill MUST surface in the
+        # tracker so the PnL is honest.
+        recorder = _RecordingExecutor(fill_price=Decimal("215"))
+        klines = _bull_klines()
+        orchestrator = Orchestrator(
+            strategies=[
+                _FakeStrategy("a", _signal(0.9, confidence=0.9)),
+                _FakeStrategy("b", _signal(0.9, confidence=0.9)),
+            ],
+        )
+        tracker = PositionTracker()
+        at = AutoTrader(
+            symbol="BTCUSDT",
+            interval="1h",
+            klines_limit=len(klines),
+            capital_provider=lambda: Decimal("1000"),
+            orchestrator=orchestrator,
+            tracker=tracker,
+            live_executor=recorder,
+            fetch_klines=lambda _symbol, _interval, _limit: klines,
+            fetch_current_price=lambda _symbol: Decimal("210"),
+        )
+        report = at.run_cycle(now=1_700_000_000)
+        assert report.opened_position is not None
+        # Tracker stored the executor's fill price, not the
+        # orchestrator's intended_price.
+        assert report.opened_position.entry_price == Decimal("215")
+
+    def test_tracker_uses_executed_qty_when_partial(self, fresh_db: Path) -> None:
+        # Binance returns ``executedQty`` < requested in case of partial
+        # fill or lot-size truncation. The tracker must persist the
+        # actually-executed quantity, not the requested one.
+        recorder = _RecordingExecutor(
+            fill_price=Decimal("210"),
+            executed_qty=Decimal("0.5"),  # arbitrary partial qty
+        )
+        klines = _bull_klines()
+        orchestrator = Orchestrator(
+            strategies=[
+                _FakeStrategy("a", _signal(0.9, confidence=0.9)),
+                _FakeStrategy("b", _signal(0.9, confidence=0.9)),
+            ],
+        )
+        tracker = PositionTracker()
+        at = AutoTrader(
+            symbol="BTCUSDT",
+            interval="1h",
+            klines_limit=len(klines),
+            capital_provider=lambda: Decimal("1000"),
+            orchestrator=orchestrator,
+            tracker=tracker,
+            live_executor=recorder,
+            fetch_klines=lambda _symbol, _interval, _limit: klines,
+            fetch_current_price=lambda _symbol: Decimal("210"),
+        )
+        report = at.run_cycle(now=1_700_000_000)
+        assert report.opened_position is not None
+        assert report.opened_position.quantity == Decimal("0.5")
+
+    def test_executor_not_called_on_skip(self, fresh_db: Path) -> None:
+        # ``should_trade=False`` (no signal qualified) MUST not reach
+        # the executor — anti-règle A1 : no fictitious order on a skip.
+        recorder = _RecordingExecutor(fill_price=Decimal("210"))
+        # Two contradictory signals → ensemble fails to qualify.
+        orchestrator = Orchestrator(
+            strategies=[
+                _FakeStrategy("a", _signal(0.9, confidence=0.9)),
+                _FakeStrategy("b", _signal(-0.9, confidence=0.9)),
+            ],
+        )
+        klines = _bull_klines()
+        at = AutoTrader(
+            symbol="BTCUSDT",
+            interval="1h",
+            klines_limit=len(klines),
+            capital_provider=lambda: Decimal("1000"),
+            orchestrator=orchestrator,
+            tracker=PositionTracker(),
+            live_executor=recorder,
+            fetch_klines=lambda _symbol, _interval, _limit: klines,
+            fetch_current_price=lambda _symbol: Decimal("210"),
+        )
+        report = at.run_cycle(now=1_700_000_000)
+        assert report.opened_position is None
+        assert recorder.calls == []

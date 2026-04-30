@@ -23,7 +23,7 @@ from importlib.metadata import version as _pkg_version
 #:   metadata is available (APK path).
 #: The pytest guard collapses the maintenance cost to "bump 3 places at
 #: once or the suite goes red".
-_FALLBACK_VERSION: str = "0.0.99"
+_FALLBACK_VERSION: str = "0.0.100"
 
 # ``importlib.metadata.version`` can fail on Android packaged apps
 # (the package isn't pip-installed in the standard sense — p4a bundles

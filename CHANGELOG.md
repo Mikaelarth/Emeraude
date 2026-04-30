@@ -6,6 +6,148 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.100] - 2026-04-30
+
+### Added — iter #96 : LiveExecutor wiring (passage de "0 ordre Binance jamais envoyé" à "appel `place_market_order` brançable en mode Réel")
+
+L'audit franc post-iter #95 a confirmé un trou critique : le toggle
+"mode Réel" était cosmétique parce que :func:`AutoTrader._maybe_open`
+appelait directement :meth:`PositionTracker.open_position`, qui
+n'écrit qu'en DB locale. **Aucun ordre Binance ne partait jamais**,
+ni en paper ni en réel. Cette iter introduit la couche d'abstraction
+qui fait le pont, sans changer le runtime tant que le mode reste
+Paper et que les credentials ne sont pas configurés (par défaut).
+
+### Added
+
+- ``src/emeraude/services/live_executor.py`` (nouveau, ~480 lignes) :
+  - :class:`LiveExecutor` Protocol avec
+    ``open_market_position(symbol, side, quantity, intended_price)``
+    retournant un :class:`LiveOrderResult` ``(fill_price, order_id,
+    status, executed_qty, is_paper)``.
+  - :class:`PaperLiveExecutor` — implémentation par défaut, aucun
+    appel réseau, retourne immédiatement avec
+    ``fill_price = intended_price``. Émet un audit
+    ``LIVE_ORDER_FALLBACK_PAPER`` avec ``reason="paper_executor"``
+    pour que l'opérateur voie clairement qu'aucun ordre n'a été
+    placé.
+  - :class:`BinanceLiveExecutor` — appelle vraiment
+    :meth:`BinanceClient.place_market_order` quand le mode courant
+    est ``"real"`` ET que les credentials + passphrase sont
+    disponibles. Trois branches sécurisées :
+    1. mode != ``"real"`` -> fallback paper (zéro appel Binance).
+    2. mode == ``"real"`` mais passphrase ou credentials manquants
+       -> fallback paper avec audit explicite (``reason``=
+       ``"passphrase_missing"`` ou ``"credentials_missing"``).
+    3. mode == ``"real"`` + credentials valides -> appel
+       :meth:`place_market_order`, parse du ``fill_price`` moyen
+       pondéré depuis le tableau ``fills`` de la réponse Binance,
+       audit ``LIVE_ORDER_PLACED`` avec slippage en bps.
+  - Helpers purs testables en isolation : :func:`_extract_fill_price`
+    (moyenne pondérée), :func:`_extract_executed_qty`,
+    :func:`_slippage_bps` (positif = défavorable, signé selon
+    ``BUY``/``SELL``), :func:`_to_order_side` (validation
+    défensive).
+  - Erreurs réseau (``OSError``, ``URLError``) et erreurs API
+    (``HTTPError``, ``RuntimeError``) re-raisées après audit
+    ``LIVE_ORDER_REJECTED`` — anti-règle A8 (jamais de
+    ``except: pass`` silencieux).
+
+- ``src/emeraude/services/auto_trader.py`` :
+  - Nouveau paramètre ``live_executor: LiveExecutor | None`` au
+    constructor (default = :class:`PaperLiveExecutor` -> strict
+    backward-compat avec pré-iter #96).
+  - ``_maybe_open`` délègue à l'executor pour récupérer le
+    ``fill_price`` réel et la quantité réellement exécutée.
+    L'``entry_price`` stocké dans le tracker est désormais le
+    prix de fill (pas le prix théorique de l'orchestrator) —
+    quand l'executor est :class:`BinanceLiveExecutor` et que
+    Binance fait du slippage de 5 USD, le PnL devient honnête
+    (anti-règle A1).
+
+- ``src/emeraude/api/context.py`` :
+  - ``AppContext`` stocke désormais ``self._read_mode`` pour le
+    réutiliser au-delà du wiring ``WalletService``.
+  - Lazy property ``auto_trader`` injecte automatiquement un
+    :class:`BinanceLiveExecutor` configuré avec le même
+    ``mode_provider`` que les autres composants — un toggle UI
+    "mode Réel" propage immédiatement au LiveExecutor au cycle
+    suivant, sans redémarrage.
+
+- ``tests/unit/test_live_executor.py`` (nouveau) — **+42 tests** :
+  - :class:`TestPaperLiveExecutor` : 6 tests sur le chemin paper
+    (fill_price = intended, executed_qty = requested, prefix
+    ``"paper-"``, status, is_paper flag, audit fallback).
+  - :class:`TestBinanceExecutorPaperMode` : 2 tests garantissant
+    qu'un mode Paper ne touche **jamais** Binance, même avec des
+    credentials persistés.
+  - :class:`TestBinanceExecutorMissingCredentials` : 4 tests sur
+    les 2 chemins de fallback (passphrase manquante, creds
+    manquants) avec audit explicite.
+  - :class:`TestBinanceExecutorSuccess` : 6 tests sur le succès —
+    args envoyés, parsing single-fill, parsing weighted-average
+    multi-fill, order_id/status/executed_qty, audit
+    ``LIVE_ORDER_PLACED`` avec slippage 10 bps, fallback
+    intended sur ``fills`` vide.
+  - :class:`TestBinanceExecutorErrors` : 5 tests — ``OSError``,
+    ``URLError``, ``RuntimeError`` propagent + audit
+    ``LIVE_ORDER_REJECTED``.
+  - :class:`TestSlippageBps` : 5 tests purs sur le helper
+    (BUY défavorable +, SELL défavorable +, BUY favorable -,
+    égal = 0, intended=0 = 0).
+  - :class:`TestExtractFillPrice` : 5 tests — fills vide,
+    single, multi-fill weighted, malformé skip, total_qty=0
+    fallback.
+  - :class:`TestExtractExecutedQty` + :class:`TestToOrderSide`
+    + :class:`TestLiveOrderResult` : 8 tests sur les helpers
+    et le dataclass frozen+slots.
+
+- ``tests/unit/test_auto_trader.py`` — **+5 tests**
+  (:class:`TestLiveExecutorWiring`) :
+  - ``test_default_executor_is_paper`` : default = PaperLiveExecutor
+    (backward-compat).
+  - ``test_executor_receives_correct_args`` : symbol/side/quantity/
+    intended_price propagés.
+  - ``test_tracker_uses_fill_price_not_intended_price`` : le PnL
+    reflète le slippage, pas le prix théorique.
+  - ``test_tracker_uses_executed_qty_when_partial`` : un fill
+    partiel se reflète dans la quantité du tracker.
+  - ``test_executor_not_called_on_skip`` : ``should_trade=False``
+    ne touche jamais l'executor.
+
+### Changed
+
+- ``pyproject.toml`` + ``buildozer.spec`` : ``0.0.99`` -> ``0.0.100``.
+- ``src/emeraude/__init__.py`` : ``_FALLBACK_VERSION = "0.0.100"``.
+
+### Notes
+
+- **Suite stable** : 2010 tests passent (+47 vs v0.0.99), 99.31 %
+  coverage. Ruff + ruff format + mypy strict + bandit + pip-audit
+  (sauf CVE-2026-3219 sur pip 26.0.1 du host uv, sans impact APK)
+  tous OK.
+- **Mesure objectif iter #96** :
+  - Avant : ``Grep place_market_order`` dans ``src/`` retourne **un
+    seul fichier** (sa propre définition dans ``infra/exchange.py``).
+    0 callsite. Le toggle Réel était cosmétique.
+  - Après : ``BinanceLiveExecutor.open_market_position`` appelle
+    ``place_market_order`` sur la bonne branche, audit complet,
+    erreurs propagées en 502/500 via le serveur HTTP. Le toggle
+    Réel est désormais brançable — tant que l'utilisateur a
+    saisi ses credentials Binance ET son passphrase, le prochain
+    cycle place un vrai ordre. Sans credentials, fallback paper
+    avec audit explicite (anti-règle A1).
+- **Sécurité** : par défaut l'utilisateur de la v0.0.100 voit
+  exactement le même comportement que la v0.0.99 — mode Paper
+  par défaut, pas de credentials, pas d'appel Binance. Le mode
+  Réel ne reste **brançable** qu'une fois cold-start protocol
+  livré (iter #98 estimée), donc avant ça il faut explicitement :
+  (a) saisir des credentials, (b) toggler Réel via la double-
+  validation A5 — deux étapes intentionnellement laborieuses.
+- **Suite logique iter #97** : scheduler 60 min (asyncio thread
+  Android-safe) — sans lui, "agent autonome" reste aspirationnel
+  car l'utilisateur doit taper "Lancer un cycle" à chaque fois.
+
 ## [0.0.99] - 2026-04-30
 
 ### Added — iter #95 : déclencheur de cycle manuel exposé sur APK

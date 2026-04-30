@@ -43,6 +43,7 @@ from emeraude.services.performance_data_source import PositionPerformanceDataSou
 from emeraude.services.wallet import DEFAULT_COLD_START_CAPITAL, WalletService
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from decimal import Decimal
 
     from emeraude.services.auto_trader import AutoTrader
@@ -89,6 +90,11 @@ class AppContext:
         def _read_mode() -> str:
             persisted = database.get_setting(SETTING_KEY_MODE)
             return persisted if persisted is not None else self._mode
+
+        # Stored for the lazy ``auto_trader`` property (iter #96) — the
+        # BinanceLiveExecutor consumes the same provider so a UI toggle
+        # propagates to live executor without rebuilding it.
+        self._read_mode: Callable[[], str] = _read_mode
 
         # Live Binance balance provider (iter #67).
         balance_provider = BinanceBalanceProvider(
@@ -188,6 +194,12 @@ class AppContext:
 
         Iter #95 wires this to the ``POST /api/run-cycle`` endpoint
         so the user can trigger a cycle manually from the APK.
+        Iter #96 injects a :class:`BinanceLiveExecutor` configured
+        with the shared mode provider — when the user toggles to
+        ``"real"`` AND has saved Binance credentials AND the
+        passphrase env var is set, the next cycle will place a real
+        MARKET order. Otherwise the executor falls back to paper
+        with an explicit audit (anti-règle A1).
         Future iters may add a scheduler that calls ``run_cycle``
         periodically without UI input.
         """
@@ -197,6 +209,13 @@ class AppContext:
             # than the data-source path. Keeping the import lazy
             # avoids paying for it on plain reads.
             from emeraude.services.auto_trader import AutoTrader  # noqa: PLC0415
+            from emeraude.services.live_executor import (  # noqa: PLC0415
+                BinanceLiveExecutor,
+            )
 
-            self._auto_trader = AutoTrader(tracker=self._tracker)
+            live_executor = BinanceLiveExecutor(mode_provider=self._read_mode)
+            self._auto_trader = AutoTrader(
+                tracker=self._tracker,
+                live_executor=live_executor,
+            )
         return self._auto_trader

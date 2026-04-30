@@ -69,6 +69,7 @@ from emeraude.services.gate_factories import (
     make_correlation_gate,
     make_microstructure_gate,
 )
+from emeraude.services.live_executor import LiveExecutor, PaperLiveExecutor
 from emeraude.services.orchestrator import (
     CycleDecision,
     Orchestrator,
@@ -225,6 +226,7 @@ class AutoTrader:
         breaker_monitor: BreakerMonitor | None = None,
         drift_monitor: DriftMonitor | None = None,
         risk_monitor: RiskMonitor | None = None,
+        live_executor: LiveExecutor | None = None,
         enable_tradability_gate: bool = False,
         correlation_symbols: list[str] | None = None,
         enable_microstructure_gate: bool = False,
@@ -274,6 +276,17 @@ class AutoTrader:
                 Evaluates the I5 criterion ``max DD <= 1.2 *
                 |CVaR_99|`` and escalates the breaker to ``WARNING``
                 on breach. Sticky semantics like the drift monitor.
+            live_executor: iter #96 — délégué d'exécution d'ordres.
+                Default = :class:`PaperLiveExecutor` (aucun appel
+                réseau, comportement strictement identique pré-iter
+                #96). En production, l'``AppContext`` injecte un
+                :class:`BinanceLiveExecutor` qui place de vrais ordres
+                MARKET sur Binance quand le mode courant est ``"real"``,
+                et fallback proprement sur le paper sinon. Cet
+                argument est le point de bascule entre paper et live :
+                tant que l'utilisateur n'a pas un BinanceLiveExecutor
+                injecté ET un mode "real" actif ET des credentials
+                Binance valides, AUCUN appel ne part vers Binance.
             enable_tradability_gate: opt-in for the doc 10 R8
                 meta-gate. When ``True`` AND ``orchestrator is None``,
                 AutoTrader auto-builds the orchestrator with
@@ -357,6 +370,13 @@ class AutoTrader:
             fetch_current_price
             if fetch_current_price is not None
             else market_data.get_current_price
+        )
+        # Iter #96 : default = PaperLiveExecutor → aucun appel réseau.
+        # Production injecte BinanceLiveExecutor via AppContext, qui
+        # gère lui-même le fallback paper quand mode != real ou que
+        # les credentials manquent.
+        self._live_executor: LiveExecutor = (
+            live_executor if live_executor is not None else PaperLiveExecutor()
         )
 
     @property
@@ -546,14 +566,30 @@ class AutoTrader:
         confidence = (
             decision.ensemble_vote.confidence if decision.ensemble_vote is not None else None
         )
+        # Iter #96 : délègue l'exécution au LiveExecutor pour récupérer
+        # le ``fill_price`` réel (ou théorique en paper). En mode Paper,
+        # ``PaperLiveExecutor`` retourne ``intended_price`` immédiatement,
+        # donc le tracker stocke la même valeur qu'avant. En mode Réel
+        # avec credentials, ``BinanceLiveExecutor`` appelle Binance et
+        # retourne le prix moyen pondéré du fill — le tracker stocke
+        # alors le prix d'exécution réel pour que le PnL soit honnête
+        # (anti-règle A1). Une exception remonte ici et est mappée en
+        # 502/500 par le serveur HTTP (anti-règle A8).
+        side_str = "BUY" if side is Side.LONG else "SELL"
+        order_result = self._live_executor.open_market_position(
+            symbol=self._symbol,
+            side=side_str,
+            quantity=decision.position_quantity,
+            intended_price=decision.trade_levels.entry,
+        )
         return self._tracker.open_position(
             strategy=decision.dominant_strategy,
             regime=decision.regime,
             side=side,
-            entry_price=decision.trade_levels.entry,
+            entry_price=order_result.fill_price,
             stop=decision.trade_levels.stop,
             target=decision.trade_levels.target,
-            quantity=decision.position_quantity,
+            quantity=order_result.executed_qty,
             risk_per_unit=decision.trade_levels.risk_per_unit,
             confidence=confidence,
             opened_at=ts,
