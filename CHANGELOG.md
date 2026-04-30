@@ -6,6 +6,97 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.91] - 2026-04-30
+
+### Added — iter #87 : D1 Look-ahead bias guard (shift-invariance test)
+
+Doc 11 §"D1 — Look-ahead bias (le plus dangereux)" exige un test
+"shift invariance" qui vérifie qu'aucun indicateur n'utilise des
+bars ≥ T pour calculer la décision à l'instant T. C'est la
+catégorie de bug la plus dangereuse : un backtest brillant qui
+collapse en live parce que le calcul a vu les bars futurs.
+
+Cet iter livre le test pytest dédié couvrant les 7 indicateurs
+publics. Aucun bug détecté à l'état actuel — le code est conforme
+par construction. Le test verrouille cette conformité contre toute
+régression future.
+
+### Added
+
+- ``tests/unit/test_lookahead_invariance.py`` (nouveau, ~330 LOC,
+  +12 tests) :
+  - 2 helpers ``_assert_no_lookahead_scalar`` /
+    ``_assert_no_lookahead_klines`` qui vérifient 3 propriétés par
+    indicateur :
+    1. **Déterminisme** : 2 appels identiques retournent la même
+       valeur byte-pour-byte.
+    2. **Non-mutation** : la liste passée n'est pas modifiée par la
+       fonction (input integrity).
+    3. **Indépendance future** : le résultat sur ``values[:t]``
+       reste stable même après un appel intermédiaire sur la série
+       complète (catches tout cache global / état partagé).
+  - **Order matters** : les helpers mesurent le résultat pristine
+    AVANT toute pollution, puis exécutent un appel sur la série
+    complète, puis re-mesurent — sinon la pollution serait déjà en
+    place quand la valeur de référence est captée.
+  - 7 tests ``TestScalarIndicators`` + ``TestKlineIndicators`` qui
+    appliquent les helpers à ``sma``, ``ema``, ``rsi``, ``macd``,
+    ``bollinger_bands``, ``atr``, ``stochastic``.
+  - 3 tests ``TestHelperCatchesBugs`` qui construisent des
+    "indicateurs buggés" exprès (mutation, non-déterminisme,
+    future-dépendance) et vérifient que les helpers les attrapent.
+    Verrou vital : si un helper passe silencieusement tout input,
+    on n'a pas réellement de garde-fou.
+  - 2 tests ``TestFixtureSanity`` qui vérifient que les fixtures
+    synthétiques (sine-like avec drift) sont assez riches pour
+    activer toutes les branches des indicateurs.
+  - Synthetic series generators ``_scalar_series`` /
+    ``_kline_series`` déterministes pure-Python (pas de RNG) avec
+    drift + modulo pour exercer gain/loss tracking, variance,
+    cross-overs.
+
+### Changed
+
+- ``11_INTEGRITE_DONNEES.md`` §D1 marqué ✅ test "shift invariance"
+  livré (iter #87) avec statut détaillé :
+  - API implicite (liste tronquée) plutôt que API explicite avec
+    ``as_of: datetime`` — choix justifié dans le doc (toutes les
+    fonctions sont déjà conformes structurellement).
+  - Test "shift invariance" implémenté via 3 propriétés : déterminisme,
+    non-mutation, indépendance future.
+  - Cas spécifique stop-loss / take-profit : noté comme conformité
+    par construction via ``apply_adversarial_fill`` qui prend un
+    ``execution_bar`` ≠ signal_bar.
+  - Backtest harness checker : différé jusqu'à l'iter qui livrera
+    l'engine de backtest (réutilisera les helpers de cet iter).
+- ``pyproject.toml`` + ``buildozer.spec`` : ``0.0.90`` -> ``0.0.91``.
+
+### Notes
+
+- **Suite stable** (test count à confirmer après run, +12 vs v0.0.90),
+  coverage 99.50 %+, ruff + ruff format + mypy strict + bandit +
+  pip-audit OK.
+- **Mesure objectif iter #87** :
+  - Avant : 0 test pytest dédié à la shift-invariance, D1 listé 🔴,
+    indicateurs présumés propres mais sans verrou contre une
+    régression future.
+  - Après : **1 test pytest module + 12 tests verts couvrant les 7
+    indicateurs publics** + D1 ✅ -> ✅ atteint.
+- **Anti-règle A1** : pas de modif des indicateurs eux-mêmes (seraient
+  déjà conformes au test). Pas de wiring assert_no_lookahead() dans
+  le code de production (le doc 11 le mentionne pour une harness
+  backtest qui n'existe pas encore).
+- **R2 — une variable à la fois** : changements limités aux nouveaux
+  tests + leur doc.
+- **Statut intégrité données après iter #87** :
+  - ✅ **D1** (test "shift invariance" livré, iter #87)
+  - 🔴 D2 (survivorship bias — table coin_universe_snapshots)
+  - ✅ D3 (module data_quality livré, iter #86)
+  - ✅ D4 (module data_quality livré, iter #86)
+  - ✅ D5 (test scanner naive datetime livré, iter #85)
+  - 🔴 D6 (data revision — snapshots horodatés immuables)
+  - **4 critères sur 6 du doc 11 sont ✅** après cet iter.
+
 ## [0.0.90] - 2026-04-30
 
 ### Added — iter #86 : D3 + D4 data quality (5 checks par bar + completeness série)

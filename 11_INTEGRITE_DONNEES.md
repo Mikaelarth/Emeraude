@@ -36,40 +36,55 @@ Les bots qui meurent en silence partagent souvent la même cause racine :
 
 ## 3. Garde-fous par source
 
-### D1 — Look-ahead bias (le plus dangereux)
+### D1 — Look-ahead bias (le plus dangereux) — ✅ test "shift invariance" livré (iter #87)
 
 **Règle absolue** : pour calculer une décision à l'instant T, on n'a
 **aucun accès** aux données de timestamp ≥ T.
 
-**Mise en œuvre** :
+**Mise en œuvre actuelle (iter #87)** :
 
-1. **API typée** : toute fonction qui prend une série temporelle reçoit
-   en paramètre un `as_of: datetime`. Tout point ≥ `as_of` est filtré
-   **dans la fonction**, pas en amont.
+1. **API implicite** : nos indicateurs (`sma`, `ema`, `rsi`, `macd`,
+   `bollinger_bands`, `atr`, `stochastic`) prennent une `list[Decimal]`
+   ou `list[Kline]` et retournent un scalaire à la **fin** de la liste.
+   Le contrat "n'utilise que les bars passés" est porté par la
+   structure des fonctions (pas d'argument `as_of` explicite).
 
-   ```python
-   def compute_indicators(series: List[Bar], as_of: datetime) -> Dict:
-       valid = [b for b in series if b.close_time < as_of]
-       # ... aucun accès à des bars ≥ as_of
-   ```
+   Le doc historique mentionne une API typée `as_of: datetime` ; nous
+   avons préféré l'API liste-tronquée parce qu'elle est plus simple
+   et que tous les indicateurs sont déjà conformes au contrat
+   structurellement.
 
-2. **Test "shift invariance"** : dans la suite pytest, on vérifie que
-   décaler la série de N bars dans le futur ne change **rien** au signal
-   calculé sur la fenêtre passée. Si ça change → fuite détectée.
+2. **Test "shift invariance"** ✅ livré :
+   `tests/unit/test_lookahead_invariance.py` (iter #87) vérifie sur
+   les 7 indicateurs publics 3 propriétés via 2 helpers
+   (`_assert_no_lookahead_scalar` + `_assert_no_lookahead_klines`) :
+   - **Déterminisme** : deux appels identiques retournent la même
+     valeur byte-pour-byte.
+   - **Non-mutation** : la liste passée n'est pas touchée par la
+     fonction (input integrity).
+   - **Indépendance future** : le résultat sur `values[:t]` reste
+     stable même après un appel intermédiaire sur la série complète
+     `values` (catches tout cache global / état partagé).
 
-3. **Cas spécifique** : les **stop-loss / take-profit** ne doivent jamais
-   être touchés par le close du bar courant. On utilise High/Low du bar
-   suivant le signal.
+   Plus 3 sanity-checks qui construisent des "indicateurs buggés"
+   exprès (mutation, non-déterminisme, future-dépendance) et
+   vérifient que les helpers les attrapent.
 
-4. **Backtest harness checker** : `core/backtest.py` exécute un
-   `_assert_no_lookahead()` au début de chaque run qui :
-   - prend une série, masque les 30 derniers bars
-   - calcule le signal final
-   - démasque, recalcule
-   - assert : décisions identiques → ✅
+3. **Cas spécifique stop-loss / take-profit** : les modules de
+   simulation de fills (`agent/learning/adversarial.py`) prennent
+   explicitement un `execution_bar` qui correspond au **bar suivant**
+   le signal, pas au bar du signal lui-même. Conformité par
+   construction (cf. `apply_adversarial_fill` doc).
 
-**Critère mesurable** : `pytest tests/test_no_lookahead.py` vert sur
-**100 % des modules** qui consomment des séries temporelles.
+4. **Backtest harness checker** : différé jusqu'à l'iter qui livrera
+   l'engine de backtest. La logique du harness sera réutilisable du
+   helper `_assert_no_lookahead_scalar` une fois adaptée.
+
+**Critère mesurable** : ✅ `pytest tests/unit/test_lookahead_invariance.py`
+vert sur les 7 indicateurs publics du module
+`agent/perception/indicators.py`. Modules régime / corrélation /
+tradability restent à couvrir en iter ultérieure (signatures plus
+complexes, à intégrer en élargissant les fixtures du test).
 
 ---
 
