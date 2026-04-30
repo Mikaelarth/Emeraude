@@ -11,6 +11,7 @@ Architecture (cf. ADR-0004) :
     - ``GET    /api/config``          :class:`ConfigSnapshot`   -> JSON
     - ``GET    /api/credentials``     :class:`BinanceCredentialsStatus` -> JSON
     - ``GET    /api/learning``        :class:`LearningSnapshot` -> JSON
+    - ``GET    /api/performance``     :class:`PerformanceSnapshot` -> JSON
     - ``POST   /api/toggle-mode``     ``{"mode": ...}`` -> :class:`ConfigSnapshot`
     - ``POST   /api/credentials``     ``{"api_key", "api_secret"}`` -> status
     - ``POST   /api/emergency-stop``  -> ``{state}`` (freeze breaker, audit)
@@ -24,7 +25,10 @@ Architecture (cf. ADR-0004) :
   iter #82 ajoute l'arrêt d'urgence (``POST /api/emergency-stop`` /
   ``POST /api/emergency-reset``) ; iter #83 ajoute la lecture de
   l'apprentissage (``GET /api/learning`` : strategy posteriors +
-  champion).
+  champion) ; iter #84 ajoute le rapport R12 (``GET /api/performance``
+  : 12 métriques sur les positions réellement fermées). À noter :
+  le critère P1.5 "Backtest UI sur historique" reste 🔴 — l'engine
+  simulateur kline -> position n'existe pas encore, anti-règle A1.
 
 Sécurité loopback
 =================
@@ -73,6 +77,7 @@ from typing import TYPE_CHECKING, Any, Final, cast
 from urllib.parse import unquote, urlparse
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
     from emeraude.api.context import AppContext
@@ -130,6 +135,20 @@ _MIME_TYPES: Final[dict[str, str]] = {
     ".woff2": "font/woff2",
     ".woff": "font/woff",
     ".ttf": "font/ttf",
+}
+
+
+#: Read-only API routes : ``route -> AppContext -> payload``. The
+#: ``_serve_api`` dispatcher looks up the handler here and serialises
+#: the result. Adding a new GET endpoint is one line. POST / DELETE
+#: keep their explicit handlers because they emit audits + parse bodies.
+_GET_API_HANDLERS: Final[dict[str, Callable[[AppContext], Any]]] = {
+    "dashboard": lambda ctx: ctx.dashboard_data_source.fetch_snapshot(),
+    "journal": lambda ctx: ctx.journal_data_source.fetch_snapshot(),
+    "config": lambda ctx: ctx.config_data_source.fetch_snapshot(),
+    "credentials": lambda ctx: ctx.binance_credentials_service.get_status(),
+    "learning": lambda ctx: ctx.learning_data_source.fetch_snapshot(),
+    "performance": lambda ctx: ctx.performance_data_source.fetch_snapshot(),
 }
 
 
@@ -377,37 +396,23 @@ class _RequestHandler(BaseHTTPRequestHandler):
     # ─── API routes ─────────────────────────────────────────────────────────
 
     def _serve_api(self, route: str) -> None:
-        """Dispatch ``/api/<route>``. Requires the auth cookie."""
+        """Dispatch ``/api/<route>``. Requires the auth cookie.
+
+        Read routes (no body, no side effect) are looked up in a dict
+        of ``route -> callable(AppContext) -> payload`` so adding a new
+        GET endpoint is one line. POST / DELETE keep their explicit
+        if-chain because each handler has its own pre/post-conditions
+        (audit emit, body parsing, error mapping).
+        """
         if not self._auth_ok():
             self._send_json(HTTPStatus.FORBIDDEN, {"error": "forbidden"})
             return
 
-        if route == "dashboard":
-            dashboard = self.app_context.dashboard_data_source.fetch_snapshot()
-            self._send_json(HTTPStatus.OK, _serialise(dashboard))
+        handler = _GET_API_HANDLERS.get(route)
+        if handler is None:
+            self._send_json(HTTPStatus.NOT_FOUND, {"error": "unknown route"})
             return
-
-        if route == "journal":
-            journal = self.app_context.journal_data_source.fetch_snapshot()
-            self._send_json(HTTPStatus.OK, _serialise(journal))
-            return
-
-        if route == "config":
-            config = self.app_context.config_data_source.fetch_snapshot()
-            self._send_json(HTTPStatus.OK, _serialise(config))
-            return
-
-        if route == "credentials":
-            status = self.app_context.binance_credentials_service.get_status()
-            self._send_json(HTTPStatus.OK, _serialise(status))
-            return
-
-        if route == "learning":
-            learning = self.app_context.learning_data_source.fetch_snapshot()
-            self._send_json(HTTPStatus.OK, _serialise(learning))
-            return
-
-        self._send_json(HTTPStatus.NOT_FOUND, {"error": "unknown route"})
+        self._send_json(HTTPStatus.OK, _serialise(handler(self.app_context)))
 
     # ─── POST API routes ────────────────────────────────────────────────────
 

@@ -436,6 +436,163 @@
                         </v-container>
                     </v-window-item>
 
+                    <!-- ═══ Performance (iter #84) ═══════════════════════ -->
+                    <v-window-item value="performance">
+                        <v-container v-if="!performanceSnapshot && !performanceError" class="d-flex justify-center align-center" style="min-height: 60vh;">
+                            <v-progress-circular indeterminate color="primary" size="64"></v-progress-circular>
+                        </v-container>
+
+                        <v-container v-else-if="performanceError" class="pa-4">
+                            <v-alert type="error" variant="tonal" prominent>
+                                <v-alert-title>Lecture des performances impossible</v-alert-title>
+                                <div class="mt-2">{{ performanceError }}</div>
+                            </v-alert>
+                        </v-container>
+
+                        <v-container v-else-if="!performanceSnapshot.has_data" class="pa-4" style="max-width: 720px;">
+                            <v-card class="pa-6 text-center" elevation="0" rounded="lg" color="surface">
+                                <v-icon size="48" color="medium-emphasis">mdi-chart-line</v-icon>
+                                <div class="text-h6 mt-3">Aucun trade fermé</div>
+                                <div class="text-body-2 text-medium-emphasis mt-2 mx-auto" style="max-width: 360px;">
+                                    Le rapport de performance s'active dès le premier trade
+                                    fermé du bot. Les 12 métriques R12 (Sharpe, Sortino,
+                                    Calmar, profit factor, etc.) seront calculées automatiquement.
+                                </div>
+                            </v-card>
+                        </v-container>
+
+                        <v-container v-else class="pa-4" style="max-width: 720px;">
+                            <!-- Hero : expectancy (la métrique unique la plus importante) -->
+                            <v-card class="pa-6 text-center mb-4" elevation="0" rounded="lg" color="surface">
+                                <div class="text-overline text-medium-emphasis">EXPECTANCY R / TRADE</div>
+                                <div :class="['pnl-metric', 'mt-2', expectancyColorClass]">
+                                    {{ formattedExpectancy }}
+                                </div>
+                                <div class="text-caption text-medium-emphasis mt-1">
+                                    {{ formattedTradesLabel }}
+                                </div>
+                            </v-card>
+
+                            <!-- Win / Loss split -->
+                            <v-card class="mb-4" elevation="0" rounded="lg" color="surface">
+                                <v-card-title class="d-flex align-center">
+                                    <v-icon class="mr-2" color="medium-emphasis">mdi-scale-balance</v-icon>
+                                    Distribution
+                                </v-card-title>
+                                <v-list bg-color="transparent" density="comfortable">
+                                    <v-list-item>
+                                        <v-list-item-title class="config-key">Win rate</v-list-item-title>
+                                        <template v-slot:append>
+                                            <v-chip :color="winRateChipColor" variant="tonal" size="small">
+                                                {{ formattedWinRate }}
+                                            </v-chip>
+                                        </template>
+                                    </v-list-item>
+                                    <v-divider></v-divider>
+                                    <v-list-item>
+                                        <v-list-item-title class="config-key">Trades gagnants / perdants</v-list-item-title>
+                                        <template v-slot:append>
+                                            <span class="config-value">
+                                                {{ performanceSnapshot.n_wins }}/{{ performanceSnapshot.n_losses }}
+                                            </span>
+                                        </template>
+                                    </v-list-item>
+                                    <v-divider></v-divider>
+                                    <v-list-item>
+                                        <v-list-item-title class="config-key">R moyen sur gain</v-list-item-title>
+                                        <template v-slot:append>
+                                            <span class="config-value text-success">
+                                                {{ formattedAvgWin }}
+                                            </span>
+                                        </template>
+                                    </v-list-item>
+                                    <v-divider></v-divider>
+                                    <v-list-item>
+                                        <v-list-item-title class="config-key">R moyen sur perte</v-list-item-title>
+                                        <template v-slot:append>
+                                            <span class="config-value text-error">
+                                                -{{ formattedAvgLoss }}
+                                            </span>
+                                        </template>
+                                    </v-list-item>
+                                </v-list>
+                            </v-card>
+
+                            <!-- Risk-adjusted metrics -->
+                            <v-card class="mb-4" elevation="0" rounded="lg" color="surface">
+                                <v-card-title class="d-flex align-center">
+                                    <v-icon class="mr-2" color="medium-emphasis">mdi-finance</v-icon>
+                                    Ajusté du risque
+                                </v-card-title>
+                                <v-list bg-color="transparent" density="comfortable">
+                                    <v-list-item>
+                                        <v-list-item-title class="config-key">Sharpe</v-list-item-title>
+                                        <v-list-item-subtitle class="text-caption text-medium-emphasis mt-1">
+                                            mean(R) / std(R) per-trade
+                                        </v-list-item-subtitle>
+                                        <template v-slot:append>
+                                            <span class="config-value">{{ formattedSharpe }}</span>
+                                        </template>
+                                    </v-list-item>
+                                    <v-divider></v-divider>
+                                    <v-list-item>
+                                        <v-list-item-title class="config-key">Sortino</v-list-item-title>
+                                        <v-list-item-subtitle class="text-caption text-medium-emphasis mt-1">
+                                            mean(R) / downside_std(R)
+                                        </v-list-item-subtitle>
+                                        <template v-slot:append>
+                                            <span class="config-value">{{ formattedSortino }}</span>
+                                        </template>
+                                    </v-list-item>
+                                    <v-divider></v-divider>
+                                    <v-list-item>
+                                        <v-list-item-title class="config-key">Calmar</v-list-item-title>
+                                        <v-list-item-subtitle class="text-caption text-medium-emphasis mt-1">
+                                            sum(R) / max_drawdown
+                                        </v-list-item-subtitle>
+                                        <template v-slot:append>
+                                            <span class="config-value">{{ formattedCalmar }}</span>
+                                        </template>
+                                    </v-list-item>
+                                    <v-divider></v-divider>
+                                    <v-list-item>
+                                        <v-list-item-title class="config-key">Profit Factor</v-list-item-title>
+                                        <v-list-item-subtitle class="text-caption text-medium-emphasis mt-1">
+                                            sum(wins) / |sum(losses)|
+                                        </v-list-item-subtitle>
+                                        <template v-slot:append>
+                                            <span class="config-value">{{ formattedProfitFactor }}</span>
+                                        </template>
+                                    </v-list-item>
+                                    <v-divider></v-divider>
+                                    <v-list-item>
+                                        <v-list-item-title class="config-key">Max Drawdown</v-list-item-title>
+                                        <v-list-item-subtitle class="text-caption text-medium-emphasis mt-1">
+                                            pire peak-to-trough sur la courbe R
+                                        </v-list-item-subtitle>
+                                        <template v-slot:append>
+                                            <span class="config-value text-error">
+                                                -{{ formattedMaxDrawdown }}
+                                            </span>
+                                        </template>
+                                    </v-list-item>
+                                </v-list>
+                            </v-card>
+
+                            <v-alert
+                                density="compact"
+                                type="info"
+                                variant="tonal"
+                                icon="mdi-flask-outline"
+                            >
+                                Ce rapport agrège les <strong>trades réellement fermés</strong>
+                                par le bot (doc 10 R12). Le critère P1.5 « Backtest historique »
+                                reste à venir : il nécessite un simulateur kline → position que
+                                le code ne fournit pas encore (anti-règle A1).
+                            </v-alert>
+                        </v-container>
+                    </v-window-item>
+
                     <!-- ═══ Config ════════════════════════════════════════ -->
                     <v-window-item value="config">
                         <v-container v-if="!configSnapshot && !configError" class="d-flex justify-center align-center" style="min-height: 60vh;">
@@ -960,6 +1117,10 @@
                     <v-icon>mdi-brain</v-icon>
                     <div>IA</div>
                 </v-btn>
+                <v-btn value="performance">
+                    <v-icon>mdi-chart-line</v-icon>
+                    <div>Perf</div>
+                </v-btn>
                 <v-btn value="config">
                     <v-icon>mdi-cog</v-icon>
                     <div>Config</div>
@@ -1038,6 +1199,8 @@
                 const configError = ref(null);
                 const learningSnapshot = ref(null);
                 const learningError = ref(null);
+                const performanceSnapshot = ref(null);
+                const performanceError = ref(null);
 
                 const activeTab = ref('dashboard');
                 let dashboardTimer = null;
@@ -1161,6 +1324,15 @@
                         learningError.value = null;
                     } catch (err) {
                         learningError.value = String(err);
+                    }
+                }
+
+                async function fetchPerformance() {
+                    try {
+                        performanceSnapshot.value = await fetchJSON('/api/performance');
+                        performanceError.value = null;
+                    } catch (err) {
+                        performanceError.value = String(err);
                     }
                 }
 
@@ -1377,6 +1549,8 @@
                         fetchCredentials();
                     } else if (tab === 'learning') {
                         fetchLearning();
+                    } else if (tab === 'performance') {
+                        fetchPerformance();
                     }
                 });
 
@@ -1384,6 +1558,7 @@
                 const pageTitle = computed(() => {
                     if (activeTab.value === 'journal') return 'Journal';
                     if (activeTab.value === 'learning') return 'Apprentissage';
+                    if (activeTab.value === 'performance') return 'Performance';
                     if (activeTab.value === 'config') return 'Configuration';
                     return 'Emeraude';
                 });
@@ -1578,6 +1753,82 @@
                     return String(value);
                 }
 
+                // Performance / R12 (iter #84)
+                // ``formatRatio`` formats a Decimal-as-string ratio with
+                // Infinity-aware fallback. Profit Factor / Calmar can be
+                // ``Infinity`` when there is no loss / no drawdown.
+                function formatRatio(decimal_str, digits = 2) {
+                    if (decimal_str === null || decimal_str === undefined) return '—';
+                    if (decimal_str === 'Infinity' || decimal_str === 'inf') return '∞';
+                    const num = parseFloat(decimal_str);
+                    if (Number.isNaN(num)) return '—';
+                    return num.toFixed(digits);
+                }
+                function formatRMagnitude(decimal_str) {
+                    // R-multiples : 2 decimals + "R" suffix.
+                    if (decimal_str === null || decimal_str === undefined) return '—';
+                    const num = parseFloat(decimal_str);
+                    if (Number.isNaN(num)) return '—';
+                    return `${num.toFixed(2)} R`;
+                }
+                function formatRSigned(decimal_str) {
+                    // R-multiple expectancy : 2 decimals + sign + R suffix.
+                    if (decimal_str === null || decimal_str === undefined) return '—';
+                    const num = parseFloat(decimal_str);
+                    if (Number.isNaN(num)) return '—';
+                    const sign = num > 0 ? '+' : '';
+                    return `${sign}${num.toFixed(2)} R`;
+                }
+                const formattedExpectancy = computed(() =>
+                    formatRSigned(performanceSnapshot.value?.expectancy)
+                );
+                const expectancyColorClass = computed(() => {
+                    const v = parseFloat(performanceSnapshot.value?.expectancy ?? '0');
+                    if (v > 0) return 'text-success';
+                    if (v < 0) return 'text-error';
+                    return 'text-medium-emphasis';
+                });
+                const formattedTradesLabel = computed(() => {
+                    const n = performanceSnapshot.value?.n_trades ?? 0;
+                    if (n <= 1) return `${n} trade fermé observé`;
+                    return `${n} trades fermés observés`;
+                });
+                const formattedWinRate = computed(() => {
+                    const v = performanceSnapshot.value?.win_rate;
+                    if (v === null || v === undefined) return '—';
+                    const num = parseFloat(v);
+                    if (Number.isNaN(num)) return '—';
+                    return `${(num * 100).toFixed(1)} %`;
+                });
+                const winRateChipColor = computed(() => {
+                    const v = parseFloat(performanceSnapshot.value?.win_rate ?? '0');
+                    if (Number.isNaN(v)) return 'medium-emphasis';
+                    if (v >= 0.55) return 'success';
+                    if (v >= 0.45) return 'warning';
+                    return 'error';
+                });
+                const formattedAvgWin = computed(() =>
+                    formatRMagnitude(performanceSnapshot.value?.avg_win)
+                );
+                const formattedAvgLoss = computed(() =>
+                    formatRMagnitude(performanceSnapshot.value?.avg_loss)
+                );
+                const formattedSharpe = computed(() =>
+                    formatRatio(performanceSnapshot.value?.sharpe_ratio)
+                );
+                const formattedSortino = computed(() =>
+                    formatRatio(performanceSnapshot.value?.sortino_ratio)
+                );
+                const formattedCalmar = computed(() =>
+                    formatRatio(performanceSnapshot.value?.calmar_ratio)
+                );
+                const formattedProfitFactor = computed(() =>
+                    formatRatio(performanceSnapshot.value?.profit_factor)
+                );
+                const formattedMaxDrawdown = computed(() =>
+                    formatRMagnitude(performanceSnapshot.value?.max_drawdown)
+                );
+
                 // Credentials (iter #81)
                 const apiKeyDisplay = computed(() => {
                     const status = credentialsStatus.value;
@@ -1612,6 +1863,8 @@
                     configError,
                     learningSnapshot,
                     learningError,
+                    performanceSnapshot,
+                    performanceError,
                     activeTab,
                     showRealDialog,
                     showPaperDialog,
@@ -1668,6 +1921,18 @@
                     formatWinRate,
                     strategyChipColor,
                     formatParamValue,
+                    formattedExpectancy,
+                    expectancyColorClass,
+                    formattedTradesLabel,
+                    formattedWinRate,
+                    winRateChipColor,
+                    formattedAvgWin,
+                    formattedAvgLoss,
+                    formattedSharpe,
+                    formattedSortino,
+                    formattedCalmar,
+                    formattedProfitFactor,
+                    formattedMaxDrawdown,
                     // handlers
                     openRealDialog,
                     closeRealDialog,

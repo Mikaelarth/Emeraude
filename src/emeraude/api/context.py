@@ -39,6 +39,7 @@ from emeraude.services.dashboard_data_source import TrackerDashboardDataSource
 from emeraude.services.dashboard_types import MODE_PAPER
 from emeraude.services.journal_data_source import QueryEventsJournalDataSource
 from emeraude.services.learning_data_source import BanditLearningDataSource
+from emeraude.services.performance_data_source import PositionPerformanceDataSource
 from emeraude.services.wallet import DEFAULT_COLD_START_CAPITAL, WalletService
 
 if TYPE_CHECKING:
@@ -48,6 +49,7 @@ if TYPE_CHECKING:
     from emeraude.services.dashboard_types import DashboardDataSource
     from emeraude.services.journal_types import JournalDataSource
     from emeraude.services.learning_types import LearningDataSource
+    from emeraude.services.performance_types import PerformanceDataSource
 
 #: Default mode at cold start (anti-règle A5 + A11).
 DEFAULT_MODE: Final[str] = MODE_PAPER
@@ -119,6 +121,13 @@ class AppContext:
         # constructs them lazily.
         self._learning_data_source: LearningDataSource = BanditLearningDataSource()
 
+        # Performance data source — runs the doc 10 R12 report over
+        # the closed positions. Uses the same tracker as the dashboard
+        # so the metrics are coherent with capital / P&L.
+        self._performance_data_source: PerformanceDataSource = PositionPerformanceDataSource(
+            tracker=tracker
+        )
+
         self._binance_credentials_service = BinanceCredentialsService()
 
     @property
@@ -140,6 +149,11 @@ class AppContext:
     def learning_data_source(self) -> LearningDataSource:
         """Data source for the IA / Apprentissage screen."""
         return self._learning_data_source
+
+    @property
+    def performance_data_source(self) -> PerformanceDataSource:
+        """Data source for the Performance screen."""
+        return self._performance_data_source
 
     @property
     def binance_credentials_service(self) -> BinanceCredentialsService:

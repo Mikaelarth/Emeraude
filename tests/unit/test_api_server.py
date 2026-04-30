@@ -436,6 +436,60 @@ class TestHTTPIntegration:
         finally:
             self._stop(server, thread)
 
+    def test_api_performance_requires_auth(self, tmp_path: Path) -> None:
+        port, _token, thread, server = self._setup_server(tmp_path)
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request("GET", "/api/performance")
+            resp = conn.getresponse()
+            body = json.loads(resp.read())
+            assert resp.status == 403
+            assert "error" in body
+        finally:
+            self._stop(server, thread)
+
+    def test_api_performance_returns_snapshot_shape(self, tmp_path: Path) -> None:
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request(
+                "GET",
+                "/api/performance",
+                headers={"Cookie": f"{AUTH_COOKIE}={token}"},
+            )
+            resp = conn.getresponse()
+            body = json.loads(resp.read())
+            assert resp.status == 200
+
+            # PerformanceSnapshot keys (cf. performance_types.PerformanceSnapshot).
+            for key in (
+                "n_trades",
+                "n_wins",
+                "n_losses",
+                "win_rate",
+                "expectancy",
+                "avg_win",
+                "avg_loss",
+                "profit_factor",
+                "sharpe_ratio",
+                "sortino_ratio",
+                "calmar_ratio",
+                "max_drawdown",
+                "has_data",
+            ):
+                assert key in body
+
+            # Cold start : no closed positions ; ``has_data=False`` and
+            # all numeric fields sit at the zero default.
+            assert isinstance(body["has_data"], bool)
+            assert body["has_data"] is False
+            assert body["n_trades"] == 0
+            # Decimal -> string per _serialise contract.
+            assert isinstance(body["win_rate"], str)
+            assert isinstance(body["expectancy"], str)
+        finally:
+            self._stop(server, thread)
+
     def test_api_unknown_route_returns_404(self, tmp_path: Path) -> None:
         port, token, thread, server = self._setup_server(tmp_path)
         try:
@@ -1004,6 +1058,7 @@ class TestAppContext:
         assert ctx.journal_data_source is not None
         assert ctx.config_data_source is not None
         assert ctx.learning_data_source is not None
+        assert ctx.performance_data_source is not None
         assert ctx.binance_credentials_service is not None
         assert ctx.wallet is not None
 

@@ -6,6 +6,148 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.88] - 2026-04-30
+
+### Added — iter #84 : page Performance (5e et dernier écran SPA)
+
+L'iter #83 a livré le 4e écran (IA / Apprentissage). L'iter #84
+livre **le 5e et dernier écran SPA** : « 📊 Performance ». Cela ferme
+la chaîne UI doc 02 — 5/5 onglets fonctionnels sur la
+``v-bottom-navigation``.
+
+**Note honnêteté (anti-règle A1)** : doc 02 § "📈 BACKTEST" demandait
+une page de backtest historique avec formulaire ``{days, capital,
+strategies}``. L'engine simulateur kline -> position n'existe pas
+encore (~500 LOC + tests + intégration ``apply_adversarial_fill``,
+hors scope d'un iter UI). Cet iter livre donc la version **honnête**
+de ce qu'on peut surfacer aujourd'hui : les 12 métriques R12 sur les
+**trades réellement fermés** par le bot. Le critère doc 06 P1.5
+"Backtest UI" reste 🔴 explicite ; un iter ultérieur livrera l'engine.
+
+### Added
+
+- ``src/emeraude/services/performance_types.py`` (nouveau, 96 LOC) :
+  - :class:`PerformanceSnapshot` — mirror du :class:`PerformanceReport`
+    doc 10 R12 + flag ``has_data: bool`` qui simplifie le branching
+    cold-start côté UI (empty-state vs métriques).
+  - :class:`PerformanceDataSource` Protocol — contrat consommé par
+    l'API, testable avec un fake.
+
+- ``src/emeraude/services/performance_data_source.py`` (nouveau, 117 LOC) :
+  - :class:`PositionPerformanceDataSource` — composition root du
+    panneau. Lit :meth:`PositionTracker.history` (cap configurable
+    via :data:`DEFAULT_HISTORY_LIMIT` = 200) puis délègue à
+    :func:`compute_performance_report`. Cold start = empty
+    snapshot (``has_data=False``, tous les champs Decimal("0")).
+  - :func:`_project_report` pure projector, testable sans tracker.
+  - **Mini-Protocol** ``_TrackerLike`` pour permettre l'injection de
+    fakes en test sans subclasser ``PositionTracker``.
+
+- ``src/emeraude/api/context.py`` :
+  - Nouvel attribut ``performance_data_source: PerformanceDataSource``
+    instancié via ``PositionPerformanceDataSource(tracker=tracker)``
+    en utilisant le **même** tracker que le dashboard pour garantir
+    la cohérence capital ↔ P&L ↔ métriques R12.
+  - Nouvelle property ``performance_data_source``.
+
+- ``src/emeraude/api/server.py`` :
+  - Route ``GET /api/performance`` ajoutée au nouveau
+    ``_GET_API_HANDLERS`` (dict ``route -> AppContext -> payload``).
+  - **Refactor du dispatcher GET** : la chaîne if/return de 6 routes
+    est remplacée par un lookup dict + serialise. Une nouvelle route
+    GET tient désormais en une ligne dans le dict. Les POST/DELETE
+    gardent leurs handlers explicites (audits + parse de body).
+  - Docstring de tête mise à jour (11 routes maintenant).
+
+- ``src/emeraude/web/index.html`` :
+  - **5e bouton ``v-bottom-navigation``** ``"performance"`` avec
+    ``mdi-chart-line``, label « Perf », inséré entre IA et Config.
+    La nav passe à 5 boutons sur 5.
+  - Nouvelle ``v-window-item value="performance"`` :
+    - **Empty state** quand ``has_data=false`` (icône
+      ``mdi-chart-line`` + explication "Aucun trade fermé"
+      mentionnant les 12 métriques R12 à venir).
+    - **Hero card "Expectancy R / trade"** colorée (text-success
+      si > 0, text-error si < 0) avec sous-titre ``X trades fermés
+      observés``.
+    - **Card "Distribution"** : win rate (chip coloré thresholds
+      55%/45%), ratio trades W/L, R moyen sur gain (vert), R moyen
+      sur perte (rouge avec préfixe ``-``).
+    - **Card "Ajusté du risque"** : Sharpe, Sortino, Calmar,
+      Profit Factor, Max Drawdown, chacun avec sa formule en
+      sous-titre (mean(R)/std(R), etc.). Profit Factor rend ``∞``
+      via ``formatRatio`` quand le bot n'a aucune perte.
+    - **Alerte info** déclarant honnêtement que le rapport
+      agrège les trades **réellement fermés** (pas un backtest
+      simulé) et que P1.5 reste à venir.
+  - State Vue : ``performanceSnapshot``, ``performanceError``.
+  - ``fetchPerformance()`` symétrique des autres data sources ;
+    ``watch(activeTab)`` déclenche le fetch à l'activation.
+  - 12 computed : ``formattedExpectancy``, ``expectancyColorClass``,
+    ``formattedTradesLabel``, ``formattedWinRate``, ``winRateChipColor``,
+    ``formattedAvgWin``, ``formattedAvgLoss``, ``formattedSharpe``,
+    ``formattedSortino``, ``formattedCalmar``, ``formattedProfitFactor``,
+    ``formattedMaxDrawdown``.
+  - 3 helpers locaux : ``formatRatio`` (Infinity-aware -> ``∞``),
+    ``formatRMagnitude`` (R-multiple sans signe), ``formatRSigned``
+    (R-multiple avec signe).
+  - ``pageTitle`` étendu pour ``activeTab === 'performance'``
+    -> "Performance".
+
+- ``tests/unit/test_performance_data_source.py`` (nouveau) — **+8 tests** :
+  - ``TestProjectReport`` : empty -> ``has_data=False``, non-empty ->
+    ``has_data=True`` + projection field-by-field.
+  - ``TestPositionPerformanceDataSource`` : cold start, agrégation
+    de positions fermées (expectancy mathématique vérifiée), default
+    history-limit + custom propagé, validation ``history_limit < 1``,
+    smoke du constructor par défaut.
+
+- ``tests/unit/test_api_server.py`` : **+2 tests intégration HTTP**
+  + 1 assertion ajoutée sur :class:`AppContext` smoke pour la
+  nouvelle ``performance_data_source`` :
+  - ``test_api_performance_requires_auth`` : 403 sans cookie.
+  - ``test_api_performance_returns_snapshot_shape`` : payload
+    complet (13 champs présents, types Decimal->str, ``has_data=False``
+    au cold start).
+
+### Changed
+
+- ``src/emeraude/api/server.py`` :
+  - Constante module ``_GET_API_HANDLERS`` ajoutée (dict
+    route -> handler).
+  - ``_serve_api`` simplifiée (passe de 7 returns à 3).
+  - Docstring de tête : 11 routes maintenant (6 GET + 4 POST + 1
+    DELETE) + mention explicite que P1.5 "Backtest historique"
+    reste 🔴.
+- ``pyproject.toml`` + ``buildozer.spec`` : ``0.0.87`` -> ``0.0.88``.
+
+### Notes
+
+- **Suite stable à 1 789 tests** (+10 vs v0.0.87), coverage
+  **99.49 %**, ruff + ruff format + mypy strict + bandit +
+  pip-audit OK.
+- **Mesure objectif iter #84** :
+  - Avant : 4 onglets sur 5 ; aucune surface UX du module
+    ``performance_report`` ; le user voit uniquement capital +
+    P&L cumulé sur le Dashboard.
+  - Après : **5 onglets sur 5 fonctionnels** + ``GET /api/performance``
+    exposant les **12 métriques R12** (Sharpe, Sortino, Calmar,
+    Profit Factor, Expectancy, Max DD, Win Rate, Avg Win, Avg
+    Loss, n_trades, n_wins, n_losses, has_data flag) ->
+    ✅ atteint.
+- **Pilier #1 doc 02 (UI)** : 100 % livré côté shell SPA. Reste à
+  brancher Backtest historique (P1.5) quand l'engine simulateur
+  sera prêt.
+- **Statut palier P1 après iter #84** :
+  - ✅ P1.8 Toggle Bot Maître exige confirmation argent réel (#80)
+  - ✅ Section Connexion Binance complète (#81)
+  - ✅ Stop d'urgence UI (#82)
+  - ✅ 4ᵉ écran SPA livré — Apprentissage (#83)
+  - ✅ **5ᵉ écran SPA livré — Performance** (#84, ce iter)
+  - 🔴 P1.1-P1.4 (runtime smartphone Android requis)
+  - 🔴 P1.5 Backtest UI sur historique (engine simulateur à
+    construire en iter dédiée)
+
 ## [0.0.87] - 2026-04-30
 
 ### Added — iter #83 : page IA / Apprentissage (4e écran SPA)
