@@ -6,6 +6,133 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.85] - 2026-04-30
+
+### Added — iter #81 : saisie clés API Binance (GET/POST/DELETE /api/credentials)
+
+L'iter #80 a livré la première mutation API (toggle Paper/Réel).
+L'iter #81 ferme la section "Connexion Binance" du panneau Config doc 02
+en exposant le ``BinanceCredentialsService`` (iter #66) côté HTTP +
+côté UI Vuetify. C'est la **dernière brique** du panneau Config avant
+le test runtime smartphone du palier P1.
+
+### Added
+
+- ``src/emeraude/api/server.py`` :
+  - Méthode ``do_DELETE`` ajoutée à ``_RequestHandler`` (parallèle de
+    ``do_POST``). Dispatcher minimal : 404 hors ``/api/<route>``.
+  - Méthode ``_serve_api_delete`` : auth cookie obligatoire puis
+    dispatch sur la route ``credentials``.
+  - Route ``GET /api/credentials`` ajoutée à ``_serve_api`` :
+    renvoie :class:`BinanceCredentialsStatus` (api_key_set,
+    api_secret_set, api_key_suffix, passphrase_available) en JSON.
+  - Méthode ``_handle_save_credentials`` :
+    - Parse + valide le body
+      (``{"api_key": "...", "api_secret": "..."}`` strings).
+    - Délègue à ``BinanceCredentialsService.save_credentials()``
+      qui gère validation format + chiffrement PBKDF2+XOR + persistance.
+    - Mappe les exceptions service -> codes HTTP :
+      :class:`PassphraseUnavailableError` -> **503 Service Unavailable**
+      (signal honnête : env var manquante) ; :class:`CredentialFormatError`
+      -> **400 Bad Request** (message validateur réutilisé tel quel).
+    - **Émet un audit event ``CREDENTIALS_SAVED``** avec le **suffix
+      uniquement** (les 4 derniers caractères, jamais la clé en clair —
+      le payload audit ne doit pas casser le contrat encryption-at-rest).
+  - Méthode ``_handle_clear_credentials`` :
+    - Délègue à ``BinanceCredentialsService.clear_credentials()`` qui
+      écrase les deux entrées avec une chaîne vide (idempotent).
+    - **Émet un audit event ``CREDENTIALS_CLEARED``** sur chaque appel
+      (back-to-back observables).
+    - Renvoie le ``BinanceCredentialsStatus`` mis à jour.
+  - Constantes ``_AUDIT_CREDENTIALS_SAVED`` / ``_AUDIT_CREDENTIALS_CLEARED``
+    (convention ``<DOMAIN>_<ACTION>``).
+
+- ``src/emeraude/web/index.html`` :
+  - Nouvelle carte **"Connexion Binance"** sur la page Config :
+    - Loading / error states cohérents avec le reste du SPA.
+    - **Alerte tonale warning** si ``passphrase_available === false``
+      (env var ``EMERAUDE_API_PASSPHRASE`` manquante) — dirige
+      l'utilisateur vers la définition de la variable et anticipe
+      la migration E7 Android KeyStore.
+    - **Status row** quand des clés sont enregistrées : suffix
+      ``**** **** WXYZ`` masqué + chip "Défini" pour le secret.
+    - **Empty state** quand aucune clé : icône + texte explicatif
+      mentionnant le chiffrement PBKDF2.
+    - **Formulaire** avec deux ``v-text-field`` ``type="password"`` +
+      ``v-icon`` ``mdi-eye`` / ``mdi-eye-off`` toggle pour révéler
+      ponctuellement les valeurs ; ``autocomplete="off"`` +
+      ``spellcheck="false"`` pour empêcher le navigateur de cacher
+      des fragments de clé. La valeur saisie n'est jamais
+      round-trippée vers la UI : les champs se vident dès que le
+      POST aboutit.
+    - Bouton **"Enregistrer les clés"** (visible si pas de clé
+      stockée) ``disabled`` tant que les inputs ne passent pas la
+      validation côté client (16-128 alphanumériques) — économise un
+      round-trip réseau sur les typos évidentes.
+    - Bouton **"Supprimer les clés"** (visible si clés stockées)
+      ``variant="text" color="error"`` ouvre un ``v-dialog persistent``
+      de confirmation avant l'appel DELETE.
+  - **Dialog** ``Supprimer les clés API`` (``v-dialog persistent``)
+    avec message clair sur le rationale (ré-saisie nécessaire pour
+    trader, positions ouvertes intactes).
+  - Helper ``deleteJSON(path)`` symétrique de ``postJSON``.
+  - Snackbar feedback ``"Clés API enregistrées."`` / ``"Clés API
+    supprimées."`` après succès.
+  - Computed ``apiKeyDisplay`` (rendu suffix masqué) +
+    ``canSaveCredentials`` (validation client mirror du serveur).
+
+- ``tests/unit/test_api_server.py`` : **+12 tests intégration HTTP**
+  - ``test_credentials_get_requires_auth`` + ``..._delete_requires_auth``
+    + ``..._post_requires_auth`` : 403 sans cookie.
+  - ``test_credentials_get_returns_status_shape`` : présence et types
+    des 4 champs ``BinanceCredentialsStatus``.
+  - ``test_credentials_post_persists_when_passphrase_set`` : POST
+    happy path (avec ``monkeypatch.setenv``), round-trip GET pour
+    persistance, DELETE de cleanup.
+  - ``test_credentials_post_503_when_passphrase_missing`` : env
+    absente -> 503 + message contenant ``EMERAUDE_API_PASSPHRASE``.
+  - ``test_credentials_post_400_on_bad_format`` : api_key trop court
+    -> 400 avec le message validateur.
+  - ``test_credentials_post_400_on_missing_fields`` /
+    ``..._on_non_string_fields`` : 400 sur body partiel ou types mauvais.
+  - ``test_credentials_delete_idempotent`` : 2 DELETE consécutifs
+    sans précédent save.
+  - ``test_unknown_delete_route_returns_404`` /
+    ``test_delete_to_non_api_path_returns_404``.
+  - Helper privé ``_delete`` ajouté pour DRY (parallèle de
+    ``_post_json``).
+
+### Changed
+
+- ``src/emeraude/api/server.py`` : docstring de tête mise à jour pour
+  lister les 7 routes (3 GET + 2 POST + 1 DELETE + l'index/static).
+- ``pyproject.toml`` + ``buildozer.spec`` : ``0.0.84`` -> ``0.0.85``.
+
+### Notes
+
+- **Suite stable à 1 760 tests** (+12 vs v0.0.84), coverage **99.48 %**,
+  ruff + ruff format + mypy strict + bandit + pip-audit OK.
+- **Mesure objectif iter #81** :
+  - Avant : 1 mutation API (POST /api/toggle-mode) ; clés saisissables
+    uniquement via env var directe ; ``BinanceCredentialsService``
+    construit mais non exposé HTTP.
+  - Après : **3 routes API** (``GET``/``POST``/``DELETE`` ``/api/credentials``)
+    + **section Vuetify avec formulaire masqué + suffix `**** xxxx`**
+    + gestion ``PassphraseUnavailableError`` + ``CredentialFormatError``
+    + audit ``CREDENTIALS_SAVED``/``CREDENTIALS_CLEARED`` -> ✅ atteint.
+- **Sécurité** :
+  - Les clés saisies traversent HTTP cleartext **uniquement sur
+    127.0.0.1** + cookie ``HttpOnly`` requis. Aucune exposition réseau.
+  - Le payload POST n'est **jamais loggé** : le ``log_message`` override
+    n'inscrit que la ligne de requête (méthode + URL), pas le body.
+  - L'audit log ne contient **que le suffix** (4 derniers caractères),
+    jamais la clé complète.
+  - Le formulaire wipe les champs ``apiKeyInput`` / ``apiSecretInput``
+    après save réussi (le plaintext ne traîne pas dans l'état Vue).
+- **Reste pour l'iter #82** : passage runtime sur APK Android pour le
+  smoke test palier P1 (P1.1 App tourne sans crash 1h, P1.2 Persistance
+  survit redémarrage, P1.3 Connexion Binance fonctionne).
+
 ## [0.0.84] - 2026-04-30
 
 ### Added — iter #80 : POST /api/toggle-mode + dialog A5 (anti-règle A5)

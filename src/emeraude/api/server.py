@@ -6,15 +6,19 @@ Architecture (cf. ADR-0004) :
 * Ce serveur sert :
     - ``GET  /``                  index.html (Vue 3 + Vuetify SPA)
     - ``GET  /static/<path>``     assets statiques (JS, CSS, fonts)
-    - ``GET  /api/dashboard``     :class:`DashboardSnapshot` -> JSON
-    - ``GET  /api/journal``       :class:`JournalSnapshot`  -> JSON
-    - ``GET  /api/config``        :class:`ConfigSnapshot`   -> JSON
-    - ``POST /api/toggle-mode``   ``{"mode": ...}`` -> :class:`ConfigSnapshot`
+    - ``GET    /api/dashboard``     :class:`DashboardSnapshot` -> JSON
+    - ``GET    /api/journal``       :class:`JournalSnapshot`  -> JSON
+    - ``GET    /api/config``        :class:`ConfigSnapshot`   -> JSON
+    - ``GET    /api/credentials``   :class:`BinanceCredentialsStatus` -> JSON
+    - ``POST   /api/toggle-mode``   ``{"mode": ...}`` -> :class:`ConfigSnapshot`
+    - ``POST   /api/credentials``   ``{"api_key", "api_secret"}`` -> status
+    - ``DELETE /api/credentials``   -> updated status (idempotent)
 
 * Iter #78 a livré la route ``/api/dashboard`` ; iter #79 ajoute
   ``/api/journal`` + ``/api/config`` (lecture seule) ; iter #80 ajoute
-  la première mutation : ``POST /api/toggle-mode``. La saisie des
-  clés API Binance (``POST /api/credentials``) vient en iter #81.
+  la première mutation : ``POST /api/toggle-mode`` ; iter #81 ajoute
+  la saisie des clés API Binance (``GET/POST/DELETE /api/credentials``)
+  qui couvre la dernière brique du panneau Config doc 02.
 
 Sécurité loopback
 =================
@@ -91,6 +95,13 @@ _MAX_BODY_BYTES: Final[int] = 4096
 #: ``"<DOMAIN>_<ACTION>"`` convention used elsewhere (cf.
 #: ``POSITION_OPENED``, ``MICROSTRUCTURE_GATE``, etc.).
 _AUDIT_MODE_CHANGED: Final[str] = "MODE_CHANGED"
+
+#: Audit event types for the credentials lifecycle. The payload never
+#: includes the API key or secret value — only the suffix (last 4
+#: chars) and persistence flags. ``CLEARED`` events never carry a
+#: suffix (we wouldn't have one to expose).
+_AUDIT_CREDENTIALS_SAVED: Final[str] = "CREDENTIALS_SAVED"
+_AUDIT_CREDENTIALS_CLEARED: Final[str] = "CREDENTIALS_CLEARED"
 
 #: MIME types per file extension. Limited intentionally — only file
 #: types we actually ship in ``web/``.
@@ -281,6 +292,19 @@ class _RequestHandler(BaseHTTPRequestHandler):
 
         self._send_text(HTTPStatus.NOT_FOUND, "Not found")
 
+    # ─── DELETE dispatcher ──────────────────────────────────────────────────
+
+    def do_DELETE(self) -> None:
+        """Dispatch ``DELETE`` (method name fixed by stdlib API)."""
+        parsed = urlparse(self.path)
+        path = unquote(parsed.path)
+
+        if path.startswith("/api/"):
+            self._serve_api_delete(path[len("/api/") :])
+            return
+
+        self._send_text(HTTPStatus.NOT_FOUND, "Not found")
+
     # ─── Index : sets the auth cookie and serves the SPA ────────────────────
 
     def _serve_index(self) -> None:
@@ -359,7 +383,11 @@ class _RequestHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.OK, _serialise(config))
             return
 
-        # Iter #81 will add ``credentials`` (the Binance API-key payload).
+        if route == "credentials":
+            status = self.app_context.binance_credentials_service.get_status()
+            self._send_json(HTTPStatus.OK, _serialise(status))
+            return
+
         self._send_json(HTTPStatus.NOT_FOUND, {"error": "unknown route"})
 
     # ─── POST API routes ────────────────────────────────────────────────────
@@ -380,7 +408,24 @@ class _RequestHandler(BaseHTTPRequestHandler):
             self._handle_toggle_mode()
             return
 
-        # Iter #81 will add ``credentials`` (POST/DELETE Binance keys).
+        if route == "credentials":
+            self._handle_save_credentials()
+            return
+
+        self._send_json(HTTPStatus.NOT_FOUND, {"error": "unknown route"})
+
+    # ─── DELETE API routes ──────────────────────────────────────────────────
+
+    def _serve_api_delete(self, route: str) -> None:
+        """Dispatch ``DELETE /api/<route>``. Requires the auth cookie."""
+        if not self._auth_ok():
+            self._send_json(HTTPStatus.FORBIDDEN, {"error": "forbidden"})
+            return
+
+        if route == "credentials":
+            self._handle_clear_credentials()
+            return
+
         self._send_json(HTTPStatus.NOT_FOUND, {"error": "unknown route"})
 
     def _handle_toggle_mode(self) -> None:
@@ -417,6 +462,77 @@ class _RequestHandler(BaseHTTPRequestHandler):
         )
         snapshot = self.app_context.config_data_source.fetch_snapshot()
         self._send_json(HTTPStatus.OK, _serialise(snapshot))
+
+    def _handle_save_credentials(self) -> None:
+        """Persist Binance API credentials (encrypted via PBKDF2+XOR).
+
+        Service errors map to HTTP codes :
+
+        * :class:`PassphraseUnavailableError` (env var
+          ``EMERAUDE_API_PASSPHRASE`` absent) -> 503 Service
+          Unavailable. Honest signal that the server is not
+          configured to accept credentials right now ; UI can show
+          the env-var hint without offering save.
+        * :class:`CredentialFormatError` (bad key shape) -> 400 Bad
+          Request with the validator's message reused (already user
+          friendly, in French, mirroring the doc 02 spec).
+
+        Audits ``CREDENTIALS_SAVED`` with the suffix on success — the
+        plaintext key never reaches the audit log (would defeat
+        encryption-at-rest).
+        """
+        # Local imports : the ``services`` package is heavier than the
+        # GET routes need ; defer until POST actually fires.
+        from emeraude.infra import audit  # noqa: PLC0415
+        from emeraude.services.binance_credentials import (  # noqa: PLC0415
+            CredentialFormatError,
+            PassphraseUnavailableError,
+        )
+
+        body = self._read_json_object()
+        if body is None:
+            return
+
+        api_key = body.get("api_key")
+        api_secret = body.get("api_secret")
+        if not isinstance(api_key, str) or not isinstance(api_secret, str):
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"error": "api_key and api_secret are required strings"},
+            )
+            return
+
+        service = self.app_context.binance_credentials_service
+        try:
+            service.save_credentials(api_key=api_key, api_secret=api_secret)
+        except CredentialFormatError as exc:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            return
+        except PassphraseUnavailableError as exc:
+            self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc)})
+            return
+
+        status = service.get_status()
+        audit.audit(
+            _AUDIT_CREDENTIALS_SAVED,
+            {"api_key_suffix": status.api_key_suffix, "source": "api"},
+        )
+        self._send_json(HTTPStatus.OK, _serialise(status))
+
+    def _handle_clear_credentials(self) -> None:
+        """Wipe both stored credentials (idempotent).
+
+        Always emits ``CREDENTIALS_CLEARED`` so multiple back-to-back
+        clears from the UI are still observable in the audit trail.
+        Returns the updated status (both flags False, suffix None).
+        """
+        from emeraude.infra import audit  # noqa: PLC0415
+
+        service = self.app_context.binance_credentials_service
+        service.clear_credentials()
+        status = service.get_status()
+        audit.audit(_AUDIT_CREDENTIALS_CLEARED, {"source": "api"})
+        self._send_json(HTTPStatus.OK, _serialise(status))
 
     def _read_json_object(self) -> dict[str, Any] | None:
         """Parse a JSON object from the POST body.

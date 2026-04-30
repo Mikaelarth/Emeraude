@@ -323,14 +323,145 @@
                                 </v-list>
                             </v-card>
 
-                            <v-alert
-                                density="compact"
-                                type="info"
-                                variant="tonal"
-                                icon="mdi-flask-outline"
-                            >
-                                La saisie des clés API Binance arrive en iter #81.
-                            </v-alert>
+                            <v-card class="mb-4" elevation="0" rounded="lg" color="surface">
+                                <v-card-title class="d-flex align-center">
+                                    <v-icon class="mr-2" color="medium-emphasis">mdi-key-variant</v-icon>
+                                    Connexion Binance
+                                </v-card-title>
+
+                                <!-- Loading credentials status -->
+                                <v-card-text v-if="!credentialsStatus && !credentialsError" class="text-center pa-6">
+                                    <v-progress-circular indeterminate color="primary" size="32"></v-progress-circular>
+                                </v-card-text>
+
+                                <!-- Error reading status -->
+                                <v-card-text v-else-if="credentialsError" class="pa-4">
+                                    <v-alert type="error" variant="tonal" density="compact">
+                                        {{ credentialsError }}
+                                    </v-alert>
+                                </v-card-text>
+
+                                <template v-else>
+                                    <!-- Passphrase warning -->
+                                    <v-card-text v-if="!credentialsStatus.passphrase_available" class="px-4 pt-2 pb-0">
+                                        <v-alert
+                                            type="warning"
+                                            variant="tonal"
+                                            density="compact"
+                                            icon="mdi-shield-alert-outline"
+                                        >
+                                            <v-alert-title class="text-body-2 font-weight-bold">
+                                                Variable EMERAUDE_API_PASSPHRASE absente
+                                            </v-alert-title>
+                                            <div class="mt-1 text-caption">
+                                                Cette variable d'environnement est requise pour
+                                                chiffrer vos clés API. Définissez-la avant de
+                                                relancer l'app — la migration vers Android
+                                                KeyStore (E7) la rendra obsolète.
+                                            </div>
+                                        </v-alert>
+                                    </v-card-text>
+
+                                    <!-- Stored credentials status -->
+                                    <v-list
+                                        v-if="credentialsStatus.api_key_set || credentialsStatus.api_secret_set"
+                                        bg-color="transparent"
+                                        density="comfortable"
+                                    >
+                                        <v-list-item>
+                                            <v-list-item-title class="config-key">Clé API</v-list-item-title>
+                                            <template v-slot:append>
+                                                <span class="config-value">{{ apiKeyDisplay }}</span>
+                                            </template>
+                                        </v-list-item>
+                                        <v-divider></v-divider>
+                                        <v-list-item>
+                                            <v-list-item-title class="config-key">Secret API</v-list-item-title>
+                                            <template v-slot:append>
+                                                <v-chip
+                                                    :color="credentialsStatus.api_secret_set ? 'success' : 'medium-emphasis'"
+                                                    variant="tonal"
+                                                    size="small"
+                                                >
+                                                    {{ credentialsStatus.api_secret_set ? 'Défini' : 'Non défini' }}
+                                                </v-chip>
+                                            </template>
+                                        </v-list-item>
+                                    </v-list>
+
+                                    <v-card-text v-else class="text-center pa-6">
+                                        <v-icon size="48" color="medium-emphasis">mdi-key-outline</v-icon>
+                                        <div class="text-h6 mt-3">Aucune clé enregistrée</div>
+                                        <div class="text-body-2 text-medium-emphasis mt-2 mx-auto" style="max-width: 360px;">
+                                            Saisissez vos clés API Binance ci-dessous. Elles
+                                            sont chiffrées (PBKDF2) avant stockage et ne sont
+                                            jamais affichées en clair.
+                                        </div>
+                                    </v-card-text>
+
+                                    <!-- Form to save credentials -->
+                                    <v-card-text v-if="!credentialsStatus.api_key_set" class="px-4 pt-0 pb-2">
+                                        <v-text-field
+                                            v-model="apiKeyInput"
+                                            label="Clé API"
+                                            :type="showApiKey ? 'text' : 'password'"
+                                            variant="outlined"
+                                            density="compact"
+                                            autocomplete="off"
+                                            spellcheck="false"
+                                            class="mb-2"
+                                            :append-inner-icon="showApiKey ? 'mdi-eye-off' : 'mdi-eye'"
+                                            @click:append-inner="showApiKey = !showApiKey"
+                                        ></v-text-field>
+                                        <v-text-field
+                                            v-model="apiSecretInput"
+                                            label="Secret API"
+                                            :type="showApiSecret ? 'text' : 'password'"
+                                            variant="outlined"
+                                            density="compact"
+                                            autocomplete="off"
+                                            spellcheck="false"
+                                            :append-inner-icon="showApiSecret ? 'mdi-eye-off' : 'mdi-eye'"
+                                            @click:append-inner="showApiSecret = !showApiSecret"
+                                        ></v-text-field>
+                                        <v-alert
+                                            v-if="credentialsSaveError"
+                                            type="error"
+                                            variant="tonal"
+                                            density="compact"
+                                            class="mt-2"
+                                        >
+                                            {{ credentialsSaveError }}
+                                        </v-alert>
+                                    </v-card-text>
+
+                                    <v-card-actions class="px-4 pb-4 pt-0 d-flex flex-column" style="align-items: stretch;">
+                                        <v-btn
+                                            v-if="!credentialsStatus.api_key_set"
+                                            block
+                                            variant="flat"
+                                            color="primary"
+                                            prepend-icon="mdi-content-save-outline"
+                                            :disabled="!canSaveCredentials"
+                                            :loading="credentialsSaveInProgress"
+                                            @click="saveCredentials"
+                                        >
+                                            Enregistrer les clés
+                                        </v-btn>
+                                        <v-btn
+                                            v-if="credentialsStatus.api_key_set"
+                                            block
+                                            variant="text"
+                                            color="error"
+                                            prepend-icon="mdi-trash-can-outline"
+                                            :disabled="credentialsSaveInProgress"
+                                            @click="openClearCredentialsDialog"
+                                        >
+                                            Supprimer les clés
+                                        </v-btn>
+                                    </v-card-actions>
+                                </template>
+                            </v-card>
                         </v-container>
                     </v-window-item>
 
@@ -453,6 +584,51 @@
                 </v-card>
             </v-dialog>
 
+            <!-- ═══ Dialog : suppression clés API Binance ════════════════════ -->
+            <v-dialog
+                v-model="showClearCredentialsDialog"
+                max-width="420"
+                persistent
+            >
+                <v-card rounded="lg" color="surface">
+                    <v-card-title class="d-flex align-center text-error">
+                        <v-icon class="mr-2">mdi-trash-can-outline</v-icon>
+                        Supprimer les clés API
+                    </v-card-title>
+                    <v-card-text>
+                        <p>
+                            Les clés API Binance enregistrées vont être
+                            supprimées. Vous devrez les saisir à nouveau pour
+                            que le bot puisse trader. Aucune position ouverte
+                            n'est touchée.
+                        </p>
+                        <v-alert
+                            v-if="credentialsSaveError"
+                            density="compact"
+                            type="error"
+                            variant="tonal"
+                            class="mt-2"
+                        >
+                            {{ credentialsSaveError }}
+                        </v-alert>
+                    </v-card-text>
+                    <v-card-actions class="px-4 pb-4">
+                        <v-spacer></v-spacer>
+                        <v-btn variant="text" :disabled="credentialsSaveInProgress" @click="closeClearCredentialsDialog">
+                            Annuler
+                        </v-btn>
+                        <v-btn
+                            color="error"
+                            variant="flat"
+                            :loading="credentialsSaveInProgress"
+                            @click="clearCredentials"
+                        >
+                            Supprimer
+                        </v-btn>
+                    </v-card-actions>
+                </v-card>
+            </v-dialog>
+
             <!-- ═══ Snackbar : feedback toggle réussi ═══════════════════════ -->
             <v-snackbar
                 v-model="showToast"
@@ -570,6 +746,24 @@
                 const toastMessage = ref('');
                 let countdownTimer = null;
 
+                // ─── Credentials state (iter #81) ───────────────────────
+                // ``credentialsStatus`` mirrors :class:`BinanceCredentialsStatus`
+                // (api_key_set / api_secret_set / api_key_suffix /
+                // passphrase_available). Loaded on Config tab activation
+                // alongside ``configSnapshot``. The form inputs are
+                // ephemeral : we never round-trip the saved value back
+                // to the UI, so the v-text-field empties as soon as the
+                // POST succeeds.
+                const credentialsStatus = ref(null);
+                const credentialsError = ref(null);
+                const apiKeyInput = ref('');
+                const apiSecretInput = ref('');
+                const showApiKey = ref(false);
+                const showApiSecret = ref(false);
+                const credentialsSaveInProgress = ref(false);
+                const credentialsSaveError = ref(null);
+                const showClearCredentialsDialog = ref(false);
+
                 async function fetchJSON(path) {
                     const res = await fetch(path, { credentials: 'include' });
                     if (!res.ok) {
@@ -584,6 +778,22 @@
                         credentials: 'include',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(body),
+                    });
+                    if (!res.ok) {
+                        let detail = `HTTP ${res.status}`;
+                        try {
+                            const err = await res.json();
+                            if (err && err.error) detail = err.error;
+                        } catch (_) { /* keep generic */ }
+                        throw new Error(detail);
+                    }
+                    return res.json();
+                }
+
+                async function deleteJSON(path) {
+                    const res = await fetch(path, {
+                        method: 'DELETE',
+                        credentials: 'include',
                     });
                     if (!res.ok) {
                         let detail = `HTTP ${res.status}`;
@@ -620,6 +830,62 @@
                         configError.value = null;
                     } catch (err) {
                         configError.value = String(err);
+                    }
+                }
+
+                async function fetchCredentials() {
+                    try {
+                        credentialsStatus.value = await fetchJSON('/api/credentials');
+                        credentialsError.value = null;
+                    } catch (err) {
+                        credentialsError.value = String(err);
+                    }
+                }
+
+                // ─── Credentials handlers (iter #81) ────────────────────
+                function openClearCredentialsDialog() {
+                    credentialsSaveError.value = null;
+                    showClearCredentialsDialog.value = true;
+                }
+
+                function closeClearCredentialsDialog() {
+                    showClearCredentialsDialog.value = false;
+                    credentialsSaveError.value = null;
+                }
+
+                async function saveCredentials() {
+                    credentialsSaveInProgress.value = true;
+                    credentialsSaveError.value = null;
+                    try {
+                        credentialsStatus.value = await postJSON('/api/credentials', {
+                            api_key: apiKeyInput.value.trim(),
+                            api_secret: apiSecretInput.value.trim(),
+                        });
+                        // Wipe the form so the plaintext doesn't linger in
+                        // the v-text-field state once persistence succeeded.
+                        apiKeyInput.value = '';
+                        apiSecretInput.value = '';
+                        showApiKey.value = false;
+                        showApiSecret.value = false;
+                        showSuccessToast('Clés API enregistrées.');
+                    } catch (err) {
+                        credentialsSaveError.value = String(err.message || err);
+                    } finally {
+                        credentialsSaveInProgress.value = false;
+                    }
+                }
+
+                async function clearCredentials() {
+                    credentialsSaveInProgress.value = true;
+                    credentialsSaveError.value = null;
+                    try {
+                        credentialsStatus.value = await deleteJSON('/api/credentials');
+                        showSuccessToast('Clés API supprimées.');
+                        closeClearCredentialsDialog();
+                    } catch (err) {
+                        credentialsSaveError.value = String(err.message || err);
+                    } finally {
+                        credentialsSaveInProgress.value = false;
                     }
                 }
 
@@ -716,7 +982,11 @@
                     if (tab === 'journal') {
                         fetchJournal();
                     } else if (tab === 'config') {
+                        // Config tab pulls both the snapshot and the
+                        // credentials status. Both are independent fetches
+                        // so they can run in parallel without sequencing.
                         fetchConfig();
+                        fetchCredentials();
                     }
                 });
 
@@ -799,6 +1069,30 @@
                         : 'Confirmer'
                 );
 
+                // Credentials (iter #81)
+                const apiKeyDisplay = computed(() => {
+                    const status = credentialsStatus.value;
+                    if (!status || !status.api_key_set) return 'Non définie';
+                    const suffix = status.api_key_suffix;
+                    return suffix ? `**** **** ${suffix}` : 'Définie (illisible)';
+                });
+                const canSaveCredentials = computed(() => {
+                    if (!credentialsStatus.value) return false;
+                    if (!credentialsStatus.value.passphrase_available) return false;
+                    if (credentialsSaveInProgress.value) return false;
+                    // Mirror the server-side validator (16-128 alphanumeric)
+                    // so the button stays disabled until the format is
+                    // even plausible — saves a network round trip on
+                    // obvious typos.
+                    const ALPHANUM = /^[A-Za-z0-9]+$/;
+                    const k = apiKeyInput.value.trim();
+                    const s = apiSecretInput.value.trim();
+                    return (
+                        k.length >= 16 && k.length <= 128 && ALPHANUM.test(k) &&
+                        s.length >= 16 && s.length <= 128 && ALPHANUM.test(s)
+                    );
+                });
+
                 return {
                     // state
                     dashboardSnapshot,
@@ -814,6 +1108,15 @@
                     toggleError,
                     showToast,
                     toastMessage,
+                    credentialsStatus,
+                    credentialsError,
+                    apiKeyInput,
+                    apiSecretInput,
+                    showApiKey,
+                    showApiSecret,
+                    credentialsSaveInProgress,
+                    credentialsSaveError,
+                    showClearCredentialsDialog,
                     // computed view-model
                     pageTitle,
                     formattedCapital,
@@ -831,6 +1134,8 @@
                     isRealMode,
                     realConfirmDisabled,
                     realConfirmLabel,
+                    apiKeyDisplay,
+                    canSaveCredentials,
                     // handlers
                     openRealDialog,
                     closeRealDialog,
@@ -838,6 +1143,10 @@
                     closePaperDialog,
                     confirmReal,
                     confirmPaper,
+                    saveCredentials,
+                    clearCredentials,
+                    openClearCredentialsDialog,
+                    closeClearCredentialsDialog,
                 };
             },
         };

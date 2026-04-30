@@ -581,6 +581,244 @@ class TestHTTPIntegration:
         finally:
             self._stop(server, thread)
 
+    # ── /api/credentials (iter #81) ──────────────────────────────────────────
+
+    def _delete(
+        self,
+        port: int,
+        path: str,
+        *,
+        token: str | None = None,
+    ) -> tuple[int, dict[str, object]]:
+        """Tiny DELETE helper. Returns ``(status, json_body)``."""
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        headers: dict[str, str] = {}
+        if token is not None:
+            headers["Cookie"] = f"{AUTH_COOKIE}={token}"
+        conn.request("DELETE", path, headers=headers)
+        resp = conn.getresponse()
+        raw = resp.read()
+        return resp.status, json.loads(raw) if raw else {}
+
+    def test_credentials_get_requires_auth(self, tmp_path: Path) -> None:
+        port, _token, thread, server = self._setup_server(tmp_path)
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request("GET", "/api/credentials")
+            resp = conn.getresponse()
+            body = json.loads(resp.read())
+            assert resp.status == 403
+            assert "error" in body
+        finally:
+            self._stop(server, thread)
+
+    def test_credentials_get_returns_status_shape(self, tmp_path: Path) -> None:
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request(
+                "GET",
+                "/api/credentials",
+                headers={"Cookie": f"{AUTH_COOKIE}={token}"},
+            )
+            resp = conn.getresponse()
+            body = json.loads(resp.read())
+            assert resp.status == 200
+            # BinanceCredentialsStatus shape.
+            assert "api_key_set" in body
+            assert "api_secret_set" in body
+            assert "api_key_suffix" in body
+            assert "passphrase_available" in body
+            assert isinstance(body["api_key_set"], bool)
+            assert isinstance(body["api_secret_set"], bool)
+            assert body["api_key_suffix"] is None or isinstance(body["api_key_suffix"], str)
+            assert isinstance(body["passphrase_available"], bool)
+        finally:
+            self._stop(server, thread)
+
+    def test_credentials_post_requires_auth(self, tmp_path: Path) -> None:
+        port, _token, thread, server = self._setup_server(tmp_path)
+        try:
+            status, body = self._post_json(
+                port,
+                "/api/credentials",
+                {"api_key": "A" * 64, "api_secret": "B" * 64},
+                token=None,
+            )
+            assert status == 403
+            assert "error" in body
+        finally:
+            self._stop(server, thread)
+
+    def test_credentials_delete_requires_auth(self, tmp_path: Path) -> None:
+        port, _token, thread, server = self._setup_server(tmp_path)
+        try:
+            status, body = self._delete(port, "/api/credentials", token=None)
+            assert status == 403
+            assert "error" in body
+        finally:
+            self._stop(server, thread)
+
+    def test_credentials_post_persists_when_passphrase_set(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The passphrase env var is read on each save_credentials call.
+        # Set a valid one for this test ; clean up via DELETE at the end.
+        monkeypatch.setenv("EMERAUDE_API_PASSPHRASE", "test-pp-xyz123")
+
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            api_key = "A" * 60 + "WXYZ"
+            api_secret = "B" * 64
+            status, body = self._post_json(
+                port,
+                "/api/credentials",
+                {"api_key": api_key, "api_secret": api_secret},
+                token=token,
+            )
+            assert status == 200
+            # Returned status reflects the new persistence state.
+            assert body["api_key_set"] is True
+            assert body["api_secret_set"] is True
+            assert body["api_key_suffix"] == "WXYZ"
+            assert body["passphrase_available"] is True
+
+            # Round-trip via GET to confirm the persisted status.
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request(
+                "GET",
+                "/api/credentials",
+                headers={"Cookie": f"{AUTH_COOKIE}={token}"},
+            )
+            resp = conn.getresponse()
+            persisted = json.loads(resp.read())
+            assert persisted["api_key_set"] is True
+            assert persisted["api_key_suffix"] == "WXYZ"
+
+            # Cleanup : DELETE so the test DB doesn't leak across tests.
+            del_status, del_body = self._delete(port, "/api/credentials", token=token)
+            assert del_status == 200
+            assert del_body["api_key_set"] is False
+            assert del_body["api_secret_set"] is False
+            assert del_body["api_key_suffix"] is None
+        finally:
+            self._stop(server, thread)
+
+    def test_credentials_post_503_when_passphrase_missing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("EMERAUDE_API_PASSPHRASE", raising=False)
+
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            status, body = self._post_json(
+                port,
+                "/api/credentials",
+                {"api_key": "A" * 64, "api_secret": "B" * 64},
+                token=token,
+            )
+            assert status == 503
+            # The error message is the service's own — surface it intact.
+            error = body["error"]
+            assert isinstance(error, str)
+            assert "EMERAUDE_API_PASSPHRASE" in error
+        finally:
+            self._stop(server, thread)
+
+    def test_credentials_post_400_on_bad_format(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("EMERAUDE_API_PASSPHRASE", "test-pp-xyz123")
+
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            # api_key too short — the validator rejects with a precise
+            # French message that we forward verbatim.
+            status, body = self._post_json(
+                port,
+                "/api/credentials",
+                {"api_key": "tooshort", "api_secret": "B" * 64},  # pragma: allowlist secret
+                token=token,
+            )
+            assert status == 400
+            error = body["error"]
+            assert isinstance(error, str)
+            assert "api_key" in error
+        finally:
+            self._stop(server, thread)
+
+    def test_credentials_post_400_on_missing_fields(self, tmp_path: Path) -> None:
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            # Body is a JSON object but the keys are missing.
+            status, body = self._post_json(
+                port,
+                "/api/credentials",
+                {"api_key": "A" * 64},
+                token=token,
+            )
+            assert status == 400
+            error = body["error"]
+            assert isinstance(error, str)
+            assert "api_key" in error
+            assert "api_secret" in error
+        finally:
+            self._stop(server, thread)
+
+    def test_credentials_post_400_on_non_string_fields(self, tmp_path: Path) -> None:
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            status, body = self._post_json(
+                port,
+                "/api/credentials",
+                {"api_key": 1234, "api_secret": None},
+                token=token,
+            )
+            assert status == 400
+            assert "error" in body
+        finally:
+            self._stop(server, thread)
+
+    def test_credentials_delete_idempotent(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("EMERAUDE_API_PASSPHRASE", raising=False)
+
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            # Two consecutive DELETEs without prior save : both succeed.
+            status1, body1 = self._delete(port, "/api/credentials", token=token)
+            status2, body2 = self._delete(port, "/api/credentials", token=token)
+            assert status1 == 200
+            assert status2 == 200
+            assert body1["api_key_set"] is False
+            assert body2["api_key_set"] is False
+        finally:
+            self._stop(server, thread)
+
+    def test_unknown_delete_route_returns_404(self, tmp_path: Path) -> None:
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            status, body = self._delete(port, "/api/does-not-exist", token=token)
+            assert status == 404
+            assert "error" in body
+        finally:
+            self._stop(server, thread)
+
+    def test_delete_to_non_api_path_returns_404(self, tmp_path: Path) -> None:
+        port, _token, thread, server = self._setup_server(tmp_path)
+        try:
+            # Non-/api/ paths use the plain-text 404 path (not the JSON
+            # one), so call http.client directly rather than the JSON
+            # helper.
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request("DELETE", "/static/app.js")
+            resp = conn.getresponse()
+            resp.read()
+            assert resp.status == 404
+        finally:
+            self._stop(server, thread)
+
 
 # ─── AppContext basic smoke ─────────────────────────────────────────────────
 
