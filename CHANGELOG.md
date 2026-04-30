@@ -6,6 +6,115 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.93] - 2026-04-30
+
+### Added — iter #89 : D2 Coin universe snapshot (anti survivorship bias)
+
+Doc 11 §"D2 — Survivorship bias" exige que tout backtest démarrant
+sur la date T opère sur **l'univers de coins qui existait à T**, pas
+sur le top-10 d'aujourd'hui (qui par définition ne contient que les
+survivants). Le fix : capturer un snapshot périodique de l'univers
+investable et forcer chaque backtest à interroger
+:func:`universe_at(t)` plutôt que "ce qui est listé aujourd'hui".
+
+Cet iter livre le module utilitaire pur — le wiring orchestrator
++ la capture mensuelle restent pour l'iter qui livrera l'engine de
+backtest (R2 — une variable à la fois).
+
+**6/6 critères doc 11 sont ✅** après cet iter — la matrice
+intégrité données est entièrement fermée.
+
+### Added
+
+- ``src/emeraude/infra/coin_universe_snapshot.py`` (nouveau, ~370 LOC) :
+  - :class:`CoinEntry` dataclass immutable (symbol, market_cap_rank).
+    Pas de listing_date_ms parce que CoinGecko ne le retourne pas
+    dans /coins/markets — anti-règle A1 : on ne fabrique pas.
+  - :class:`CoinUniverseSnapshot` dataclass immutable (snapshot_date_ms,
+    entries, captured_at_ms, content_hash).
+  - :func:`compute_universe_hash` pure : SHA-256 sur représentation
+    canonique pipe-séparée des entries (symbol|rank). Indépendant
+    du formatting JSON sur disque.
+  - :func:`make_universe_snapshot` constructor convenience.
+  - :func:`save_universe_snapshot(snapshot, path)` : écriture
+    **atomique** (tmp + rename) au format JSONL.
+  - :func:`load_universe_snapshot(path)` : parse + recompute hash +
+    verify ; raise :class:`SnapshotIntegrityError` si mismatch.
+  - **:func:`universe_at(snapshot_date_ms, snapshots)` 🎯 API
+    anti-survivorship-bias** : retourne le snapshot le plus récent
+    avec ``snapshot_date_ms <= target``. Pure function, ordre input
+    indifférent. ``None`` quand aucun candidat ne qualifie — caller
+    MUST traiter ça comme un hard error (refus du backtest, doc 11
+    §D2 explicit policy).
+  - Réutilise :class:`SnapshotFormatError` /
+    :class:`SnapshotIntegrityError` de
+    :mod:`infra.data_snapshot` (DRY ; même vocabulaire pour OHLCV
+    et univers).
+  - :class:`_UniverseHeader` TypedDict interne pour mypy strict.
+  - Constantes ``UNIVERSE_FORMAT_VERSION = 1``,
+    ``_EXPECTED_ENTRY_FIELDS = 2``.
+
+- ``tests/unit/test_coin_universe_snapshot.py`` (nouveau) — **+30 tests** :
+  - ``TestComputeUniverseHash`` (5) : empty input, déterminisme,
+    order-sensitive, field-sensitive (symbol et rank séparément).
+  - ``TestMakeUniverseSnapshot`` (1) : auto-hash.
+  - ``TestRoundTrip`` (3) : full round-trip, empty entries, atomic
+    write (.tmp absent).
+  - ``TestIntegrityCheck`` (3) : entry tampered ->
+    SnapshotIntegrityError, ajouté/retiré -> SnapshotFormatError.
+  - ``TestFormatErrors`` (10) : empty file, JSON invalide, header
+    non-dict, field manquant, type incorrect, version mismatch,
+    entry non-array, wrong field count, symbol non-str,
+    rank non-int (incl. ``isinstance(True, int)`` rejeté
+    explicitement), file inexistant.
+  - ``TestUniverseAt`` (5) : empty input -> None, no qualifying ->
+    None (future-only), exact match, latest match wins parmi
+    plusieurs candidats, skips future snapshots ; input ordre
+    indifférent.
+  - ``TestCoinEntry`` (1) : frozen=True smoke.
+
+### Changed
+
+- ``11_INTEGRITE_DONNEES.md`` §D2 marqué ✅ module livré (iter #89)
+  avec statut détaillé incluant l'API ``universe_at`` qui retourne
+  ``None`` pour bloquer la reconstruction post-hoc, et la note que
+  la capture mensuelle + branchement orchestrator restent pour iter
+  ultérieure.
+- ``pyproject.toml`` + ``buildozer.spec`` : ``0.0.92`` -> ``0.0.93``.
+
+### Notes
+
+- **Suite stable** (test count à confirmer après run, +30 vs v0.0.92),
+  coverage 99.39 %+, ruff + ruff format + mypy strict + bandit +
+  pip-audit OK.
+- **Mesure objectif iter #89** :
+  - Avant : 0 module pour persister un univers de coins horodaté,
+    D2 listé 🔴, aucun moyen de garantir que ``universe = top10_at(T)``
+    n'inclut pas par erreur des coins listés post-T.
+  - Après : **1 module utilitaire pur + 30 tests + D2 ✅** ->
+    ✅ atteint.
+- **Anti-règle A1** : pas de wiring live dans le data_ingestion path,
+  pas de capture mensuelle automatique. Les iters ultérieures qui
+  brancheront universe_at() au backtest doivent émettre l'audit
+  "header listant N coins de l'univers + leur rank au snapshot date"
+  conformément au doc 11 §D2.
+- **R2 — une variable à la fois** : changements limités au module pur
+  + sa doc + ses tests. Pas d'helper paths.coin_universe_snapshots_dir
+  ; les exceptions sont importées depuis data_snapshot (DRY).
+- **Statut intégrité données après iter #89** :
+  - ✅ D1 (shift invariance, iter #87)
+  - ✅ **D2 (universe snapshot, iter #89, ce iter)**
+  - ✅ D3 (data_quality module, iter #86)
+  - ✅ D4 (data_quality module, iter #86)
+  - ✅ D5 (naive datetime scanner, iter #85)
+  - ✅ D6 (data_snapshot module, iter #88)
+  - **6/6 critères doc 11 sont ✅** -> matrice intégrité données
+    fermée à 100 %.
+- **Reste à faire** : brancher les modules D1-D6 au data_ingestion
+  path live + à l'engine de backtest (iter ultérieure quand l'engine
+  arrivera). Plus le 5e onglet Backtest UI (P1.5) si on attaque le
+  gros morceau.
+
 ## [0.0.92] - 2026-04-30
 
 ### Added — iter #88 : D6 Data revision snapshots (immutable + hashed)

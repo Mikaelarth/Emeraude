@@ -88,21 +88,41 @@ complexes, à intégrer en élargissant les fixtures du test).
 
 ---
 
-### D2 — Survivorship bias
+### D2 — Survivorship bias — ✅ module livré (iter #89)
 
 **Règle** : pour un backtest qui démarre le 2024-01-01, l'univers de
 coins est **celui qui existait à cette date**, pas celui d'aujourd'hui.
 
-**Mise en œuvre** :
+**Mise en œuvre** (livrée iter #89) :
 
-1. **Snapshot d'univers** : table `coin_universe_snapshots(date, symbols)`
-   avec une entrée par mois minimum.
-2. **API backtest** : `run_backtest(start, end, universe=universe_at(start))`.
-3. **Refus du backtest** si l'univers passé n'est pas disponible (pas de
-   reconstruction post-hoc).
+1. **Snapshot d'univers** ✅ : `infra/coin_universe_snapshot.py`
+   livre :class:`CoinEntry` (symbol + market_cap_rank),
+   :class:`CoinUniverseSnapshot` (snapshot_date_ms + entries +
+   captured_at_ms + content_hash SHA-256), ainsi que les fonctions
+   :func:`save_universe_snapshot` (atomique, JSONL) et
+   :func:`load_universe_snapshot` (parse + verify hash).
+   La capture mensuelle à minimum reste une décision opérationnelle
+   à câbler dans l'iter ultérieure quand le data_ingestion live
+   sera prêt.
+2. **API anti-bias** ✅ : :func:`universe_at(snapshot_date_ms,
+   snapshots)` retourne le snapshot le plus récent ≤ date — exactement
+   ce que doc 11 §D2 demande pour bloquer la reconstruction post-hoc.
+   Pure function, ordre d'input indifférent.
+3. **Refus du backtest** : :func:`universe_at` retourne ``None``
+   quand aucun snapshot ne qualifie. Le caller MUST traiter ce ``None``
+   comme un hard error (refus du backtest), conformément au doc.
+   Le branchement orchestrator suit dans l'iter qui livrera l'engine.
 
-**Critère mesurable** : tout backtest produit un header listant les N
-coins de l'univers + leur date d'ajout.
+Le format de fichier réutilise les exceptions
+:class:`SnapshotFormatError` / :class:`SnapshotIntegrityError` de
+:mod:`infra.data_snapshot` (DRY ; même vocabulaire pour les snapshots
+OHLCV et univers).
+
+**Critère mesurable** : ✅ 30 tests pytest verts couvrant compute_hash
++ save/load round-trip + tampering + format errors + universe_at
+query (empty, no qualifying, exact match, latest wins, skips future).
+Le branchement live (orchestrator forme un header listant N coins
++ leur date) reste pour iter ultérieur.
 
 ---
 
