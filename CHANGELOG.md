@@ -6,6 +6,97 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.99] - 2026-04-30
+
+### Added — iter #95 : déclencheur de cycle manuel exposé sur APK
+
+Le runtime APK iter #93 a confirmé que les 5 onglets SPA Vuetify
+fonctionnent, **mais l'utilisateur n'a aucun moyen de déclencher un
+cycle**. Sans scheduler ni bouton, toutes les pages restent en empty
+state : 0 décision dans le Journal, 0 trade fermé, learning vide.
+Cet iter ajoute le bouton "Lancer un cycle" sur le Tableau de bord
+et la route HTTP qui le sert, pour que l'utilisateur puisse exercer
+le pipeline complet (perception → décision → exécution) end-to-end
+depuis le smartphone.
+
+### Added
+
+- ``src/emeraude/api/context.py`` :
+  - Nouveau lazy property ``AppContext.auto_trader`` qui construit
+    l'``AutoTrader`` à la première demande seulement. La
+    ``PositionTracker`` est partagée avec le ``DashboardDataSource``,
+    de sorte qu'une position ouverte par un cycle apparaît
+    immédiatement sur le tableau de bord (pas de cache à invalider).
+  - L'import d'``AutoTrader`` reste local (``noqa: PLC0415``) pour
+    éviter de tirer l'orchestrator + gate factories + market_data
+    sur le chemin lecture pure (Dashboard / Journal / Config).
+
+- ``src/emeraude/api/server.py`` :
+  - Nouvelle route ``POST /api/run-cycle`` (cookie auth requis,
+    sinon 403). Appelle ``AppContext.auto_trader.run_cycle()`` et
+    renvoie un résumé compact JSON :
+    ``{ok, summary: {symbol, interval, fetched_at, should_trade,
+    skip_reason?, opened_position?, data_quality_rejected,
+    data_quality_reason?}}``.
+  - Mapping erreurs honnête (anti-règle A8) :
+    - ``OSError`` / ``URLError`` (réseau Binance) → **502 Bad Gateway**
+      avec le message upstream.
+    - ``Exception`` générique → **500** avec le type + le message.
+    Aucun ``except: pass`` silencieux ; aucun mock prod.
+
+- ``src/emeraude/web/index.html`` :
+  - Nouvelle carte **"Cycle manuel"** sur le Tableau de bord, juste
+    après la carte Sécurité.
+  - Bouton primary "Lancer un cycle" avec spinner ``:loading``
+    pendant la requête (``cycleInProgress`` ref).
+  - Alerte tonal qui rend en vert (``should_trade``), en bleu (skip)
+    ou en rouge (502/500) avec un détail ``symbole intervalle —
+    raison`` parsé depuis le payload du backend.
+  - Snackbar de succès "Cycle exécuté — trade." ou "Cycle exécuté
+    — pas de trade." selon ``summary.should_trade``.
+  - ``fetchDashboard()`` rappelé immédiatement après succès pour
+    ne pas attendre le prochain tick 5 s.
+
+- ``tests/unit/test_api_server.py`` — **+5 tests** :
+  - ``test_run_cycle_requires_auth`` : 403 sans cookie.
+  - ``test_run_cycle_returns_summary_on_success`` : 200 + payload
+    compact, ``data_quality_rejected = False``, ``skip_reason``
+    propagé.
+  - ``test_run_cycle_502_on_upstream_fetch_failure`` : ``OSError``
+    → 502, message preserved.
+  - ``test_run_cycle_500_on_unexpected_exception`` :
+    ``RuntimeError`` → 500, type + message preserved.
+  - ``test_auto_trader_is_lazy`` (dans ``TestAppContext``) :
+    ``ctx._auto_trader`` part à ``None`` ; la première lecture
+    de la propriété construit l'instance, la deuxième renvoie
+    le **même** objet (idempotence).
+
+### Changed
+
+- ``pyproject.toml`` + ``buildozer.spec`` : ``0.0.98`` -> ``0.0.99``.
+- ``src/emeraude/__init__.py`` : ``_FALLBACK_VERSION = "0.0.99"``.
+
+### Notes
+
+- **Suite stable** : 1963 tests passent (+5 vs v0.0.98), 99.30%
+  coverage, ruff + ruff format + mypy strict + bandit + pip-audit
+  OK. ``pip-audit`` continue de signaler ``CVE-2026-3219`` sur le
+  ``pip 26.0.1`` de l'environnement uv ; la CVE n'affecte pas
+  l'APK packagé (p4a ne ship pas pip dans le binaire).
+- **Mesure objectif iter #95** :
+  - Avant : APK runtime → 0 cycle exécutable depuis l'UI ; le
+    pipeline ne tourne que via test pytest. Tableau / Journal /
+    Performance / IA tous en empty state.
+  - Après : un tap sur "Lancer un cycle" déclenche un cycle
+    complet, le résultat surface dans la même carte (alerte
+    tonal) et le Journal voit la décision apparaître au tick
+    suivant. R/R observable sans CLI ni adb.
+- **Suite logique** : prochain iter peut soit (a) rajouter un
+  scheduler interne avec intervalle configurable depuis la page
+  Config, soit (b) commencer la boucle d'apprentissage offline
+  (walk-forward + champion lifecycle) maintenant que la collecte
+  de décisions live est débloquée.
+
 ## [0.0.98] - 2026-04-30
 
 ### Fixed — iter #94 : version "vunknown" affichée sur l'APK runtime

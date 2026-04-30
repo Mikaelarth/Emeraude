@@ -1046,6 +1046,114 @@ class TestHTTPIntegration:
         finally:
             self._stop(server, thread)
 
+    # ── /api/run-cycle (iter #95) ────────────────────────────────────────────
+
+    def test_run_cycle_requires_auth(self, tmp_path: Path) -> None:
+        port, _token, thread, server = self._setup_server(tmp_path)
+        try:
+            status, body = self._post_json(port, "/api/run-cycle", {}, token=None)
+            assert status == 403
+            assert "error" in body
+        finally:
+            self._stop(server, thread)
+
+    def test_run_cycle_returns_summary_on_success(self, tmp_path: Path) -> None:
+        # Inject a fake AutoTrader on the AppContext so we don't hit
+        # Binance from a unit test. The route just unwraps the
+        # CycleReport into a JSON summary — we exercise the wiring,
+        # not the real cycle pipeline (which has its own coverage in
+        # ``test_auto_trader.py``).
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            from emeraude.agent.execution.circuit_breaker import (  # noqa: PLC0415
+                CircuitBreakerState,
+            )
+
+            # Simple object stand-ins (not dataclasses — dataclass
+            # default values can't be mutable instances). Only the
+            # attributes the handler reads are populated.
+            class _FakeDecision:
+                breaker_state = CircuitBreakerState.HEALTHY
+                should_trade = False
+                skip_reason: str | None = "ensemble_not_qualified"
+
+            class _FakeReport:
+                symbol = "BTCUSDT"
+                interval = "1h"
+                fetched_at = 1_700_000_000
+                decision = _FakeDecision()
+                tick_outcome = None
+                opened_position = None
+                data_quality_rejected = False
+                data_quality_rejection_reason = ""
+
+            class _FakeTrader:
+                def run_cycle(self) -> _FakeReport:
+                    return _FakeReport()
+
+            ctx = server.app_context  # type: ignore[attr-defined]
+            ctx._auto_trader = _FakeTrader()
+
+            status, body = self._post_json(port, "/api/run-cycle", {}, token=token)
+            assert status == 200
+            assert body["ok"] is True
+            summary = body["summary"]
+            assert isinstance(summary, dict)
+            assert summary["symbol"] == "BTCUSDT"
+            assert summary["interval"] == "1h"
+            assert summary["should_trade"] is False
+            assert summary["skip_reason"] == "ensemble_not_qualified"
+            assert summary["data_quality_rejected"] is False
+        finally:
+            self._stop(server, thread)
+
+    def test_run_cycle_502_on_upstream_fetch_failure(self, tmp_path: Path) -> None:
+        # If the AutoTrader's fetcher raises a network error, the route
+        # MUST surface 502 Bad Gateway with the upstream message —
+        # never 500 (anti-rule A8 : honest error class).
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+
+            class _BrokenTrader:
+                def run_cycle(self) -> object:
+                    raise OSError("network unreachable")
+
+            ctx = server.app_context  # type: ignore[attr-defined]
+            ctx._auto_trader = _BrokenTrader()
+
+            status, body = self._post_json(port, "/api/run-cycle", {}, token=token)
+            assert status == 502
+            assert body["ok"] is False
+            error = body["error"]
+            assert isinstance(error, str)
+            assert "network unreachable" in error
+        finally:
+            self._stop(server, thread)
+
+    def test_run_cycle_500_on_unexpected_exception(self, tmp_path: Path) -> None:
+        # Non-network exceptions (e.g. KeyError from a mis-wired
+        # orchestrator) surface as 500 with a typed message — still
+        # never silently swallowed.
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+
+            class _BuggyTrader:
+                def run_cycle(self) -> object:
+                    raise RuntimeError("orchestrator misconfigured")
+
+            ctx = server.app_context  # type: ignore[attr-defined]
+            ctx._auto_trader = _BuggyTrader()
+
+            status, body = self._post_json(port, "/api/run-cycle", {}, token=token)
+            assert status == 500
+            assert body["ok"] is False
+            error = body["error"]
+            assert isinstance(error, str)
+            assert "RuntimeError" in error
+            assert "orchestrator misconfigured" in error
+        finally:
+            self._stop(server, thread)
+
 
 # ─── AppContext basic smoke ─────────────────────────────────────────────────
 
@@ -1061,6 +1169,18 @@ class TestAppContext:
         assert ctx.performance_data_source is not None
         assert ctx.binance_credentials_service is not None
         assert ctx.wallet is not None
+
+    def test_auto_trader_is_lazy(self) -> None:
+        # Iter #95 : AutoTrader is built on first access only, to keep
+        # the data-source path light.
+        ctx = AppContext()
+        # The internal attribute starts as None.
+        assert ctx._auto_trader is None
+        # First property access constructs the instance.
+        trader = ctx.auto_trader
+        assert trader is not None
+        # Subsequent access returns the same instance.
+        assert ctx.auto_trader is trader
 
 
 # ─── web_app helpers ─────────────────────────────────────────────────────────

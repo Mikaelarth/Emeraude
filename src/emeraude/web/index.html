@@ -242,6 +242,65 @@
                                     </v-btn>
                                 </v-card-actions>
                             </v-card>
+
+                            <!-- Cycle manuel — déclencheur AutoTrader (iter #95) -->
+                            <v-card class="mb-4" elevation="0" rounded="lg" color="surface">
+                                <v-card-title class="d-flex align-center">
+                                    <v-icon class="mr-2" color="medium-emphasis">mdi-play-circle-outline</v-icon>
+                                    Cycle manuel
+                                </v-card-title>
+
+                                <v-card-text class="pt-0">
+                                    <p class="text-body-2 text-medium-emphasis">
+                                        Déclenche un cycle complet (perception, décision,
+                                        exécution). Utile en mode Paper pour tester le
+                                        pipeline et voir une décision arriver dans le
+                                        Journal sans attendre le prochain tick.
+                                    </p>
+                                </v-card-text>
+
+                                <v-alert
+                                    v-if="cycleError"
+                                    density="compact"
+                                    type="error"
+                                    variant="tonal"
+                                    icon="mdi-alert-circle-outline"
+                                    class="mx-4 mb-2"
+                                >
+                                    <v-alert-title class="text-body-2 font-weight-bold">
+                                        Cycle interrompu
+                                    </v-alert-title>
+                                    <div class="mt-1 text-caption">{{ cycleError }}</div>
+                                </v-alert>
+
+                                <v-alert
+                                    v-else-if="lastCycleSummary"
+                                    density="compact"
+                                    :type="lastCycleSummary.should_trade ? 'success' : 'info'"
+                                    variant="tonal"
+                                    :icon="lastCycleSummary.should_trade ? 'mdi-check-circle-outline' : 'mdi-information-outline'"
+                                    class="mx-4 mb-2"
+                                >
+                                    <v-alert-title class="text-body-2 font-weight-bold">
+                                        {{ lastCycleLabel }}
+                                    </v-alert-title>
+                                    <div class="mt-1 text-caption">{{ lastCycleDetail }}</div>
+                                </v-alert>
+
+                                <v-card-actions class="px-4 pb-4 pt-0">
+                                    <v-btn
+                                        block
+                                        variant="flat"
+                                        color="primary"
+                                        prepend-icon="mdi-play-circle-outline"
+                                        :loading="cycleInProgress"
+                                        :disabled="cycleInProgress"
+                                        @click="runCycle"
+                                    >
+                                        Lancer un cycle
+                                    </v-btn>
+                                </v-card-actions>
+                            </v-card>
                         </v-container>
                     </v-window-item>
 
@@ -1249,6 +1308,16 @@
                 const emergencyInProgress = ref(false);
                 const emergencyError = ref(null);
 
+                // ─── Manual cycle state (iter #95) ──────────────────────
+                // ``cycleInProgress`` drives the button spinner ;
+                // ``lastCycleSummary`` keeps the most recent successful
+                // payload so the user sees a confirmation alert ;
+                // ``cycleError`` surfaces 502 (upstream) / 500
+                // (unexpected) errors in the same card.
+                const cycleInProgress = ref(false);
+                const cycleError = ref(null);
+                const lastCycleSummary = ref(null);
+
                 async function fetchJSON(path) {
                     const res = await fetch(path, { credentials: 'include' });
                     if (!res.ok) {
@@ -1449,6 +1518,31 @@
                     );
                 }
 
+                // ─── Manual cycle handler (iter #95) ────────────────────
+                // POSTs ``/api/run-cycle`` and stashes the response so the
+                // dashboard card can render the summary inline. We also
+                // refetch the dashboard immediately (without waiting for
+                // the next 5 s tick) so an opened position surfaces right
+                // away on the same screen.
+                async function runCycle() {
+                    cycleInProgress.value = true;
+                    cycleError.value = null;
+                    try {
+                        const summary = await postJSON('/api/run-cycle', {});
+                        lastCycleSummary.value = summary;
+                        await fetchDashboard();
+                        if (summary.should_trade) {
+                            showSuccessToast('Cycle exécuté — décision de trade.');
+                        } else {
+                            showSuccessToast('Cycle exécuté — pas de trade.');
+                        }
+                    } catch (err) {
+                        cycleError.value = String(err.message || err);
+                    } finally {
+                        cycleInProgress.value = false;
+                    }
+                }
+
                 // ─── Toggle handlers (anti-règle A5) ────────────────────
                 function startCountdown() {
                     realCountdown.value = 5;
@@ -1579,6 +1673,30 @@
                 const hasOpenPosition = computed(
                     () => Boolean(dashboardSnapshot.value?.open_position)
                 );
+
+                // Manual cycle (iter #95)
+                // The summary alert renders two lines : a one-line label
+                // (trade vs skip vs data-quality reject) and a longer
+                // detail line that reuses the symbol / interval / reason
+                // string from the backend payload.
+                const lastCycleLabel = computed(() => {
+                    const s = lastCycleSummary.value;
+                    if (!s) return '';
+                    if (s.data_quality_rejected) return 'Cycle rejeté (qualité données)';
+                    if (s.should_trade) return 'Cycle exécuté — trade';
+                    return 'Cycle exécuté — skip';
+                });
+                const lastCycleDetail = computed(() => {
+                    const s = lastCycleSummary.value;
+                    if (!s) return '';
+                    const symbol = s.symbol ?? '?';
+                    const interval = s.interval ?? '?';
+                    const reason = s.skip_reason ?? s.data_quality_reason;
+                    if (reason) {
+                        return `${symbol} ${interval} — ${reason}`;
+                    }
+                    return `${symbol} ${interval}`;
+                });
 
                 // Mode chip — sourced from the dashboard snapshot (live),
                 // falls back to the config snapshot if dashboard not loaded.
@@ -1885,6 +2003,9 @@
                     showEmergencyResetDialog,
                     emergencyInProgress,
                     emergencyError,
+                    cycleInProgress,
+                    cycleError,
+                    lastCycleSummary,
                     // computed view-model
                     pageTitle,
                     formattedCapital,
@@ -1933,6 +2054,8 @@
                     formattedCalmar,
                     formattedProfitFactor,
                     formattedMaxDrawdown,
+                    lastCycleLabel,
+                    lastCycleDetail,
                     // handlers
                     openRealDialog,
                     closeRealDialog,
@@ -1950,6 +2073,7 @@
                     closeEmergencyResetDialog,
                     confirmEmergencyStop,
                     confirmEmergencyReset,
+                    runCycle,
                 };
             },
         };

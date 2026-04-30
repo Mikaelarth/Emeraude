@@ -45,6 +45,7 @@ from emeraude.services.wallet import DEFAULT_COLD_START_CAPITAL, WalletService
 if TYPE_CHECKING:
     from decimal import Decimal
 
+    from emeraude.services.auto_trader import AutoTrader
     from emeraude.services.config_types import ConfigDataSource
     from emeraude.services.dashboard_types import DashboardDataSource
     from emeraude.services.journal_types import JournalDataSource
@@ -76,6 +77,10 @@ class AppContext:
         from emeraude.infra import database  # noqa: PLC0415
 
         tracker = PositionTracker()
+        # Stored for the lazy ``auto_trader`` property below — the
+        # cycle trigger needs the same tracker instance the dashboard
+        # reads so an opened position immediately surfaces in the UI.
+        self._tracker = tracker
 
         # Mode provider : reads the persisted setting on each call,
         # falls back to the constructor-default. Wallet + dashboard +
@@ -130,6 +135,13 @@ class AppContext:
 
         self._binance_credentials_service = BinanceCredentialsService()
 
+        # AutoTrader is built lazily on first ``auto_trader`` access.
+        # The constructor is heavyweight (instantiates an Orchestrator,
+        # gate factories, etc.) and reaches out to ``infra.market_data``
+        # at run-cycle time, so we don't pay that cost during plain
+        # data-source reads (Dashboard / Journal / Config / etc.).
+        self._auto_trader: AutoTrader | None = None
+
     @property
     def dashboard_data_source(self) -> DashboardDataSource:
         """Data source for the Dashboard screen."""
@@ -164,3 +176,27 @@ class AppContext:
     def wallet(self) -> WalletService:
         """Wallet service — exposed for tests and admin actions."""
         return self._wallet
+
+    @property
+    def auto_trader(self) -> AutoTrader:
+        """Lazily-instantiated :class:`AutoTrader` for cycle triggers.
+
+        Built on first access. The same instance is reused across
+        cycles ; it shares the :class:`PositionTracker` with the
+        dashboard so an opened position immediately surfaces in the
+        UI on the next refresh.
+
+        Iter #95 wires this to the ``POST /api/run-cycle`` endpoint
+        so the user can trigger a cycle manually from the APK.
+        Future iters may add a scheduler that calls ``run_cycle``
+        periodically without UI input.
+        """
+        if self._auto_trader is None:
+            # Local import : ``AutoTrader`` pulls the orchestrator +
+            # gate factories + market_data, all of which are heavier
+            # than the data-source path. Keeping the import lazy
+            # avoids paying for it on plain reads.
+            from emeraude.services.auto_trader import AutoTrader  # noqa: PLC0415
+
+            self._auto_trader = AutoTrader(tracker=self._tracker)
+        return self._auto_trader

@@ -16,6 +16,7 @@ Architecture (cf. ADR-0004) :
     - ``POST   /api/credentials``     ``{"api_key", "api_secret"}`` -> status
     - ``POST   /api/emergency-stop``  -> ``{state}`` (freeze breaker, audit)
     - ``POST   /api/emergency-reset`` -> ``{state}`` (reset breaker, audit)
+    - ``POST   /api/run-cycle``       -> ``{ok, summary}`` (trigger cycle, iter #95)
     - ``DELETE /api/credentials``     -> updated status (idempotent)
 
 * Iter #78 a livré la route ``/api/dashboard`` ; iter #79 ajoute
@@ -444,6 +445,10 @@ class _RequestHandler(BaseHTTPRequestHandler):
             self._handle_emergency_reset()
             return
 
+        if route == "run-cycle":
+            self._handle_run_cycle()
+            return
+
         self._send_json(HTTPStatus.NOT_FOUND, {"error": "unknown route"})
 
     # ─── DELETE API routes ──────────────────────────────────────────────────
@@ -618,6 +623,90 @@ class _RequestHandler(BaseHTTPRequestHandler):
             {"from": previous.value, "to": new_state.value, "source": "api"},
         )
         self._send_json(HTTPStatus.OK, {"state": new_state.value})
+
+    def _handle_run_cycle(self) -> None:
+        """Trigger one :meth:`AutoTrader.run_cycle` invocation (iter #95).
+
+        This is the manual cycle trigger exposed to the UI : the user
+        taps "Lancer un cycle" on the Dashboard, the SPA POSTs here,
+        and the bot performs one full pipeline pass (fetch klines /
+        price -> data-quality guard -> tick -> breaker / drift /
+        risk monitors -> decision -> maybe-open). The
+        :class:`CycleReport` summary is returned so the UI can show
+        immediate feedback without polling.
+
+        Errors :
+
+        * :class:`OSError` / :class:`urllib.error.URLError` from the
+          network fetchers -> 502 Bad Gateway with the upstream message.
+        * Any other unexpected exception -> 500 Internal Server Error
+          with the exception message. We do NOT swallow exceptions
+          silently (anti-règle A8).
+
+        Returns a compact JSON summary :
+
+        .. code-block:: json
+
+            {
+              "ok": true,
+              "summary": {
+                "symbol": "BTCUSDT",
+                "mode": "paper",
+                "should_trade": false,
+                "skip_reason": "ensemble_not_qualified",
+                "data_quality_rejected": false,
+                "opened_position_id": null,
+                "tick_outcome_id": null
+              }
+            }
+        """
+        # Local import : keeps the URLError class scoped to where it
+        # is caught and avoids paying the cost on cycles that don't
+        # error (the vast majority).
+        import urllib.error  # noqa: PLC0415
+
+        try:
+            report = self.app_context.auto_trader.run_cycle()
+        except (OSError, urllib.error.URLError) as exc:
+            self._send_json(
+                HTTPStatus.BAD_GATEWAY,
+                {
+                    "ok": False,
+                    "error": f"upstream fetch failed : {exc}",
+                },
+            )
+            return
+        except Exception as exc:  # noqa: BLE001  (last-resort fallback)
+            self._send_json(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                {
+                    "ok": False,
+                    "error": f"cycle failed : {type(exc).__name__}: {exc}",
+                },
+            )
+            return
+
+        # Compact summary — the full :class:`CycleReport` is heavy
+        # (nested dataclasses with Decimal trade levels etc.). The UI
+        # just needs enough to render the result toast and refresh
+        # the dashboard.
+        summary = {
+            "symbol": report.symbol,
+            "interval": report.interval,
+            "fetched_at": report.fetched_at,
+            "mode": report.decision.breaker_state.value,
+            "should_trade": report.decision.should_trade,
+            "skip_reason": report.decision.skip_reason,
+            "data_quality_rejected": report.data_quality_rejected,
+            "data_quality_rejection_reason": report.data_quality_rejection_reason,
+            "opened_position_id": (
+                report.opened_position.id if report.opened_position is not None else None
+            ),
+            "tick_outcome_id": (
+                report.tick_outcome.id if report.tick_outcome is not None else None
+            ),
+        }
+        self._send_json(HTTPStatus.OK, {"ok": True, "summary": summary})
 
     def _read_json_object(self) -> dict[str, Any] | None:
         """Parse a JSON object from the POST body.
