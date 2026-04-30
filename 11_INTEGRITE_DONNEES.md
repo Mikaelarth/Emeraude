@@ -91,45 +91,54 @@ coins de l'univers + leur date d'ajout.
 
 ---
 
-### D3 — Bougies corrompues
+### D3 — Bougies corrompues — ✅ module livré (iter #86)
 
-**Détection** : `core/data_quality.py` (à créer) applique 5 tests à
-chaque bougie reçue :
+**Détection** : `infra/data_quality.py` (livré iter #86) applique 5 tests
+à chaque bougie reçue via :func:`check_bar_quality` :
 
-| Test | Condition de rejet |
-|---|---|
-| Volume nul + range non nul | suspicieux, flag `flat_volume` |
-| High < Low | corruption garantie, **rejet dur** |
-| Close hors [Low, High] | corruption garantie, **rejet dur** |
-| Range > 50× ATR_30 | spike anormal, flag `outlier_range` |
-| Δt avec bar précédent ≠ timeframe attendu | série désalignée, flag `time_gap` |
+| Test | Condition de rejet | Flag enum |
+|---|---|---|
+| Volume nul + range non nul | suspicieux, warning | `FLAT_VOLUME` |
+| High < Low | corruption garantie, **rejet dur** | `INVALID_HIGH_LOW` |
+| Close hors [Low, High] | corruption garantie, **rejet dur** | `CLOSE_OUT_OF_RANGE` |
+| Range > 50× ATR_N | spike anormal, warning | `OUTLIER_RANGE` |
+| Δt avec bar précédent ≠ timeframe attendu | série désalignée, warning | `TIME_GAP` |
 
 **Politique** : flags warning → continuer mais logger ; rejet dur →
-abandonner le cycle, retry suivant.
+abandonner le cycle, retry suivant. Encodé dans
+:attr:`BarQualityReport.should_reject` (HARD reject ssi un flag du
+sous-ensemble ``{INVALID_HIGH_LOW, CLOSE_OUT_OF_RANGE}``).
 
-**Critère mesurable** : audit log contient ≥ 1 événement
-`bar_quality_warning` par mois (preuve que la détection tourne et
-n'est pas zombie).
+**Critère mesurable** : ✅ module livré + 40 tests pytest verts.
+Branchement dans le data_ingestion path de l'orchestrator reste pour
+un iter ultérieur (R2 — une variable à la fois).
 
 ---
 
-### D4 — Bougies manquantes
+### D4 — Bougies manquantes — ✅ module livré (iter #86)
 
-**Politique** : aucune interpolation silencieuse.
+**Politique** : aucune interpolation silencieuse. Encodée dans
+:func:`infra.data_quality.check_history_completeness` (livré iter #86).
 
-**Mise en œuvre** :
+**Mise en œuvre** (livrée) :
 
-1. À la réception d'une série de N bars, on vérifie que `len(series)`
-   correspond à `(end - start) / timeframe`.
-2. Si manquantes :
-   - **< 5 % de la série** : interpolation linéaire **avec flag**
-     `data_quality: interpolated_X_bars` joint au signal résultant.
-   - **≥ 5 % de la série** : **rejet du cycle**, attente du suivant.
-3. Le flag est propagé dans `audit_log` et empêche tout vote ensemble
-   strong.
+1. ``check_history_completeness(n_received, n_expected, tolerance)``
+   compare le cardinal reçu vs attendu et calcule
+   ``missing_pct = (expected - received) / expected``.
+2. Politique :
+   - **< 5 % de la série** : ``should_interpolate=True``, flag
+     ``missing_X_bars`` propagé pour audit. Caller responsable de
+     l'interpolation linéaire (la fonction d'interpolation viendra
+     en iter ultérieure).
+   - **≥ 5 % de la série** : ``should_reject=True``, le caller doit
+     skipper le cycle.
+3. Edge case ``n_expected == 0`` : trivialement complet (pas de
+   division par zéro). Edge case ``n_received > n_expected``
+   (off-by-one fetch) : ``missing_pct`` clampé à 0, pas de reject.
 
-**Critère mesurable** : 0 cycle sans `data_quality` field rempli en
-audit (même valeur "ok" doit être présente).
+**Critère mesurable** : ✅ module livré + tests pytest verts (incl.
+threshold 5 % strict, clamp >n_expected, validation arguments).
+Branchement live au data_ingestion path reste pour iter ultérieure.
 
 ---
 

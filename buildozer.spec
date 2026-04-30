@@ -37,7 +37,7 @@ source.exclude_dirs = tests, docs, .venv, .buildozer, bin, __pycache__
 # Manual sync with pyproject.toml. We don't use ``version.regex`` because
 # emeraude/__init__.py reads its version dynamically via importlib.metadata
 # (works in pip-installed contexts but not parseable by buildozer).
-version = 0.0.89
+version = 0.0.90
 
 # (list) Application requirements
 # Iter #79 (cf. ADR-0004) : bascule de bootstrap ``sdl2`` -> ``webview``.

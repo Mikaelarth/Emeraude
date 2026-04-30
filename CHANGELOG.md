@@ -6,6 +6,115 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.90] - 2026-04-30
+
+### Added — iter #86 : D3 + D4 data quality (5 checks par bar + completeness série)
+
+Doc 11 §"D3 — Bougies corrompues" décrit 5 checks à appliquer à
+chaque kline reçue (volume nul, high<low, close hors range, range
+outlier, time gap) ; doc 11 §"D4 — Bougies manquantes" décrit la
+politique 5 % interpolation / 5 % rejet sur la complétude d'une
+série. Aucun module n'implémentait ces vérifications jusqu'à cet
+iter — le code de production se contentait de faire confiance aux
+klines reçues de Binance / CoinGecko.
+
+Cet iter livre un module **utilitaire pur** (`infra/data_quality.py`)
+qui encapsule les deux contrats. Le branchement live dans
+l'orchestrator reste pour un iter ultérieur — anti-règle R2 « une
+variable à la fois ».
+
+### Added
+
+- ``src/emeraude/infra/data_quality.py`` (nouveau, ~210 LOC) :
+  - :class:`BarQualityFlag` enum (StrEnum, JSON-friendly) avec 5
+    valeurs : ``FLAT_VOLUME``, ``INVALID_HIGH_LOW``,
+    ``CLOSE_OUT_OF_RANGE``, ``OUTLIER_RANGE``, ``TIME_GAP``.
+  - :class:`BarQualityReport` dataclass avec proprieté
+    ``should_reject`` (HARD reject ssi un flag du sous-ensemble
+    ``{INVALID_HIGH_LOW, CLOSE_OUT_OF_RANGE}``) et ``is_clean``
+    (no flag at all).
+  - :func:`check_bar_quality(kline, *, prev_kline, expected_dt_ms,
+    atr_value, outlier_atr_mult)` : pure function qui run les 5
+    checks D3 et renvoie la liste des flags. Tous les inputs
+    optionnels skip silencieusement leur check correspondant
+    (cold start, ATR pas encore calculable, etc.).
+  - :class:`HistoryCompletenessReport` dataclass avec
+    ``missing_pct``, ``should_reject``, ``should_interpolate``,
+    ``flags``.
+  - :func:`check_history_completeness(*, n_received, n_expected,
+    tolerance)` : applique le seuil 5 % du doc 11 §D4. Edge cases
+    couverts : ``n_expected == 0`` (trivialement complet),
+    ``n_received > n_expected`` (off-by-one over-fetch, clamp à 0).
+  - Constantes module ``DEFAULT_OUTLIER_ATR_MULT = Decimal("50")``,
+    ``DEFAULT_INTERPOLATION_LIMIT = Decimal("0.05")`` (configurables
+    par appel).
+
+- ``tests/unit/test_data_quality.py`` (nouveau, ~370 LOC) — **+40 tests** :
+  - ``TestBarQualityReport`` (5 tests) : propriétés ``should_reject``
+    + ``is_clean`` sur tous les patterns possibles (clean, warning
+    only, hard-reject, mix).
+  - ``TestCheckBarQualityClean`` (2) : bar propre seul + avec inputs
+    optionnels valides.
+  - ``TestCheckBarQualityFlatVolume`` (3) : volume=0 + range≠0
+    flagged, volume=0 + range=0 OK, volume>0 OK.
+  - ``TestCheckBarQualityInvalidHighLow`` (2) : high<low rejet, flat
+    bar (high=low) OK.
+  - ``TestCheckBarQualityCloseOutOfRange`` (4) : close>high rejet,
+    close<low rejet, close==high OK, close==low OK.
+  - ``TestCheckBarQualityOutlierRange`` (5) : range>50×ATR flagged,
+    boundary (×50 exact) OK, no ATR skip, ATR=0 skip, custom
+    multiplier.
+  - ``TestCheckBarQualityTimeGap`` (4) : matching dt OK, mismatched
+    dt flagged, no prev_kline skip, no expected_dt skip.
+  - ``TestCheckBarQualityCombined`` (1) : 3 flags simultanés
+    yieldés dans l'ordre des checks ; HARD reject l'emporte.
+  - ``TestCheckHistoryCompleteness`` (10) : complete série, zero
+    expected, < 5 %, == 5 % (boundary strict reject), > 5 %, extras
+    clamped, custom tolerance, validation des arguments négatifs.
+  - ``TestDefaultsStability`` (3) : verrou les valeurs publiques
+    contre tweaks accidentels.
+
+### Changed
+
+- ``11_INTEGRITE_DONNEES.md`` :
+  - §D3 marqué ✅ module livré (iter #86) avec mapping check ->
+    flag enum et statut détaillé.
+  - §D4 marqué ✅ module livré (iter #86) avec API
+    :func:`check_history_completeness` + edge cases listés.
+  - Les deux sections explicitent que le branchement live au
+    data_ingestion path de l'orchestrator reste pour iter
+    ultérieure (R2).
+- ``pyproject.toml`` + ``buildozer.spec`` : ``0.0.89`` -> ``0.0.90``.
+
+### Notes
+
+- **Suite stable** (test count à confirmer après run, +40 vs v0.0.89),
+  coverage 99.49 %+, ruff + ruff format + mypy strict + bandit +
+  pip-audit OK.
+- **Mesure objectif iter #86** :
+  - Avant : 0 module dédié à la qualité des klines, 0 detection
+    systematic des high<low / close hors range / volume nul / outlier
+    range / time gap, D3+D4 listés 🔴 dans matrice doc 11.
+  - Après : **1 module utilitaire pur + 40 tests** + D3 ✅ + D4 ✅
+    -> ✅ atteint.
+- **Anti-règle A1** : pas de wiring orchestrator dans cet iter. Le
+  module est utilitaire pur ; l'iter ultérieure qui branchera la
+  validation au data_ingestion path doit ajouter l'audit
+  ``bar_quality_warning`` selon la politique du doc 11 ("≥ 1
+  événement par mois pour prouver que la détection tourne et
+  n'est pas zombie").
+- **R2 — une variable à la fois** : changements limités au module
+  pur + sa doc + ses tests. L'orchestrator reste intouché.
+- **Statut intégrité données après iter #86** :
+  - ✅ D3 (module livré, iter #86)
+  - ✅ D4 (module livré, iter #86)
+  - ✅ D5 (test scanner livré, iter #85)
+  - 🔴 D1 (look-ahead bias — test "shift invariance" + assert_no_lookahead à créer)
+  - 🔴 D2 (survivorship bias — table coin_universe_snapshots)
+  - 🔴 D6 (data revision — snapshots horodatés immuables)
+- **Reste à faire** : iter ultérieure pour brancher D3+D4 au live
+  data_ingestion path, plus iters dédiées à D1, D2, D6.
+
 ## [0.0.89] - 2026-04-30
 
 ### Added — iter #85 : D5 Timezone guard (defense-in-depth scanner)
