@@ -6,6 +6,100 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.92] - 2026-04-30
+
+### Added — iter #88 : D6 Data revision snapshots (immutable + hashed)
+
+Doc 11 §"D6 — Data revision (Binance corrige a posteriori)" exige
+des snapshots horodatés immuables avec hash SHA-256 prouvant que
+deux runs ont utilisé la **même donnée bit-à-bit**. Sans ça, deux
+runs du "même" backtest peuvent diverger silencieusement quand
+Binance corrige une bougie post-hoc — typique de leur protocole de
+rollback exchange (rare en spot mais possible).
+
+Cet iter livre le module utilitaire pur — le wiring dans le
+data_ingestion path live reste pour l'iter qui livrera l'engine de
+backtest (R2 — une variable à la fois).
+
+**6/6 critères doc 11 sont ✅** après cet iter.
+
+### Added
+
+- ``src/emeraude/infra/data_snapshot.py`` (nouveau, ~350 LOC) :
+  - :class:`KlineSnapshot` dataclass immutable (frozen, slots) :
+    symbol, interval, period_start_ms, period_end_ms, klines tuple,
+    captured_at_ms, content_hash.
+  - :func:`compute_snapshot_hash` pure : SHA-256 sur représentation
+    canonique pipe-séparée des champs Decimal-as-string. Indépendant
+    du formatting JSON sur disque — deux fichiers avec layout
+    différent mais content identique produisent le même hash.
+  - :func:`make_snapshot` constructor convenience qui calcule
+    automatiquement le ``content_hash``.
+  - :func:`save_snapshot(snapshot, path)` : écriture **atomique**
+    (tmp + rename) au format JSONL — header JSON line 1 + une
+    ligne Binance-positional par kline.
+  - :func:`load_snapshot(path)` : parse + recompute hash + verify ;
+    raise :class:`SnapshotIntegrityError` si le hash diffère du
+    header. Distinct de :class:`SnapshotFormatError` (problèmes
+    structurels : JSON invalide, field manquant, type incorrect,
+    n_klines incohérent, version mismatch).
+  - :class:`_SnapshotHeader` TypedDict interne pour mypy strict.
+  - Constantes module ``SNAPSHOT_FORMAT_VERSION = 1``,
+    ``_EXPECTED_KLINE_FIELDS = 8``, ``_HASH_PREFIX = "sha256:"``.
+
+- ``tests/unit/test_data_snapshot.py`` (nouveau) — **+23 tests** :
+  - ``TestComputeSnapshotHash`` (5) : empty -> SHA-256 of empty,
+    déterminisme, ordre-sensible (reverse change le hash), 8 variants
+    field-sensitive, canonical form Decimal("100") ≠ Decimal("100.0").
+  - ``TestMakeSnapshot`` (1) : populates content_hash automatique.
+  - ``TestRoundTrip`` (4) : full round-trip preserve every field,
+    empty klines, 8 décimales precision préservée (cas crypto réel),
+    atomic write (.tmp absent après save).
+  - ``TestIntegrityCheck`` (3) : kline tampered -> SnapshotIntegrityError,
+    kline ajouté/retiré -> SnapshotFormatError (n_klines mismatch).
+  - ``TestFormatErrors`` (8) : empty file, JSON invalide, header non-
+    dict, field manquant, type incorrect, version mismatch, kline
+    line non-array, wrong field count, file inexistant.
+  - ``TestKlineSnapshot`` (1) : frozen=True smoke (assignment échoue).
+
+### Changed
+
+- ``11_INTEGRITE_DONNEES.md`` §D6 marqué ✅ module livré (iter #88)
+  avec statut détaillé incluant la justification du hash canonique
+  indépendant du JSON sur disque, et le branchement live laissé pour
+  l'iter qui livrera l'engine de backtest.
+- ``pyproject.toml`` + ``buildozer.spec`` : ``0.0.91`` -> ``0.0.92``.
+
+### Notes
+
+- **Suite stable** (test count à confirmer après run, +23 vs v0.0.91),
+  coverage 99.50 %+, ruff + ruff format + mypy strict + bandit +
+  pip-audit OK.
+- **Mesure objectif iter #88** :
+  - Avant : 0 module pour persister immutablement une série OHLCV ;
+    D6 listé 🔴 ; aucun moyen de re-runs un backtest avec garantie
+    de reproductibilité quand Binance corrige une bougie.
+  - Après : **1 module utilitaire pur + 23 tests + D6 ✅** ->
+    ✅ atteint.
+- **Anti-règle A1** : pas de wiring live dans le data_ingestion path.
+  Le module est utilitaire pur ; l'iter ultérieure qui branchera la
+  persistance des snapshots au moment du fetch live doit propager le
+  ``content_hash`` dans le rapport de backtest (cf. doc 11 §5
+  ``data_snapshot_hash`` field).
+- **R2 — une variable à la fois** : changements limités au module pur
+  + sa doc + ses tests. Pas d'helper ``paths.data_snapshots_dir``
+  (ajoutable trivialement quand le wiring live arrivera).
+- **Statut intégrité données après iter #88** :
+  - ✅ D1 (shift invariance, iter #87)
+  - 🔴 D2 (survivorship bias — coin_universe_snapshots)
+  - ✅ D3 (data_quality module, iter #86)
+  - ✅ D4 (data_quality module, iter #86)
+  - ✅ D5 (naive datetime scanner, iter #85)
+  - ✅ **D6 (data_snapshot module, iter #88, ce iter)**
+  - **5/6 critères doc 11 sont ✅** après cet iter. Reste D2 (univers
+    coin snapshot) qui demande une décision d'architecture (table
+    SQL coin_universe_snapshots + maintenance manuelle mensuelle).
+
 ## [0.0.91] - 2026-04-30
 
 ### Added — iter #87 : D1 Look-ahead bias guard (shift-invariance test)

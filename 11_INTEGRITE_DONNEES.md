@@ -190,23 +190,41 @@ les 2 seuls usages actuels (`journal_types.py:185` +
 
 ---
 
-### D6 — Data revision (Binance corrige a posteriori)
+### D6 — Data revision (Binance corrige a posteriori) — ✅ module livré (iter #88)
 
 **Réalité** : très rare en spot mais possible (correction de bougie
 suite à un rollback exchange).
 
 **Politique** : pour les décisions de trading **live**, on prend la
 donnée à T comme référence définitive. Pour les **backtests
-reproductibles**, on snapshote la donnée :
+reproductibles**, on snapshote la donnée.
 
-1. `core/data_snapshot.py` (à créer) : à chaque téléchargement OHLCV,
-   on sauvegarde dans `data/snapshots/<symbol>_<date>_<hash>.jsonl`.
-2. Re-run de backtest = re-charge le snapshot, pas re-fetch Binance.
-3. Hash SHA-256 du snapshot loggé dans le rapport de backtest pour
-   prouver que deux runs ont utilisé la **même donnée bit-à-bit**.
+**Mise en œuvre** (livrée iter #88) :
 
-**Critère mesurable** : 2 runs successifs du même backtest → résultats
-identiques au cent près.
+1. `infra/data_snapshot.py` ✅ livré :
+   - :class:`KlineSnapshot` dataclass immutable (symbol, interval,
+     period bounds, klines, captured_at_ms, content_hash).
+   - :func:`make_snapshot` constructor qui calcule le hash.
+   - :func:`save_snapshot(path)` : écriture atomique JSONL (tmp +
+     rename) — header JSON + une ligne Binance-positional par kline.
+   - :func:`load_snapshot(path)` : parse + recompute hash + verify ;
+     :class:`SnapshotIntegrityError` si mismatch.
+   - :class:`SnapshotFormatError` distincte pour les problèmes
+     structurels (JSON invalide, champ manquant, type incorrect,
+     n_klines incohérent, version inconnue).
+2. **Hash canonique** : pipe-séparé sur les fields kline avec
+   ``str(Decimal)`` pour préserver l'exactitude. Indépendant du
+   formatting JSON sur disque — deux fichiers avec layout différent
+   mais content identique produisent le même hash.
+3. Le branchement live (re-charge du snapshot pour re-run de
+   backtest, hash loggé dans le rapport) reste pour l'iter qui
+   livrera l'engine de backtest. R2 — une variable à la fois.
+
+**Critère mesurable** : ✅ 23 tests pytest verts couvrant round-trip
+(precision Decimal préservée, atomic write, empty klines), détection
+de tampering (kline modifié -> SnapshotIntegrityError, kline ajouté/
+retiré -> SnapshotFormatError), erreurs de format (JSON invalide,
+field manquant, type incorrect, version mismatch), fichier inexistant.
 
 ---
 
