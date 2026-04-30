@@ -6,6 +6,72 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.83] - 2026-04-30
+
+### Added — iter #79 : pages Vuetify Journal + Config (ADR-0004 §"Plan de migration")
+
+L'iter #78 a livré le pivot architecture (WebView + Vue 3 + Vuetify) et
+la page Dashboard. Les onglets Journal et Config étaient présents dans
+le ``v-bottom-navigation`` mais marqués ``disabled``. L'iter #79 les
+active de bout en bout : 2 nouvelles routes API GET côté Python +
+2 nouvelles ``v-window-item`` côté Vue.
+
+### Added
+
+- ``src/emeraude/api/server.py`` :
+  - Route ``GET /api/journal`` -> :class:`JournalSnapshot` JSON
+    (rows = liste d'événements ``audit_log`` formattés, most-recent-first,
+    capped à :data:`DEFAULT_HISTORY_LIMIT` = 50).
+  - Route ``GET /api/config`` -> :class:`ConfigSnapshot` JSON (mode,
+    starting_capital, app_version, total_audit_events, db_path).
+  - Les deux routes réutilisent le helper ``_serialise`` existant
+    (Decimal -> str, dataclass -> dict). Pas de nouveau code de
+    sérialisation.
+  - Auth cookie ``HttpOnly`` toujours requis (constant-time compare).
+- ``src/emeraude/web/index.html`` :
+  - ``v-window`` enveloppant 3 ``v-window-item`` (dashboard / journal /
+    config). Le ``v-bottom-navigation`` pilote ``activeTab`` ; les
+    boutons Journal et Config ne sont plus ``disabled``.
+  - Page **Journal** : liste des décisions du bot (``time_label`` en
+    monospace + ``event_type`` en titre + ``summary`` payload tronqué)
+    avec un empty-state quand ``audit_log`` est vide.
+  - Page **Config** : 2 cards lisant Mode + Capital de référence puis
+    Version + Événements audit + Chemin DB. Footer ``v-alert`` info qui
+    annonce que le toggle Paper/Réel et la saisie clés API arrivent
+    en iter #80.
+  - ``v-app-bar-title`` réactif (``Emeraude`` / ``Journal`` /
+    ``Configuration``) selon l'onglet actif.
+  - Refresh dashboard inchangé (5 s, comme iter #78). Journal et
+    Config sont fetchés à l'activation de l'onglet (``watch(activeTab)``)
+    pour minimiser le churn de données : un journal listant 50
+    événements audit n'a pas vocation à être polled à 5 s.
+- ``tests/unit/test_api_server.py`` : **+4 tests intégration HTTP**
+  - ``test_api_journal_requires_auth`` : 403 sans cookie.
+  - ``test_api_journal_returns_snapshot`` : shape ``rows`` +
+    ``total_returned``, invariant ``total_returned == len(rows)``.
+  - ``test_api_config_requires_auth`` : 403 sans cookie.
+  - ``test_api_config_returns_snapshot`` : shape complète
+    (``mode``, ``starting_capital``, ``app_version``,
+    ``total_audit_events``, ``db_path``) + types post-sérialisation
+    (``starting_capital`` = ``str | None``, ``total_audit_events`` =
+    ``int``, etc.).
+
+### Changed
+
+- ``pyproject.toml`` + ``buildozer.spec`` : ``0.0.82`` -> ``0.0.83``.
+
+### Notes
+
+- **Suite stable à 1 737 tests** (+4 vs v0.0.82), coverage 99.51 %,
+  ruff + ruff format + mypy strict + bandit + pip-audit OK.
+- Mesure objectif iter #79 :
+  - Avant : 1 page Vuetify fonctionnelle / 3, 1 endpoint API / 3,
+    2 onglets ``v-bottom-navigation`` ``disabled``.
+  - Après : **3 / 3, 3 / 3, 0 ``disabled``** -> ✅ atteint.
+- Restent en chantier doc 02 : la saisie clés API Binance, le toggle
+  Paper/Réel double-tap (anti-règle A5), Backtest, Telegram, Emergency
+  Stop. Tous regroupés dans iter #80.
+
 ## [0.0.82] - 2026-04-30
 
 ### Changed — pivot bootstrap p4a (cf. ADR-0004)

@@ -8,6 +8,8 @@
 
     <!--
     Iter #78 — Vue 3 + Vuetify Dashboard.
+    Iter #79 — Multi-page (Dashboard / Journal / Config) avec
+    ``v-window`` ; le ``v-bottom-navigation`` pilote la tab active.
     Cf. ADR-0004 : remplacement de la couche Kivy par une WebView qui
     consomme un serveur HTTP Python local. Pas de build step (Vite,
     npm) — on charge Vue + Vuetify depuis cdn.jsdelivr.net via les
@@ -50,6 +52,33 @@
             line-height: 1.1;
             letter-spacing: -0.01em;
         }
+
+        /* Journal row : the time column is fixed-width so the event
+           type aligns visually across rows of varying length. */
+        .journal-time {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 13px;
+            min-width: 72px;
+            color: rgba(237, 240, 238, 0.7);
+        }
+        .journal-summary {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 12px;
+            color: rgba(237, 240, 238, 0.55);
+            word-break: break-all;
+        }
+
+        /* Config rows : key/value table with the value right-aligned and
+           wrapping naturally for long paths. */
+        .config-key {
+            color: rgba(237, 240, 238, 0.7);
+        }
+        .config-value {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 13px;
+            text-align: right;
+            word-break: break-all;
+        }
     </style>
 </head>
 <body>
@@ -57,10 +86,10 @@
         <v-app theme="dark">
             <!-- ─── Top App Bar ────────────────────────────────────────── -->
             <v-app-bar density="comfortable" color="background">
-                <v-app-bar-title class="font-weight-bold">Emeraude</v-app-bar-title>
+                <v-app-bar-title class="font-weight-bold">{{ pageTitle }}</v-app-bar-title>
                 <template v-slot:append>
                     <v-chip
-                        v-if="snapshot"
+                        v-if="dashboardSnapshot"
                         :color="modeChipColor"
                         variant="flat"
                         size="small"
@@ -74,80 +103,213 @@
 
             <!-- ─── Main scrollable content ──────────────────────────────── -->
             <v-main>
-                <!-- Loading state -->
-                <v-container v-if="!snapshot && !error" class="d-flex justify-center align-center" style="min-height: 60vh;">
-                    <v-progress-circular indeterminate color="primary" size="64"></v-progress-circular>
-                </v-container>
+                <v-window v-model="activeTab" :touch="false">
 
-                <!-- Error state -->
-                <v-container v-else-if="error" class="pa-4">
-                    <v-alert type="error" variant="tonal" prominent>
-                        <v-alert-title>Connexion au coeur Python impossible</v-alert-title>
-                        <div class="mt-2">{{ error }}</div>
-                    </v-alert>
-                </v-container>
+                    <!-- ═══ Dashboard ═════════════════════════════════════ -->
+                    <v-window-item value="dashboard">
+                        <v-container v-if="!dashboardSnapshot && !dashboardError" class="d-flex justify-center align-center" style="min-height: 60vh;">
+                            <v-progress-circular indeterminate color="primary" size="64"></v-progress-circular>
+                        </v-container>
 
-                <!-- Loaded -->
-                <v-container v-else class="pa-4" style="max-width: 720px;">
-                    <!-- Hero : Capital -->
-                    <v-card class="pa-6 text-center mb-4" elevation="0" rounded="lg" color="surface">
-                        <div class="text-overline text-medium-emphasis">CAPITAL</div>
-                        <div class="hero-metric mt-2">{{ formattedCapital }}</div>
-                    </v-card>
+                        <v-container v-else-if="dashboardError" class="pa-4">
+                            <v-alert type="error" variant="tonal" prominent>
+                                <v-alert-title>Connexion au coeur Python impossible</v-alert-title>
+                                <div class="mt-2">{{ dashboardError }}</div>
+                            </v-alert>
+                        </v-container>
 
-                    <!-- Hero : P&L cumulé -->
-                    <v-card class="pa-6 text-center mb-4" elevation="0" rounded="lg" color="surface">
-                        <div class="text-overline text-medium-emphasis">P&amp;L CUMULÉ</div>
-                        <div :class="['pnl-metric', 'mt-2', pnlColorClass]">{{ formattedPnL }}</div>
-                    </v-card>
+                        <v-container v-else class="pa-4" style="max-width: 720px;">
+                            <v-card class="pa-6 text-center mb-4" elevation="0" rounded="lg" color="surface">
+                                <div class="text-overline text-medium-emphasis">CAPITAL</div>
+                                <div class="hero-metric mt-2">{{ formattedCapital }}</div>
+                            </v-card>
 
-                    <!-- Position actuelle -->
-                    <v-card class="mb-4" elevation="0" rounded="lg" color="surface">
-                        <v-card-title class="d-flex align-center">
-                            <v-icon class="mr-2" color="medium-emphasis">mdi-finance</v-icon>
-                            Position actuelle
-                        </v-card-title>
-                        <v-card-text v-if="!hasOpenPosition" class="text-center pa-6">
-                            <v-icon size="48" color="medium-emphasis">mdi-circle-outline</v-icon>
-                            <div class="text-h6 mt-3">Aucune position ouverte</div>
-                            <div class="text-body-2 text-medium-emphasis mt-2 mx-auto" style="max-width: 360px;">
-                                Le bot scanne le marché en continu et ouvrira une position quand un signal sera validé.
-                            </div>
-                        </v-card-text>
-                        <v-card-text v-else>
-                            <!-- Iter #79 : détails de la position ouverte. -->
-                            <v-list-item
-                                title="Symbole"
-                                :subtitle="snapshot.open_position?.strategy"
-                            ></v-list-item>
-                        </v-card-text>
-                    </v-card>
+                            <v-card class="pa-6 text-center mb-4" elevation="0" rounded="lg" color="surface">
+                                <div class="text-overline text-medium-emphasis">P&amp;L CUMULÉ</div>
+                                <div :class="['pnl-metric', 'mt-2', pnlColorClass]">{{ formattedPnL }}</div>
+                            </v-card>
 
-                    <!-- Statut du bot -->
-                    <v-card class="mb-4" elevation="0" rounded="lg" color="surface">
-                        <v-card-title class="d-flex align-center">
-                            <v-icon class="mr-2" color="medium-emphasis">mdi-pulse</v-icon>
-                            Statut du bot
-                        </v-card-title>
-                        <v-list bg-color="transparent" density="comfortable">
-                            <v-list-item>
-                                <v-list-item-title>Mode</v-list-item-title>
-                                <template v-slot:append>
-                                    <v-chip :color="modeChipColor" variant="flat" size="small">
-                                        {{ modeLabel }}
+                            <v-card class="mb-4" elevation="0" rounded="lg" color="surface">
+                                <v-card-title class="d-flex align-center">
+                                    <v-icon class="mr-2" color="medium-emphasis">mdi-finance</v-icon>
+                                    Position actuelle
+                                </v-card-title>
+                                <v-card-text v-if="!hasOpenPosition" class="text-center pa-6">
+                                    <v-icon size="48" color="medium-emphasis">mdi-circle-outline</v-icon>
+                                    <div class="text-h6 mt-3">Aucune position ouverte</div>
+                                    <div class="text-body-2 text-medium-emphasis mt-2 mx-auto" style="max-width: 360px;">
+                                        Le bot scanne le marché en continu et ouvrira une position quand un signal sera validé.
+                                    </div>
+                                </v-card-text>
+                                <v-card-text v-else>
+                                    <v-list-item
+                                        title="Symbole"
+                                        :subtitle="dashboardSnapshot.open_position?.strategy"
+                                    ></v-list-item>
+                                </v-card-text>
+                            </v-card>
+
+                            <v-card class="mb-4" elevation="0" rounded="lg" color="surface">
+                                <v-card-title class="d-flex align-center">
+                                    <v-icon class="mr-2" color="medium-emphasis">mdi-pulse</v-icon>
+                                    Statut du bot
+                                </v-card-title>
+                                <v-list bg-color="transparent" density="comfortable">
+                                    <v-list-item>
+                                        <v-list-item-title>Mode</v-list-item-title>
+                                        <template v-slot:append>
+                                            <v-chip :color="modeChipColor" variant="flat" size="small">
+                                                {{ modeLabel }}
+                                            </v-chip>
+                                        </template>
+                                    </v-list-item>
+                                    <v-divider></v-divider>
+                                    <v-list-item>
+                                        <v-list-item-title>Trades fermés</v-list-item-title>
+                                        <template v-slot:append>
+                                            <span class="text-body-1">{{ dashboardSnapshot.n_closed_trades }}</span>
+                                        </template>
+                                    </v-list-item>
+                                </v-list>
+                            </v-card>
+                        </v-container>
+                    </v-window-item>
+
+                    <!-- ═══ Journal ═══════════════════════════════════════ -->
+                    <v-window-item value="journal">
+                        <v-container v-if="!journalSnapshot && !journalError" class="d-flex justify-center align-center" style="min-height: 60vh;">
+                            <v-progress-circular indeterminate color="primary" size="64"></v-progress-circular>
+                        </v-container>
+
+                        <v-container v-else-if="journalError" class="pa-4">
+                            <v-alert type="error" variant="tonal" prominent>
+                                <v-alert-title>Lecture du journal impossible</v-alert-title>
+                                <div class="mt-2">{{ journalError }}</div>
+                            </v-alert>
+                        </v-container>
+
+                        <v-container v-else-if="journalSnapshot.total_returned === 0" class="pa-4" style="max-width: 720px;">
+                            <v-card class="pa-6 text-center" elevation="0" rounded="lg" color="surface">
+                                <v-icon size="48" color="medium-emphasis">mdi-format-list-bulleted</v-icon>
+                                <div class="text-h6 mt-3">Aucune décision enregistrée</div>
+                                <div class="text-body-2 text-medium-emphasis mt-2 mx-auto" style="max-width: 360px;">
+                                    Le journal listera ici chaque entrée, sortie ou skip du bot avec sa raison.
+                                </div>
+                            </v-card>
+                        </v-container>
+
+                        <v-container v-else class="pa-4" style="max-width: 720px;">
+                            <v-card elevation="0" rounded="lg" color="surface">
+                                <v-card-title class="d-flex align-center justify-space-between">
+                                    <span class="d-flex align-center">
+                                        <v-icon class="mr-2" color="medium-emphasis">mdi-format-list-bulleted</v-icon>
+                                        Décisions du bot
+                                    </span>
+                                    <v-chip size="small" variant="tonal">
+                                        {{ journalCountLabel }}
                                     </v-chip>
-                                </template>
-                            </v-list-item>
-                            <v-divider></v-divider>
-                            <v-list-item>
-                                <v-list-item-title>Trades fermés</v-list-item-title>
-                                <template v-slot:append>
-                                    <span class="text-body-1">{{ snapshot.n_closed_trades }}</span>
-                                </template>
-                            </v-list-item>
-                        </v-list>
-                    </v-card>
-                </v-container>
+                                </v-card-title>
+                                <v-list bg-color="transparent" density="comfortable" lines="two">
+                                    <template v-for="(row, idx) in journalSnapshot.rows" :key="row.event_id">
+                                        <v-divider v-if="idx > 0"></v-divider>
+                                        <v-list-item>
+                                            <template v-slot:prepend>
+                                                <span class="journal-time">{{ row.time_label }}</span>
+                                            </template>
+                                            <v-list-item-title class="text-body-2">
+                                                {{ row.event_type }}
+                                            </v-list-item-title>
+                                            <v-list-item-subtitle v-if="row.summary" class="journal-summary">
+                                                {{ row.summary }}
+                                            </v-list-item-subtitle>
+                                        </v-list-item>
+                                    </template>
+                                </v-list>
+                            </v-card>
+                        </v-container>
+                    </v-window-item>
+
+                    <!-- ═══ Config ════════════════════════════════════════ -->
+                    <v-window-item value="config">
+                        <v-container v-if="!configSnapshot && !configError" class="d-flex justify-center align-center" style="min-height: 60vh;">
+                            <v-progress-circular indeterminate color="primary" size="64"></v-progress-circular>
+                        </v-container>
+
+                        <v-container v-else-if="configError" class="pa-4">
+                            <v-alert type="error" variant="tonal" prominent>
+                                <v-alert-title>Lecture de la configuration impossible</v-alert-title>
+                                <div class="mt-2">{{ configError }}</div>
+                            </v-alert>
+                        </v-container>
+
+                        <v-container v-else class="pa-4" style="max-width: 720px;">
+                            <v-card class="mb-4" elevation="0" rounded="lg" color="surface">
+                                <v-card-title class="d-flex align-center">
+                                    <v-icon class="mr-2" color="medium-emphasis">mdi-cog</v-icon>
+                                    Mode et capital
+                                </v-card-title>
+                                <v-list bg-color="transparent" density="comfortable">
+                                    <v-list-item>
+                                        <v-list-item-title class="config-key">Mode</v-list-item-title>
+                                        <template v-slot:append>
+                                            <v-chip :color="modeChipColor" variant="flat" size="small">
+                                                <v-icon start :icon="modeChipIcon"></v-icon>
+                                                {{ configModeLabel }}
+                                            </v-chip>
+                                        </template>
+                                    </v-list-item>
+                                    <v-divider></v-divider>
+                                    <v-list-item>
+                                        <v-list-item-title class="config-key">Capital de référence</v-list-item-title>
+                                        <template v-slot:append>
+                                            <span class="config-value">{{ formattedStartingCapital }}</span>
+                                        </template>
+                                    </v-list-item>
+                                </v-list>
+                            </v-card>
+
+                            <v-card class="mb-4" elevation="0" rounded="lg" color="surface">
+                                <v-card-title class="d-flex align-center">
+                                    <v-icon class="mr-2" color="medium-emphasis">mdi-information</v-icon>
+                                    Système
+                                </v-card-title>
+                                <v-list bg-color="transparent" density="comfortable">
+                                    <v-list-item>
+                                        <v-list-item-title class="config-key">Version</v-list-item-title>
+                                        <template v-slot:append>
+                                            <span class="config-value">v{{ configSnapshot.app_version }}</span>
+                                        </template>
+                                    </v-list-item>
+                                    <v-divider></v-divider>
+                                    <v-list-item>
+                                        <v-list-item-title class="config-key">Événements audit</v-list-item-title>
+                                        <template v-slot:append>
+                                            <span class="config-value">{{ formattedAuditCount }}</span>
+                                        </template>
+                                    </v-list-item>
+                                    <v-divider></v-divider>
+                                    <v-list-item>
+                                        <v-list-item-title class="config-key">Base de données</v-list-item-title>
+                                        <v-list-item-subtitle class="config-value mt-1">
+                                            {{ configSnapshot.db_path }}
+                                        </v-list-item-subtitle>
+                                    </v-list-item>
+                                </v-list>
+                            </v-card>
+
+                            <v-alert
+                                density="compact"
+                                type="info"
+                                variant="tonal"
+                                icon="mdi-flask-outline"
+                            >
+                                Le toggle Paper / Réel et la saisie des clés API
+                                Binance arrivent en iter #80.
+                            </v-alert>
+                        </v-container>
+                    </v-window-item>
+
+                </v-window>
             </v-main>
 
             <!-- ─── Bottom Navigation ────────────────────────────────────── -->
@@ -156,11 +318,11 @@
                     <v-icon>mdi-view-dashboard</v-icon>
                     <div>Tableau</div>
                 </v-btn>
-                <v-btn value="journal" disabled>
+                <v-btn value="journal">
                     <v-icon>mdi-format-list-bulleted</v-icon>
                     <div>Journal</div>
                 </v-btn>
-                <v-btn value="config" disabled>
+                <v-btn value="config">
                     <v-icon>mdi-cog</v-icon>
                     <div>Config</div>
                 </v-btn>
@@ -170,7 +332,7 @@
 
     <script>
         // ─── Vue 3 + Vuetify 3 setup (no build step) ──────────────────────
-        const { createApp, ref, computed, onMounted, onBeforeUnmount } = Vue;
+        const { createApp, ref, computed, onMounted, onBeforeUnmount, watch } = Vue;
         const { createVuetify } = Vuetify;
 
         // ─── Theme : dark + emerald primary (matches our brand) ─────────
@@ -198,9 +360,7 @@
 
         // ─── Helpers : format Decimal-as-string from Python core ─────────
         function formatAmount(decimal_str, suffix = ' USDT') {
-            // Python sends Decimal as string to preserve precision.
             if (decimal_str === null || decimal_str === undefined) return '—';
-            // Trim trailing zeros after a decimal point but keep at least 2.
             const num = parseFloat(decimal_str);
             if (Number.isNaN(num)) return '—';
             return num.toFixed(2) + suffix;
@@ -219,78 +379,159 @@
         const MODE_REAL = 'real';
         const MODE_UNCONFIGURED = 'unconfigured';
 
+        function modeLabelFor(mode) {
+            if (mode === MODE_PAPER) return 'Paper';
+            if (mode === MODE_REAL) return 'Réel';
+            if (mode === MODE_UNCONFIGURED) return 'Non configuré';
+            return '—';
+        }
+
         // ─── Root component ──────────────────────────────────────────────
         const App = {
             setup() {
-                const snapshot = ref(null);
-                const error = ref(null);
+                // Per-tab snapshots + errors. Each tab fetches lazily on
+                // activation ; the dashboard additionally polls every 5s
+                // because it surfaces real-time capital + position state.
+                const dashboardSnapshot = ref(null);
+                const dashboardError = ref(null);
+                const journalSnapshot = ref(null);
+                const journalError = ref(null);
+                const configSnapshot = ref(null);
+                const configError = ref(null);
+
                 const activeTab = ref('dashboard');
-                let timer = null;
+                let dashboardTimer = null;
+
+                async function fetchJSON(path) {
+                    const res = await fetch(path, { credentials: 'include' });
+                    if (!res.ok) {
+                        throw new Error(`HTTP ${res.status} ${res.statusText}`);
+                    }
+                    return res.json();
+                }
 
                 async function fetchDashboard() {
                     try {
-                        const res = await fetch('/api/dashboard', { credentials: 'include' });
-                        if (!res.ok) {
-                            throw new Error(`HTTP ${res.status} ${res.statusText}`);
-                        }
-                        snapshot.value = await res.json();
-                        error.value = null;
+                        dashboardSnapshot.value = await fetchJSON('/api/dashboard');
+                        dashboardError.value = null;
                     } catch (err) {
-                        error.value = String(err);
+                        dashboardError.value = String(err);
+                    }
+                }
+
+                async function fetchJournal() {
+                    try {
+                        journalSnapshot.value = await fetchJSON('/api/journal');
+                        journalError.value = null;
+                    } catch (err) {
+                        journalError.value = String(err);
+                    }
+                }
+
+                async function fetchConfig() {
+                    try {
+                        configSnapshot.value = await fetchJSON('/api/config');
+                        configError.value = null;
+                    } catch (err) {
+                        configError.value = String(err);
                     }
                 }
 
                 onMounted(() => {
                     fetchDashboard();
-                    // Refresh every 5s — same cadence as the old Kivy
-                    // Clock.schedule_interval pump (iter #65).
-                    timer = setInterval(fetchDashboard, 5000);
+                    // Refresh dashboard every 5s — same cadence as the old Kivy
+                    // Clock.schedule_interval pump (iter #65). Journal/Config
+                    // are fetched on tab activation (less data churn).
+                    dashboardTimer = setInterval(fetchDashboard, 5000);
                 });
 
                 onBeforeUnmount(() => {
-                    if (timer) clearInterval(timer);
+                    if (dashboardTimer) clearInterval(dashboardTimer);
+                });
+
+                // Refetch the relevant tab when the user switches.
+                watch(activeTab, (tab) => {
+                    if (tab === 'journal') {
+                        fetchJournal();
+                    } else if (tab === 'config') {
+                        fetchConfig();
+                    }
                 });
 
                 // ─── Computed view-model ────────────────────────────────
+                const pageTitle = computed(() => {
+                    if (activeTab.value === 'journal') return 'Journal';
+                    if (activeTab.value === 'config') return 'Configuration';
+                    return 'Emeraude';
+                });
+
+                // Dashboard
                 const formattedCapital = computed(() =>
-                    formatAmount(snapshot.value?.capital_quote)
+                    formatAmount(dashboardSnapshot.value?.capital_quote)
                 );
                 const formattedPnL = computed(() =>
-                    formatSignedAmount(snapshot.value?.cumulative_pnl)
+                    formatSignedAmount(dashboardSnapshot.value?.cumulative_pnl)
                 );
                 const pnlColorClass = computed(() => {
-                    const v = parseFloat(snapshot.value?.cumulative_pnl ?? '0');
+                    const v = parseFloat(dashboardSnapshot.value?.cumulative_pnl ?? '0');
                     if (v > 0) return 'text-success';
                     if (v < 0) return 'text-error';
                     return 'text-medium-emphasis';
                 });
                 const hasOpenPosition = computed(
-                    () => Boolean(snapshot.value?.open_position)
+                    () => Boolean(dashboardSnapshot.value?.open_position)
                 );
-                const modeLabel = computed(() => {
-                    const m = snapshot.value?.mode;
-                    if (m === MODE_PAPER) return 'Paper';
-                    if (m === MODE_REAL) return 'Réel';
-                    if (m === MODE_UNCONFIGURED) return 'Non configuré';
-                    return '—';
-                });
+
+                // Mode chip — sourced from the dashboard snapshot (live),
+                // falls back to the config snapshot if dashboard not loaded.
+                const liveMode = computed(() =>
+                    dashboardSnapshot.value?.mode ?? configSnapshot.value?.mode
+                );
+                const modeLabel = computed(() => modeLabelFor(liveMode.value));
                 const modeChipColor = computed(() => {
-                    const m = snapshot.value?.mode;
+                    const m = liveMode.value;
                     if (m === MODE_PAPER) return 'warning';
                     if (m === MODE_REAL) return 'primary';
                     return 'medium-emphasis';
                 });
                 const modeChipIcon = computed(() => {
-                    const m = snapshot.value?.mode;
+                    const m = liveMode.value;
                     if (m === MODE_PAPER) return 'mdi-file-document-edit';
                     if (m === MODE_REAL) return 'mdi-flash';
                     return 'mdi-help-circle';
                 });
 
+                // Journal
+                const journalCountLabel = computed(() => {
+                    const n = journalSnapshot.value?.total_returned ?? 0;
+                    if (n <= 1) return `${n} événement`;
+                    return `${n} événements`;
+                });
+
+                // Config
+                const configModeLabel = computed(() =>
+                    modeLabelFor(configSnapshot.value?.mode)
+                );
+                const formattedStartingCapital = computed(() =>
+                    formatAmount(configSnapshot.value?.starting_capital)
+                );
+                const formattedAuditCount = computed(() => {
+                    const n = configSnapshot.value?.total_audit_events ?? 0;
+                    if (n <= 1) return `${n} événement`;
+                    return `${n} événements`;
+                });
+
                 return {
-                    snapshot,
-                    error,
+                    // state
+                    dashboardSnapshot,
+                    dashboardError,
+                    journalSnapshot,
+                    journalError,
+                    configSnapshot,
+                    configError,
                     activeTab,
+                    // computed view-model
+                    pageTitle,
                     formattedCapital,
                     formattedPnL,
                     pnlColorClass,
@@ -298,6 +539,10 @@
                     modeLabel,
                     modeChipColor,
                     modeChipIcon,
+                    journalCountLabel,
+                    configModeLabel,
+                    formattedStartingCapital,
+                    formattedAuditCount,
                 };
             },
         };

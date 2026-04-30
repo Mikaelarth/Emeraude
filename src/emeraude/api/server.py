@@ -7,10 +7,12 @@ Architecture (cf. ADR-0004) :
     - ``GET /``                   index.html (Vue 3 + Vuetify SPA)
     - ``GET /static/<path>``      assets statiques (JS, CSS, fonts)
     - ``GET /api/dashboard``      :class:`DashboardSnapshot` -> JSON
+    - ``GET /api/journal``        :class:`JournalSnapshot`  -> JSON
+    - ``GET /api/config``         :class:`ConfigSnapshot`   -> JSON
 
-* Iter #78 livre la route ``/api/dashboard`` ; ``/api/journal``,
-  ``/api/config`` et les ``POST`` de mutation (toggle mode, save
-  credentials) viennent en iter #79/#80.
+* Iter #78 a livré la route ``/api/dashboard`` ; iter #79 ajoute
+  ``/api/journal`` + ``/api/config`` (lecture seule). Les ``POST`` de
+  mutation (toggle mode, save credentials) viennent en iter #80.
 
 Sécurité loopback
 =================
@@ -318,11 +320,21 @@ class _RequestHandler(BaseHTTPRequestHandler):
             return
 
         if route == "dashboard":
-            snapshot = self.app_context.dashboard_data_source.fetch_snapshot()
-            self._send_json(HTTPStatus.OK, _serialise(snapshot))
+            dashboard = self.app_context.dashboard_data_source.fetch_snapshot()
+            self._send_json(HTTPStatus.OK, _serialise(dashboard))
             return
 
-        # Iter #79 will add 'journal' and 'config'.
+        if route == "journal":
+            journal = self.app_context.journal_data_source.fetch_snapshot()
+            self._send_json(HTTPStatus.OK, _serialise(journal))
+            return
+
+        if route == "config":
+            config = self.app_context.config_data_source.fetch_snapshot()
+            self._send_json(HTTPStatus.OK, _serialise(config))
+            return
+
+        # Iter #80 will add the POST mutations (toggle-mode, save-credentials).
         self._send_json(HTTPStatus.NOT_FOUND, {"error": "unknown route"})
 
     # ─── Helpers ────────────────────────────────────────────────────────────

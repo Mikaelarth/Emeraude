@@ -307,6 +307,80 @@ class TestHTTPIntegration:
         finally:
             self._stop(server, thread)
 
+    def test_api_journal_requires_auth(self, tmp_path: Path) -> None:
+        port, _token, thread, server = self._setup_server(tmp_path)
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request("GET", "/api/journal")
+            resp = conn.getresponse()
+            body = json.loads(resp.read())
+            assert resp.status == 403
+            assert "error" in body
+        finally:
+            self._stop(server, thread)
+
+    def test_api_journal_returns_snapshot(self, tmp_path: Path) -> None:
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request(
+                "GET",
+                "/api/journal",
+                headers={"Cookie": f"{AUTH_COOKIE}={token}"},
+            )
+            resp = conn.getresponse()
+            body = json.loads(resp.read())
+
+            assert resp.status == 200
+            # JournalSnapshot keys (cf. journal_types.JournalSnapshot).
+            assert "rows" in body
+            assert "total_returned" in body
+            assert isinstance(body["rows"], list)
+            # total_returned matches len(rows) by construction.
+            assert body["total_returned"] == len(body["rows"])
+        finally:
+            self._stop(server, thread)
+
+    def test_api_config_requires_auth(self, tmp_path: Path) -> None:
+        port, _token, thread, server = self._setup_server(tmp_path)
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request("GET", "/api/config")
+            resp = conn.getresponse()
+            body = json.loads(resp.read())
+            assert resp.status == 403
+            assert "error" in body
+        finally:
+            self._stop(server, thread)
+
+    def test_api_config_returns_snapshot(self, tmp_path: Path) -> None:
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request(
+                "GET",
+                "/api/config",
+                headers={"Cookie": f"{AUTH_COOKIE}={token}"},
+            )
+            resp = conn.getresponse()
+            body = json.loads(resp.read())
+
+            assert resp.status == 200
+            # ConfigSnapshot keys (cf. config_types.ConfigSnapshot).
+            assert "mode" in body
+            assert "starting_capital" in body
+            assert "app_version" in body
+            assert "total_audit_events" in body
+            assert "db_path" in body
+            # Decimal -> string per _serialise contract ; None when not
+            # configured.
+            assert body["starting_capital"] is None or isinstance(body["starting_capital"], str)
+            assert isinstance(body["app_version"], str)
+            assert isinstance(body["total_audit_events"], int)
+            assert isinstance(body["db_path"], str)
+        finally:
+            self._stop(server, thread)
+
     def test_api_unknown_route_returns_404(self, tmp_path: Path) -> None:
         port, token, thread, server = self._setup_server(tmp_path)
         try:
