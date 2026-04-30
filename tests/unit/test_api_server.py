@@ -397,6 +397,190 @@ class TestHTTPIntegration:
         finally:
             self._stop(server, thread)
 
+    # ── POST /api/toggle-mode ────────────────────────────────────────────────
+
+    def _post_json(
+        self,
+        port: int,
+        path: str,
+        body: object,
+        *,
+        token: str | None = None,
+    ) -> tuple[int, dict[str, object]]:
+        """Tiny POST helper. Returns ``(status, json_body)``."""
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        if token is not None:
+            headers["Cookie"] = f"{AUTH_COOKIE}={token}"
+        encoded = json.dumps(body).encode("utf-8") if not isinstance(body, bytes) else body
+        conn.request("POST", path, body=encoded, headers=headers)
+        resp = conn.getresponse()
+        raw = resp.read()
+        return resp.status, json.loads(raw) if raw else {}
+
+    def test_toggle_mode_requires_auth(self, tmp_path: Path) -> None:
+        port, _token, thread, server = self._setup_server(tmp_path)
+        try:
+            status, body = self._post_json(port, "/api/toggle-mode", {"mode": "real"}, token=None)
+            assert status == 403
+            assert "error" in body
+        finally:
+            self._stop(server, thread)
+
+    def test_toggle_mode_persists_and_returns_snapshot(self, tmp_path: Path) -> None:
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            # Cold start mode = MODE_PAPER (cf. AppContext.DEFAULT_MODE).
+            status, body = self._post_json(port, "/api/toggle-mode", {"mode": "real"}, token=token)
+            assert status == 200
+            # The response is a fresh ConfigSnapshot reflecting the new mode.
+            assert body["mode"] == "real"
+
+            # Round-trip via GET /api/config to confirm persistence.
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request("GET", "/api/config", headers={"Cookie": f"{AUTH_COOKIE}={token}"})
+            resp = conn.getresponse()
+            persisted = json.loads(resp.read())
+            assert persisted["mode"] == "real"
+
+            # Toggle back to paper to leave the test DB clean.
+            status_back, body_back = self._post_json(
+                port, "/api/toggle-mode", {"mode": "paper"}, token=token
+            )
+            assert status_back == 200
+            assert body_back["mode"] == "paper"
+        finally:
+            self._stop(server, thread)
+
+    def test_toggle_mode_rejects_invalid_mode(self, tmp_path: Path) -> None:
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            status, body = self._post_json(port, "/api/toggle-mode", {"mode": "moon"}, token=token)
+            assert status == 400
+            assert body["error"] == "invalid mode"
+        finally:
+            self._stop(server, thread)
+
+    def test_toggle_mode_rejects_missing_mode(self, tmp_path: Path) -> None:
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            status, body = self._post_json(port, "/api/toggle-mode", {}, token=token)
+            assert status == 400
+            assert body["error"] == "invalid mode"
+        finally:
+            self._stop(server, thread)
+
+    def test_toggle_mode_rejects_non_object_body(self, tmp_path: Path) -> None:
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            status, body = self._post_json(port, "/api/toggle-mode", ["real"], token=token)
+            assert status == 400
+            # Either "body must be a JSON object" (parser sees a list) is
+            # the expected message ; assert just the structure.
+            assert "error" in body
+        finally:
+            self._stop(server, thread)
+
+    def test_toggle_mode_rejects_invalid_json(self, tmp_path: Path) -> None:
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            status, body = self._post_json(port, "/api/toggle-mode", b"{not-json", token=token)
+            assert status == 400
+            assert body["error"] == "invalid JSON"
+        finally:
+            self._stop(server, thread)
+
+    def test_toggle_mode_rejects_empty_body(self, tmp_path: Path) -> None:
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            # Send a POST with Content-Length: 0.
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request(
+                "POST",
+                "/api/toggle-mode",
+                body=b"",
+                headers={
+                    "Cookie": f"{AUTH_COOKIE}={token}",
+                    "Content-Length": "0",
+                },
+            )
+            resp = conn.getresponse()
+            body = json.loads(resp.read())
+            assert resp.status == 400
+            assert body["error"] == "missing body"
+        finally:
+            self._stop(server, thread)
+
+    def test_toggle_mode_rejects_non_numeric_content_length(self, tmp_path: Path) -> None:
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            # http.client refuses to send a non-numeric Content-Length, so
+            # we hand-craft the request via a raw socket to exercise the
+            # ``except ValueError`` branch in ``_read_json_object``.
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(5)
+            sock.connect(("127.0.0.1", port))
+            request = (
+                "POST /api/toggle-mode HTTP/1.1\r\n"
+                "Host: 127.0.0.1\r\n"
+                f"Cookie: {AUTH_COOKIE}={token}\r\n"
+                "Content-Type: application/json\r\n"
+                "Content-Length: not-a-number\r\n"
+                "Connection: close\r\n"
+                "\r\n"
+            )
+            sock.sendall(request.encode("utf-8"))
+            chunks: list[bytes] = []
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            sock.close()
+            response = b"".join(chunks)
+            head, _, body_bytes = response.partition(b"\r\n\r\n")
+            assert b"400" in head.split(b"\r\n", 1)[0]
+            body = json.loads(body_bytes)
+            assert body["error"] == "invalid Content-Length"
+        finally:
+            self._stop(server, thread)
+
+    def test_toggle_mode_rejects_oversized_body(self, tmp_path: Path) -> None:
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            # Build a body just over the 4 KB cap.
+            payload = b'{"mode":"real","junk":"' + (b"x" * 5000) + b'"}'
+            status, body = self._post_json(port, "/api/toggle-mode", payload, token=token)
+            assert status == 413
+            assert body["error"] == "body too large"
+        finally:
+            self._stop(server, thread)
+
+    def test_unknown_post_route_returns_404(self, tmp_path: Path) -> None:
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            status, body = self._post_json(port, "/api/does-not-exist", {}, token=token)
+            assert status == 404
+            assert "error" in body
+        finally:
+            self._stop(server, thread)
+
+    def test_post_to_non_api_path_returns_404(self, tmp_path: Path) -> None:
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request(
+                "POST",
+                "/static/app.js",
+                body=b"{}",
+                headers={"Cookie": f"{AUTH_COOKIE}={token}"},
+            )
+            resp = conn.getresponse()
+            resp.read()
+            assert resp.status == 404
+        finally:
+            self._stop(server, thread)
+
 
 # ─── AppContext basic smoke ─────────────────────────────────────────────────
 

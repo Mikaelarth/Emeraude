@@ -250,7 +250,7 @@
                                 </v-card-title>
                                 <v-list bg-color="transparent" density="comfortable">
                                     <v-list-item>
-                                        <v-list-item-title class="config-key">Mode</v-list-item-title>
+                                        <v-list-item-title class="config-key">Mode actuel</v-list-item-title>
                                         <template v-slot:append>
                                             <v-chip :color="modeChipColor" variant="flat" size="small">
                                                 <v-icon start :icon="modeChipIcon"></v-icon>
@@ -266,6 +266,32 @@
                                         </template>
                                     </v-list-item>
                                 </v-list>
+
+                                <v-card-actions class="px-4 pb-4 pt-2 d-flex flex-column gap-2" style="align-items: stretch;">
+                                    <v-btn
+                                        v-if="!isPaperMode"
+                                        block
+                                        variant="tonal"
+                                        color="warning"
+                                        prepend-icon="mdi-file-document-edit"
+                                        :disabled="toggleInProgress"
+                                        @click="openPaperDialog"
+                                    >
+                                        Repasser en mode Paper
+                                    </v-btn>
+                                    <v-btn
+                                        v-if="!isRealMode"
+                                        block
+                                        variant="flat"
+                                        color="primary"
+                                        prepend-icon="mdi-flash"
+                                        class="mt-2"
+                                        :disabled="toggleInProgress"
+                                        @click="openRealDialog"
+                                    >
+                                        Activer le mode Réel
+                                    </v-btn>
+                                </v-card-actions>
                             </v-card>
 
                             <v-card class="mb-4" elevation="0" rounded="lg" color="surface">
@@ -303,14 +329,139 @@
                                 variant="tonal"
                                 icon="mdi-flask-outline"
                             >
-                                Le toggle Paper / Réel et la saisie des clés API
-                                Binance arrivent en iter #80.
+                                La saisie des clés API Binance arrive en iter #81.
                             </v-alert>
                         </v-container>
                     </v-window-item>
 
                 </v-window>
             </v-main>
+
+            <!-- ═══ Dialog : passage Paper -> Réel (anti-règle A5) ═══════════ -->
+            <v-dialog
+                v-model="showRealDialog"
+                max-width="460"
+                persistent
+                scrollable
+            >
+                <v-card rounded="lg" color="surface">
+                    <v-card-title class="d-flex align-center text-warning">
+                        <v-icon start>mdi-flash-alert</v-icon>
+                        Activation du mode Réel
+                    </v-card-title>
+                    <v-card-text>
+                        <p class="mb-3">
+                            Vous êtes sur le point de basculer le bot en
+                            <strong>argent réel</strong>. Toute décision du bot
+                            engagera votre solde Binance.
+                        </p>
+                        <v-list bg-color="transparent" density="compact" class="mb-2">
+                            <v-list-item>
+                                <v-list-item-title class="config-key">Capital de référence</v-list-item-title>
+                                <template v-slot:append>
+                                    <span class="config-value">{{ formattedStartingCapital }}</span>
+                                </template>
+                            </v-list-item>
+                            <v-list-item>
+                                <v-list-item-title class="config-key">Mode actuel</v-list-item-title>
+                                <template v-slot:append>
+                                    <v-chip :color="modeChipColor" variant="flat" size="small">
+                                        {{ configModeLabel }}
+                                    </v-chip>
+                                </template>
+                            </v-list-item>
+                        </v-list>
+                        <v-alert
+                            density="compact"
+                            type="warning"
+                            variant="tonal"
+                            class="mt-2"
+                        >
+                            Le bouton <strong>Confirmer</strong> sera actif après
+                            5 secondes. Tap pour confirmer ; tap Annuler pour
+                            avorter.
+                        </v-alert>
+                        <v-alert
+                            v-if="toggleError"
+                            density="compact"
+                            type="error"
+                            variant="tonal"
+                            class="mt-2"
+                        >
+                            {{ toggleError }}
+                        </v-alert>
+                    </v-card-text>
+                    <v-card-actions class="px-4 pb-4">
+                        <v-spacer></v-spacer>
+                        <v-btn variant="text" :disabled="toggleInProgress" @click="closeRealDialog">
+                            Annuler
+                        </v-btn>
+                        <v-btn
+                            color="primary"
+                            variant="flat"
+                            :disabled="realConfirmDisabled"
+                            :loading="toggleInProgress"
+                            @click="confirmReal"
+                        >
+                            {{ realConfirmLabel }}
+                        </v-btn>
+                    </v-card-actions>
+                </v-card>
+            </v-dialog>
+
+            <!-- ═══ Dialog : retour Réel -> Paper (sécurité acquise) ════════ -->
+            <v-dialog
+                v-model="showPaperDialog"
+                max-width="420"
+                persistent
+            >
+                <v-card rounded="lg" color="surface">
+                    <v-card-title class="d-flex align-center">
+                        <v-icon class="mr-2" color="medium-emphasis">mdi-file-document-edit</v-icon>
+                        Retour en mode Paper
+                    </v-card-title>
+                    <v-card-text>
+                        <p>
+                            Le bot va arrêter de trader en argent réel et
+                            reprendre en simulation Paper. Aucune position
+                            ouverte n'est touchée.
+                        </p>
+                        <v-alert
+                            v-if="toggleError"
+                            density="compact"
+                            type="error"
+                            variant="tonal"
+                            class="mt-2"
+                        >
+                            {{ toggleError }}
+                        </v-alert>
+                    </v-card-text>
+                    <v-card-actions class="px-4 pb-4">
+                        <v-spacer></v-spacer>
+                        <v-btn variant="text" :disabled="toggleInProgress" @click="closePaperDialog">
+                            Annuler
+                        </v-btn>
+                        <v-btn
+                            color="warning"
+                            variant="flat"
+                            :loading="toggleInProgress"
+                            @click="confirmPaper"
+                        >
+                            Confirmer
+                        </v-btn>
+                    </v-card-actions>
+                </v-card>
+            </v-dialog>
+
+            <!-- ═══ Snackbar : feedback toggle réussi ═══════════════════════ -->
+            <v-snackbar
+                v-model="showToast"
+                :timeout="3000"
+                color="success"
+                location="top"
+            >
+                {{ toastMessage }}
+            </v-snackbar>
 
             <!-- ─── Bottom Navigation ────────────────────────────────────── -->
             <v-bottom-navigation v-model="activeTab" color="primary" grow>
@@ -402,10 +553,45 @@
                 const activeTab = ref('dashboard');
                 let dashboardTimer = null;
 
+                // ─── Mode toggle state (anti-règle A5) ──────────────────
+                // ``showRealDialog`` / ``showPaperDialog`` drive the two
+                // ``v-dialog`` modals. ``realCountdown`` decrements from 5
+                // to 0 on Real activation : the Confirm button stays
+                // disabled while the value is > 0, so the user must wait
+                // 5 s before the second tap (= confirmation) becomes
+                // possible. This implements the doc 02 / A5 contract :
+                // "double-tap avec délai 5 s + montant en jeu visible".
+                const showRealDialog = ref(false);
+                const showPaperDialog = ref(false);
+                const realCountdown = ref(0);
+                const toggleInProgress = ref(false);
+                const toggleError = ref(null);
+                const showToast = ref(false);
+                const toastMessage = ref('');
+                let countdownTimer = null;
+
                 async function fetchJSON(path) {
                     const res = await fetch(path, { credentials: 'include' });
                     if (!res.ok) {
                         throw new Error(`HTTP ${res.status} ${res.statusText}`);
+                    }
+                    return res.json();
+                }
+
+                async function postJSON(path, body) {
+                    const res = await fetch(path, {
+                        method: 'POST',
+                        credentials: 'include',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(body),
+                    });
+                    if (!res.ok) {
+                        let detail = `HTTP ${res.status}`;
+                        try {
+                            const err = await res.json();
+                            if (err && err.error) detail = err.error;
+                        } catch (_) { /* keep generic */ }
+                        throw new Error(detail);
                     }
                     return res.json();
                 }
@@ -437,6 +623,81 @@
                     }
                 }
 
+                // ─── Toggle handlers (anti-règle A5) ────────────────────
+                function startCountdown() {
+                    realCountdown.value = 5;
+                    if (countdownTimer) clearInterval(countdownTimer);
+                    countdownTimer = setInterval(() => {
+                        realCountdown.value -= 1;
+                        if (realCountdown.value <= 0) {
+                            realCountdown.value = 0;
+                            clearInterval(countdownTimer);
+                            countdownTimer = null;
+                        }
+                    }, 1000);
+                }
+
+                function stopCountdown() {
+                    if (countdownTimer) {
+                        clearInterval(countdownTimer);
+                        countdownTimer = null;
+                    }
+                    realCountdown.value = 0;
+                }
+
+                function openRealDialog() {
+                    toggleError.value = null;
+                    showRealDialog.value = true;
+                    startCountdown();
+                }
+
+                function closeRealDialog() {
+                    showRealDialog.value = false;
+                    toggleError.value = null;
+                    stopCountdown();
+                }
+
+                function openPaperDialog() {
+                    toggleError.value = null;
+                    showPaperDialog.value = true;
+                }
+
+                function closePaperDialog() {
+                    showPaperDialog.value = false;
+                    toggleError.value = null;
+                }
+
+                function showSuccessToast(message) {
+                    toastMessage.value = message;
+                    showToast.value = true;
+                }
+
+                async function applyMode(mode, successMessage, onSuccess) {
+                    toggleInProgress.value = true;
+                    toggleError.value = null;
+                    try {
+                        configSnapshot.value = await postJSON('/api/toggle-mode', { mode });
+                        // Refresh the dashboard so the mode chip in the
+                        // app bar reflects the change immediately rather
+                        // than waiting up to 5 s for the next poll.
+                        fetchDashboard();
+                        showSuccessToast(successMessage);
+                        onSuccess();
+                    } catch (err) {
+                        toggleError.value = String(err.message || err);
+                    } finally {
+                        toggleInProgress.value = false;
+                    }
+                }
+
+                async function confirmReal() {
+                    await applyMode(MODE_REAL, 'Mode Réel activé.', closeRealDialog);
+                }
+
+                async function confirmPaper() {
+                    await applyMode(MODE_PAPER, 'Mode Paper activé.', closePaperDialog);
+                }
+
                 onMounted(() => {
                     fetchDashboard();
                     // Refresh dashboard every 5s — same cadence as the old Kivy
@@ -447,6 +708,7 @@
 
                 onBeforeUnmount(() => {
                     if (dashboardTimer) clearInterval(dashboardTimer);
+                    if (countdownTimer) clearInterval(countdownTimer);
                 });
 
                 // Refetch the relevant tab when the user switches.
@@ -521,6 +783,22 @@
                     return `${n} événements`;
                 });
 
+                // Toggle (anti-règle A5)
+                const isPaperMode = computed(
+                    () => configSnapshot.value?.mode === MODE_PAPER
+                );
+                const isRealMode = computed(
+                    () => configSnapshot.value?.mode === MODE_REAL
+                );
+                const realConfirmDisabled = computed(
+                    () => realCountdown.value > 0 || toggleInProgress.value
+                );
+                const realConfirmLabel = computed(() =>
+                    realCountdown.value > 0
+                        ? `Confirmer (${realCountdown.value})`
+                        : 'Confirmer'
+                );
+
                 return {
                     // state
                     dashboardSnapshot,
@@ -530,6 +808,12 @@
                     configSnapshot,
                     configError,
                     activeTab,
+                    showRealDialog,
+                    showPaperDialog,
+                    toggleInProgress,
+                    toggleError,
+                    showToast,
+                    toastMessage,
                     // computed view-model
                     pageTitle,
                     formattedCapital,
@@ -543,6 +827,17 @@
                     configModeLabel,
                     formattedStartingCapital,
                     formattedAuditCount,
+                    isPaperMode,
+                    isRealMode,
+                    realConfirmDisabled,
+                    realConfirmLabel,
+                    // handlers
+                    openRealDialog,
+                    closeRealDialog,
+                    openPaperDialog,
+                    closePaperDialog,
+                    confirmReal,
+                    confirmPaper,
                 };
             },
         };

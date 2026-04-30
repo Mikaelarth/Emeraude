@@ -4,15 +4,17 @@ Architecture (cf. ADR-0004) :
 
 * La WebView Android charge ``http://127.0.0.1:8765/`` au boot.
 * Ce serveur sert :
-    - ``GET /``                   index.html (Vue 3 + Vuetify SPA)
-    - ``GET /static/<path>``      assets statiques (JS, CSS, fonts)
-    - ``GET /api/dashboard``      :class:`DashboardSnapshot` -> JSON
-    - ``GET /api/journal``        :class:`JournalSnapshot`  -> JSON
-    - ``GET /api/config``         :class:`ConfigSnapshot`   -> JSON
+    - ``GET  /``                  index.html (Vue 3 + Vuetify SPA)
+    - ``GET  /static/<path>``     assets statiques (JS, CSS, fonts)
+    - ``GET  /api/dashboard``     :class:`DashboardSnapshot` -> JSON
+    - ``GET  /api/journal``       :class:`JournalSnapshot`  -> JSON
+    - ``GET  /api/config``        :class:`ConfigSnapshot`   -> JSON
+    - ``POST /api/toggle-mode``   ``{"mode": ...}`` -> :class:`ConfigSnapshot`
 
 * Iter #78 a livré la route ``/api/dashboard`` ; iter #79 ajoute
-  ``/api/journal`` + ``/api/config`` (lecture seule). Les ``POST`` de
-  mutation (toggle mode, save credentials) viennent en iter #80.
+  ``/api/journal`` + ``/api/config`` (lecture seule) ; iter #80 ajoute
+  la première mutation : ``POST /api/toggle-mode``. La saisie des
+  clés API Binance (``POST /api/credentials``) vient en iter #81.
 
 Sécurité loopback
 =================
@@ -79,6 +81,16 @@ AUTH_COOKIE: Final[str] = "emeraude_auth"
 #: HTTP request timeout (seconds) — keeps the server responsive even
 #: if a malformed client hangs.
 REQUEST_TIMEOUT_SECONDS: Final[float] = 30.0
+
+#: Hard cap on POST body size. Our mutation payloads are tiny
+#: (``{"mode": "real"}`` ~= 20 bytes) ; 4 KB leaves head-room for the
+#: future API-key payload and rejects oversized bodies as DoS attempts.
+_MAX_BODY_BYTES: Final[int] = 4096
+
+#: Audit event type for ``set_mode`` triggered by the API. Mirrors the
+#: ``"<DOMAIN>_<ACTION>"`` convention used elsewhere (cf.
+#: ``POSITION_OPENED``, ``MICROSTRUCTURE_GATE``, etc.).
+_AUDIT_MODE_CHANGED: Final[str] = "MODE_CHANGED"
 
 #: MIME types per file extension. Limited intentionally — only file
 #: types we actually ship in ``web/``.
@@ -256,6 +268,19 @@ class _RequestHandler(BaseHTTPRequestHandler):
 
         self._send_text(HTTPStatus.NOT_FOUND, "Not found")
 
+    # ─── POST dispatcher ────────────────────────────────────────────────────
+
+    def do_POST(self) -> None:
+        """Dispatch ``POST`` (method name fixed by stdlib API)."""
+        parsed = urlparse(self.path)
+        path = unquote(parsed.path)
+
+        if path.startswith("/api/"):
+            self._serve_api_post(path[len("/api/") :])
+            return
+
+        self._send_text(HTTPStatus.NOT_FOUND, "Not found")
+
     # ─── Index : sets the auth cookie and serves the SPA ────────────────────
 
     def _serve_index(self) -> None:
@@ -334,8 +359,102 @@ class _RequestHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.OK, _serialise(config))
             return
 
-        # Iter #80 will add the POST mutations (toggle-mode, save-credentials).
+        # Iter #81 will add ``credentials`` (the Binance API-key payload).
         self._send_json(HTTPStatus.NOT_FOUND, {"error": "unknown route"})
+
+    # ─── POST API routes ────────────────────────────────────────────────────
+
+    def _serve_api_post(self, route: str) -> None:
+        """Dispatch ``POST /api/<route>``. Requires the auth cookie.
+
+        Mutations are gated by the same ``HttpOnly`` cookie as ``GET``
+        — there is no separate CSRF token for the loopback case (the
+        cookie is unforgeable across origins). Future iter #81 may add
+        an explicit anti-CSRF header if we ever expose beyond loopback.
+        """
+        if not self._auth_ok():
+            self._send_json(HTTPStatus.FORBIDDEN, {"error": "forbidden"})
+            return
+
+        if route == "toggle-mode":
+            self._handle_toggle_mode()
+            return
+
+        # Iter #81 will add ``credentials`` (POST/DELETE Binance keys).
+        self._send_json(HTTPStatus.NOT_FOUND, {"error": "unknown route"})
+
+    def _handle_toggle_mode(self) -> None:
+        """Persist the new mode (anti-règle A5 — UI must double-tap).
+
+        Note : the 5-second double-tap protection is enforced **côté
+        UI** (cf. ``index.html`` ``v-dialog`` countdown). The server
+        accepts any well-formed call ; the audit trail records the
+        change so a misuse via direct API call is observable. Defense
+        in depth would also enforce a server-side delay, but the only
+        attack surface here is loopback + cookie-gated, so the UI
+        gate is sufficient at this stage.
+        """
+        # ``noqa: PLC0415`` : local imports keep the module importable
+        # without ``infra.audit`` side effects in test-only contexts
+        # that don't construct a server (``test_api_server.TestSerialise``).
+        from emeraude.infra import audit  # noqa: PLC0415
+        from emeraude.services.config_types import is_valid_mode  # noqa: PLC0415
+
+        body = self._read_json_object()
+        if body is None:
+            return  # _read_json_object already sent the error response.
+
+        mode = body.get("mode")
+        if not isinstance(mode, str) or not is_valid_mode(mode):
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid mode"})
+            return
+
+        previous = self.app_context.config_data_source.fetch_snapshot().mode
+        self.app_context.config_data_source.set_mode(mode)
+        audit.audit(
+            _AUDIT_MODE_CHANGED,
+            {"from": previous, "to": mode, "source": "api"},
+        )
+        snapshot = self.app_context.config_data_source.fetch_snapshot()
+        self._send_json(HTTPStatus.OK, _serialise(snapshot))
+
+    def _read_json_object(self) -> dict[str, Any] | None:
+        """Parse a JSON object from the POST body.
+
+        On any error, this method sends the appropriate error response
+        itself and returns ``None``. The caller should bail early when
+        the result is ``None``.
+
+        Returns the parsed dict on success.
+        """
+        length_header = self.headers.get("Content-Length", "0")
+        try:
+            length = int(length_header)
+        except ValueError:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid Content-Length"})
+            return None
+        if length <= 0:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "missing body"})
+            return None
+        if length > _MAX_BODY_BYTES:
+            self._send_json(
+                HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                {"error": "body too large"},
+            )
+            return None
+        raw = self.rfile.read(length)
+        try:
+            body = json.loads(raw)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid JSON"})
+            return None
+        if not isinstance(body, dict):
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"error": "body must be a JSON object"},
+            )
+            return None
+        return body
 
     # ─── Helpers ────────────────────────────────────────────────────────────
 

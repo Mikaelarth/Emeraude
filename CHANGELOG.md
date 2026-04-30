@@ -6,6 +6,114 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.84] - 2026-04-30
+
+### Added — iter #80 : POST /api/toggle-mode + dialog A5 (anti-règle A5)
+
+L'iter #79 a livré les pages Vuetify Journal + Config en **lecture
+seule**. L'iter #80 ouvre la première mutation : POST /api/toggle-mode
+qui persiste le mode utilisateur dans la table ``settings``, et le
+``v-dialog`` A5 qui impose un double-tap avec délai 5 s + capital en
+jeu visible avant l'activation du mode Réel (cf. doc 02 §"⚙ CONFIG"
++ anti-règle A5 §07_REGLES_OR_ET_ANTI_REGLES.md).
+
+### Added
+
+- ``src/emeraude/api/server.py`` :
+  - Méthode ``do_POST`` ajoutée à ``_RequestHandler``. Dispatcher
+    minimal : tout ce qui n'est pas ``/api/<route>`` -> 404.
+  - Méthode ``_serve_api_post`` : auth cookie obligatoire (constant-time
+    compare réutilisé du chemin GET) puis route vers le handler.
+  - Méthode ``_handle_toggle_mode`` :
+    - Parse + valide le body (``{"mode": "paper"|"real"|"unconfigured"}``).
+    - Délègue à ``config_data_source.set_mode()`` qui persiste dans
+      ``settings`` (clé ``ui.mode``).
+    - **Émet un audit event ``MODE_CHANGED``** avec ``{from, to,
+      source: "api"}`` pour traçabilité R9 — utile en post-mortem
+      pour tracer "qui a basculé en Réel et quand".
+    - Renvoie le ``ConfigSnapshot`` mis à jour pour que le client
+      puisse refléter immédiatement la nouvelle valeur sans refetch.
+  - Méthode helper ``_read_json_object`` : parse le body JSON avec
+    validation de Content-Length (cap à ``_MAX_BODY_BYTES = 4096``,
+    rejet sur entête non numérique, body vide, JSON invalide, valeur
+    racine non-objet). Sur erreur, envoie la réponse JSON
+    ``{"error": ...}`` et retourne ``None`` au caller.
+  - Constante ``_MAX_BODY_BYTES = 4096`` : cap DoS sur les payloads
+    POST. Largement assez pour ``{"mode": "real"}`` (~20 bytes) et
+    le futur payload clés API Binance.
+  - Constante ``_AUDIT_MODE_CHANGED = "MODE_CHANGED"`` (convention
+    ``<DOMAIN>_<ACTION>`` cf. ``POSITION_OPENED`` etc.).
+
+- ``src/emeraude/web/index.html`` :
+  - Carte **Mode et capital** (page Config) enrichie de 2 boutons :
+    - ``Activer le mode Réel`` (visible quand mode != real).
+    - ``Repasser en mode Paper`` (visible quand mode != paper).
+  - **Dialog A5 Real** (``v-dialog persistent`` non dismissable au
+    backdrop) : titre ``Activation du mode Réel``, capital affiché,
+    mode actuel, alerte tonale, bouton **Confirmer** ``disabled``
+    avec compte à rebours ``Confirmer (5)``...``(1)``...``Confirmer``
+    contrôlé par ``setInterval(1000)``. Bouton **Annuler** toujours
+    actif. Erreur affichée inline en cas d'échec POST.
+  - **Dialog Paper** (retour Réel -> Paper) : confirmation simple
+    sans countdown — repasser en simulation est strictement plus
+    safe, n'a pas besoin du gate A5.
+  - **Snackbar** ``v-snackbar location="top" color="success"`` :
+    feedback `Mode Réel activé.` / `Mode Paper activé.` après
+    succès POST, auto-dismiss 3 s.
+  - Helper ``postJSON(path, body)`` qui parse les ``{"error": ...}``
+    backend pour les exposer à l'UI.
+  - Computed ``isPaperMode`` / ``isRealMode`` /
+    ``realConfirmDisabled`` / ``realConfirmLabel``.
+  - Cleanup ``countdownTimer`` dans ``onBeforeUnmount`` (en plus du
+    ``dashboardTimer`` existant).
+
+- ``tests/unit/test_api_server.py`` : **+11 tests intégration HTTP**
+  - ``test_toggle_mode_requires_auth`` : 403 sans cookie.
+  - ``test_toggle_mode_persists_and_returns_snapshot`` : POST paper->
+    real, vérifie ``mode`` dans la réponse + round-trip GET /api/config
+    pour persistance, puis revert à paper pour propreté.
+  - ``test_toggle_mode_rejects_invalid_mode`` : 400 sur ``"moon"``.
+  - ``test_toggle_mode_rejects_missing_mode`` : 400 sur ``{}``.
+  - ``test_toggle_mode_rejects_non_object_body`` : 400 sur liste racine.
+  - ``test_toggle_mode_rejects_invalid_json`` : 400 sur JSON malformé.
+  - ``test_toggle_mode_rejects_empty_body`` : 400 sur ``Content-Length: 0``.
+  - ``test_toggle_mode_rejects_non_numeric_content_length`` : 400 via
+    raw socket (http.client refuse de l'envoyer côté client) pour
+    couvrir l'``except ValueError`` sur ``int(length_header)``.
+  - ``test_toggle_mode_rejects_oversized_body`` : 413 sur body > 4 KB.
+  - ``test_unknown_post_route_returns_404`` + ``test_post_to_non_api_path_returns_404``.
+  - Helper privé ``_post_json`` ajouté pour DRY.
+
+### Changed
+
+- ``src/emeraude/api/server.py`` : docstring de tête + commentaires
+  inline mis à jour pour lister la nouvelle route POST et renvoyer
+  l'iter #81 pour la saisie clés API Binance (``credentials``).
+- ``src/emeraude/web/index.html`` : l'alerte info "iter #80" sur la
+  page Config est remplacée par "iter #81" (saisie clés API).
+- ``pyproject.toml`` + ``buildozer.spec`` : ``0.0.83`` -> ``0.0.84``.
+
+### Notes
+
+- **Suite stable à 1 748 tests** (+11 vs v0.0.83), coverage **99.51 %**,
+  ruff + ruff format + mypy strict + bandit + pip-audit OK.
+- **Mesure objectif iter #80** :
+  - Avant : 0 endpoint API mutation, toggle Paper/Réel non implémenté
+    côté SPA, A5 non vérifiable runtime.
+  - Après : **1 endpoint POST `/api/toggle-mode` + 1 dialog A5 actif
+    (countdown 5 s + capital affiché)** -> ✅ atteint.
+- **Sécurité** : la double-tap A5 est enforced **côté UI** (countdown
+  bloque le bouton Confirmer pendant 5 s). Le serveur accepte tout
+  appel POST bien formé ; l'audit ``MODE_CHANGED`` permet d'observer
+  toute utilisation directe de l'API. Defense in depth pourrait aussi
+  imposer un délai serveur, mais l'attaque est restreinte à
+  loopback + cookie ``HttpOnly``, donc le gate UI est suffisant à ce
+  stade. Reportable en iter ultérieure si nécessaire.
+- **A14** : toute fonction publique (``do_POST``, ``_handle_toggle_mode``,
+  ``_read_json_object``) couverte par au moins un test pytest.
+- Reste pour l'iter #81 : saisie clés API Binance via ``v-text-field``
+  Vuetify -> ``POST /api/credentials`` -> ``BinanceCredentialsService``.
+
 ## [0.0.83] - 2026-04-30
 
 ### Added — iter #79 : pages Vuetify Journal + Config (ADR-0004 §"Plan de migration")
