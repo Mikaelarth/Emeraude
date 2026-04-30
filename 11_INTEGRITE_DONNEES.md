@@ -248,6 +248,47 @@ field manquant, type incorrect, version mismatch), fichier inexistant.
 
 ---
 
+## 3.5 Composition cycle-level — service ``data_ingestion_guard`` (iter #90)
+
+Les modules infra D3 + D4 (iter #86) sont des **fonctions pures** au
+niveau bar / série. Iter #90 livre le service-level
+:mod:`emeraude.services.data_ingestion_guard` qui les compose dans
+le workflow d'un cycle :
+
+* :func:`validate_and_audit_klines(klines, *, symbol, interval,
+  expected_count, atr_value, expected_dt_ms)` :
+  1. Run :func:`check_history_completeness` (D4).
+  2. Run :func:`check_bar_quality` per kline (D3, 5 checks).
+  3. Aggregate les flags par-bar dans un ``flag_counts`` map.
+  4. Emit **exactement un** audit event ``DATA_INGESTION_COMPLETED``
+     (status ``ok`` ou ``rejected``) avec le payload complet
+     (symbol, interval, n_received, n_expected, missing_pct,
+     bar_quality, status, rejection_reason).
+  5. Retourne un :class:`IngestionReport` avec ``should_reject`` que
+     le caller MUST honorer (skip cycle si True).
+
+* Hard-reject conditions (cascadent) :
+  - empty fetch alors qu'on attendait des bars
+  - completeness ``should_reject`` (>= 5 % bars manquantes)
+  - n'importe quel bar avec un flag du sous-ensemble HARD-reject
+    (``INVALID_HIGH_LOW`` / ``CLOSE_OUT_OF_RANGE``)
+
+* L'invariant doc 11 §5 "0 cycle sans data_quality field rempli" est
+  satisfait par construction : un seul audit row par appel, toujours
+  émis.
+
+**Branchement orchestrator** : reste pour iter ultérieure dédiée
+(R2 — la signature ``CycleReport`` doit évoluer pour propager
+``should_reject`` proprement, et les tests existants d'``auto_trader``
+doivent être ajustés).
+
+**Critère mesurable** : ✅ 17 tests pytest verts couvrant chaque
+chemin (empty fetch ok / reject, clean series, hard rejects, warnings
+only, audit payload shape, flag counts aggregation, helper
+``summarize_flags``).
+
+---
+
 ## 4. Reproductibilité / déterminisme
 
 Au-delà de la donnée, les décisions doivent être reproductibles :

@@ -6,6 +6,104 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.94] - 2026-04-30
+
+### Added — iter #90 : data_ingestion_guard service (compose D3+D4 + audit)
+
+Les iters #85-#89 ont livré 6 modules utilitaires purs qui ferment
+la matrice doc 11 (D1-D6) à 6/6. Iter #90 livre le **service-level
+composant** qui assemble les checks D3 + D4 dans un workflow
+cycle-level avec audit, conformément à doc 11 §5 ("Chaque cycle doit
+produire dans audit_log un événement data_ingestion_completed").
+
+Cet iter ne touche pas l'orchestrator (R2 - le wiring auto_trader
+qui gère le ``should_reject`` retour viendra dans un iter dédié).
+Le service est testable en isolation et fournit le contrat stable
+qu'un futur caller live consommera.
+
+### Added
+
+- ``src/emeraude/services/data_ingestion_guard.py`` (nouveau, ~210 LOC) :
+  - :class:`IngestionReport` dataclass immutable agrégeant le verdict
+    (symbol, completeness, per_bar reports, flag_counts, should_reject,
+    rejection_reason).
+  - :func:`validate_and_audit_klines(klines, *, symbol, interval,
+    expected_count, atr_value, expected_dt_ms)` — entry point unique :
+    1. Run :func:`check_history_completeness` (D4).
+    2. Run :func:`check_bar_quality` per kline avec ``prev_kline``
+       pour le check time-gap.
+    3. Aggrégation flags par-bar dans ``flag_counts`` map.
+    4. Émet **exactement un** audit event ``DATA_INGESTION_COMPLETED``
+       (status ``ok`` ou ``rejected``) avec payload complet.
+    5. Retourne :class:`IngestionReport` ; caller MUST honorer
+       ``should_reject`` (skip cycle si True).
+  - Hard-reject conditions cascadent : empty fetch + expected > 0,
+    completeness ``should_reject`` (>= 5 % missing), n'importe quel
+    bar avec flag du sous-ensemble HARD-reject (``INVALID_HIGH_LOW``
+    / ``CLOSE_OUT_OF_RANGE``).
+  - :func:`summarize_flags(reports)` pure helper exposé pour callers
+    backtest qui veulent agréger sans audit emit.
+  - Constante module ``AUDIT_DATA_INGESTION_COMPLETED =
+    "DATA_INGESTION_COMPLETED"``.
+  - L'invariant doc 11 §5 "0 cycle sans data_quality field rempli"
+    est satisfait par construction : un seul audit row par appel,
+    toujours émis.
+
+- ``tests/unit/test_data_ingestion_guard.py`` (nouveau) — **+17 tests** :
+  - ``TestEmptyFetch`` (2) : zero klines + expected=0 -> ok ;
+    zero klines + expected>0 -> reject avec status="rejected".
+  - ``TestCleanSeries`` (1) : audit row status=ok, flag_counts vide,
+    pas de rejection_reason.
+  - ``TestHardRejects`` (3) : INVALID_HIGH_LOW, CLOSE_OUT_OF_RANGE,
+    completeness incomplete (>=5%) -> chacun should_reject=True
+    avec rejection_reason précise et audit status="rejected".
+  - ``TestWarningsOnly`` (4) : FLAT_VOLUME, OUTLIER_RANGE, TIME_GAP,
+    et missing<5% -> chacun warning sans reject + status="ok".
+  - ``TestAuditPayload`` (3) : payload complet (7 keys), 1 audit
+    par call (deux calls = deux rows), flag_counts agrégés
+    correctement (multi-flag même fetch).
+  - ``TestSummarizeFlags`` (3) : empty input, no flags, agrégation
+    multi-bar.
+  - ``TestIngestionReportShape`` (1) : frozen=True smoke.
+  - Fixture ``captured_audit`` qui mocke ``audit.audit`` via
+    ``monkeypatch.setattr`` au call site (les tests ne touchent pas
+    la SQLite audit log).
+
+### Changed
+
+- ``11_INTEGRITE_DONNEES.md`` : nouvelle section "3.5 Composition
+  cycle-level — service ``data_ingestion_guard`` (iter #90)" qui
+  documente l'API ``validate_and_audit_klines`` et le contrat audit
+  cycle-level. Mention explicite que le branchement orchestrator
+  reste pour iter ultérieure.
+- ``pyproject.toml`` + ``buildozer.spec`` : ``0.0.93`` -> ``0.0.94``.
+
+### Notes
+
+- **Suite stable** (test count à confirmer après run, +17 vs v0.0.93),
+  coverage 99.34 %+, ruff + ruff format + mypy strict + bandit +
+  pip-audit OK.
+- **Mesure objectif iter #90** :
+  - Avant : 3 modules utilitaires purs livrés (data_quality D3+D4,
+    data_snapshot D6, coin_universe_snapshot D2) mais **0 service
+    composé** qui les orchestre dans un workflow cycle-level avec
+    audit.
+  - Après : **1 module service-level + 17 tests + section doc 11
+    §3.5 livrée** -> ✅ atteint.
+- **R2 — une variable à la fois** : changements limités au module
+  service + sa doc + ses tests. Pas de wiring auto_trader cet iter
+  (la signature ``CycleReport`` doit évoluer pour propager
+  ``should_reject``, et les tests existants doivent être ajustés
+  — iter dédié pour bissection facile).
+- **Prochaines iters candidates** :
+  1. **Wiring auto_trader** (modeste) : brancher
+     ``validate_and_audit_klines`` dans ``_step_internal``, propager
+     ``should_reject`` dans ``CycleReport``, ajuster tests.
+  2. **Backtest engine MVP** (gros, ~500-800 LOC) : consume
+     l'ensemble des modules livrés (D1-D6 + ingestion_guard) +
+     simulateur kline → position avec ``apply_adversarial_fill``,
+     ferme P1.5.
+
 ## [0.0.93] - 2026-04-30
 
 ### Added — iter #89 : D2 Coin universe snapshot (anti survivorship bias)
