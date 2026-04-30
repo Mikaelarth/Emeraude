@@ -6,6 +6,138 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.101] - 2026-04-30
+
+### Added — iter #97 : CycleScheduler — passage de "1 cycle = 1 tap utilisateur" à "agent qui tourne tout seul"
+
+L'iter #95 a livré le bouton manuel, l'iter #96 a câblé le live
+executor. Reste un trou : **le bot ne tournait jamais tout seul** —
+l'utilisateur devait taper "Lancer un cycle" à chaque fois. Le
+positionnement "agent autonome" du cahier des charges restait
+aspirationnel. Cette iter livre le scheduler : un thread daemon qui
+appelle :meth:`AutoTrader.run_cycle` toutes les 60 minutes
+(configurable). **Opt-in** par défaut — un fresh install reste à
+``enabled=False`` jusqu'à ce que l'utilisateur active explicitement
+depuis l'écran Config.
+
+### Added
+
+- ``src/emeraude/services/cycle_scheduler.py`` (nouveau, ~270 lignes) :
+  - :class:`CycleScheduler` thread daemon avec lifecycle
+    ``start()``/``stop()`` et :class:`threading.Event` pour exit
+    immédiat (pas de polling busy-wait).
+  - :class:`SchedulerSnapshot` (frozen+slotted) ``(enabled,
+    interval_seconds, is_running, min, max)`` pour l'API.
+  - 4 settings DB helpers : :func:`is_scheduler_enabled`,
+    :func:`set_scheduler_enabled`,
+    :func:`get_scheduler_interval_seconds`,
+    :func:`set_scheduler_interval_seconds` (validate range
+    [60, 86400]).
+  - **Re-lecture des settings à chaque tick** : un toggle UI
+    propage en un seul tick maximum, pas de redémarrage.
+  - **Lock anti-overlap** : si un cycle déborde, le tick suivant
+    audite ``SCHEDULER_TICK_OVERLAP`` plutôt que de le faire
+    silencieusement (anti-règle A1).
+  - **Erreurs absorbées** : ``except Exception`` autour de
+    ``run_cycle`` audite ``SCHEDULER_TICK_ERROR`` puis continue —
+    le thread ne meurt pas. Anti-règle A8 : pas de
+    ``except: pass`` silencieux, type + message logués.
+  - 6 audit events : ``SCHEDULER_STARTED``, ``SCHEDULER_STOPPED``,
+    ``SCHEDULER_TICK_FIRED``, ``SCHEDULER_TICK_SKIPPED`` (disabled),
+    ``SCHEDULER_TICK_ERROR``, ``SCHEDULER_TICK_OVERLAP``.
+
+- ``src/emeraude/api/context.py`` :
+  - Lazy property ``AppContext.cycle_scheduler`` qui construit
+    le scheduler à la première demande, en lui injectant
+    ``auto_trader.run_cycle`` comme callable.
+
+- ``src/emeraude/api/server.py`` :
+  - ``GET /api/scheduler`` retourne le :class:`SchedulerSnapshot`.
+  - ``POST /api/scheduler`` body ``{"enabled": bool,
+    "interval_seconds": int}`` (les deux optionnels) ; validation
+    type strict (400 si type incorrect), validation range
+    interval (400 si hors [60, 86400]).
+  - Refactor du dispatcher POST en table dict ``route ->
+    handler`` (PLR0911 cap respecté, ajout d'une route = 1 ligne).
+
+- ``src/emeraude/web_app.py`` :
+  - Le scheduler démarre juste après le bind du serveur HTTP et
+    s'arrête sur shutdown (``finally`` block, autant sur Android
+    que desktop). Le scheduler ``stop(timeout=5)`` accorde 5 s
+    à un éventuel cycle en cours pour finir.
+
+- ``src/emeraude/web/index.html`` :
+  - Nouvelle carte **"Cycle automatique"** sur l'écran Config
+    juste avant la carte Connexion Binance.
+  - Affiche la cadence (label humanisé `"60 minutes"`/`"1 heure"`
+    selon le seuil), l'état du thread serveur (chip vert "Actif"
+    ou gris "Arrêté"), et un bouton primary/warning selon le
+    flag ``enabled``.
+  - Toggle button avec spinner + alerte erreur inline + snackbar
+    de succès. Refetch immédiat après update via la réponse de
+    ``POST /api/scheduler``.
+
+- ``tests/unit/test_cycle_scheduler.py`` (nouveau) — **+25 tests** :
+  - ``TestSettingsHelpers`` (10) : round-trip enabled, interval,
+    min/max accept, below/above min/max raise, corruption
+    tolerance.
+  - ``TestSchedulerLifecycle`` (5) : not_running before start,
+    start spawns thread, start idempotent, stop signals exit,
+    stop on not_running is noop.
+  - ``TestTickFiring`` (6) : enabled tick fires run_cycle,
+    disabled tick skipped (no call), disabled emits skipped
+    audit, error doesn't kill thread, error emits audit, started/
+    fired/stopped audits emitted.
+  - ``TestSnapshot`` (3) : shape, reflects running state, frozen.
+  - L'``interval_provider=lambda: 1`` permet aux tests de
+    déclencher un tick en moins de 3 s sans busy-wait.
+
+- ``tests/unit/test_api_server.py`` — **+8 tests + 1 AppContext** :
+  - ``test_get_scheduler_requires_auth`` (403).
+  - ``test_get_scheduler_returns_default_snapshot``.
+  - ``test_post_scheduler_enable_persists``.
+  - ``test_post_scheduler_interval_persists``.
+  - ``test_post_scheduler_invalid_interval_400``.
+  - ``test_post_scheduler_invalid_enabled_type_400``.
+  - ``test_post_scheduler_requires_auth``.
+  - ``test_cycle_scheduler_is_lazy`` (dans ``TestAppContext``).
+  - Ajout du helper ``_get`` dans ``TestHTTPIntegration`` pour
+    tester les endpoints GET sans répéter le boilerplate
+    ``http.client``.
+
+### Changed
+
+- ``pyproject.toml`` + ``buildozer.spec`` : ``0.0.100`` -> ``0.0.101``.
+- ``src/emeraude/__init__.py`` : ``_FALLBACK_VERSION = "0.0.101"``.
+
+### Notes
+
+- **Suite stable** : 2043 tests passent (+33 vs v0.0.100), 99.17 %
+  coverage. Ruff + format + mypy strict + bandit + pip-audit
+  (sauf CVE-2026-3219 sur pip 26.0.1 du host uv, sans impact APK)
+  tous OK.
+- **Mesure objectif iter #97** :
+  - Avant : ``run_cycle`` n'avait que 2 callsites — ``POST
+    /api/run-cycle`` (utilisateur tape) + tests. Zéro scheduler.
+    Le bot ne tournait pas tout seul.
+  - Après : un thread daemon démarre avec le serveur HTTP, lit
+    ``scheduler.enabled`` à chaque tick, et appelle ``run_cycle``
+    toutes les ``interval_seconds``. L'utilisateur peut activer/
+    désactiver depuis Config. **Premier passage où le bot a la
+    capacité technique de fonctionner en autonomie.**
+- **Garde-fou de sécurité** : ``scheduler.enabled = False`` par
+  défaut. Un fresh install ne déclenche AUCUN cycle automatique
+  jusqu'à ce que l'utilisateur fasse explicitement le toggle.
+  Combiné avec iter #96 (mode Réel par défaut absent + creds par
+  défaut absents), il faut **3 actes explicites** pour passer en
+  trading autonome réel : (1) saisir credentials Binance,
+  (2) toggler mode Réel (anti-règle A5), (3) toggler scheduler.
+- **Suite logique iter #98** : Cold-start protocol (CS1-CS4) —
+  cap dynamique sur les premiers trades, rétrogradation
+  automatique, bandeau UI cold-start. Sans ça, activer Réel +
+  scheduler aujourd'hui ferait tradeer à 100 % Kelly dès le
+  trade #1.
+
 ## [0.0.100] - 2026-04-30
 
 ### Added — iter #96 : LiveExecutor wiring (passage de "0 ordre Binance jamais envoyé" à "appel `place_market_order` brançable en mode Réel")

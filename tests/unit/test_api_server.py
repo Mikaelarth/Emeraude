@@ -527,6 +527,23 @@ class TestHTTPIntegration:
         raw = resp.read()
         return resp.status, json.loads(raw) if raw else {}
 
+    def _get(
+        self,
+        port: int,
+        path: str,
+        *,
+        token: str | None = None,
+    ) -> tuple[int, dict[str, object]]:
+        """Tiny GET helper. Returns ``(status, json_body)``."""
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        headers: dict[str, str] = {}
+        if token is not None:
+            headers["Cookie"] = f"{AUTH_COOKIE}={token}"
+        conn.request("GET", path, headers=headers)
+        resp = conn.getresponse()
+        raw = resp.read()
+        return resp.status, json.loads(raw) if raw else {}
+
     def test_toggle_mode_requires_auth(self, tmp_path: Path) -> None:
         port, _token, thread, server = self._setup_server(tmp_path)
         try:
@@ -1154,6 +1171,116 @@ class TestHTTPIntegration:
         finally:
             self._stop(server, thread)
 
+    # ─── Scheduler endpoints (iter #97) ─────────────────────────────────
+
+    def test_get_scheduler_requires_auth(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("EMERAUDE_STORAGE_DIR", str(tmp_path))
+        port, _token, thread, server = self._setup_server(tmp_path)
+        try:
+            status, _body = self._get(port, "/api/scheduler", token=None)
+            assert status == 403
+        finally:
+            self._stop(server, thread)
+
+    def test_get_scheduler_returns_default_snapshot(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("EMERAUDE_STORAGE_DIR", str(tmp_path))
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            status, body = self._get(port, "/api/scheduler", token=token)
+            assert status == 200
+            assert body["enabled"] is False
+            assert body["interval_seconds"] == 3600
+            assert body["min_interval_seconds"] == 60
+            assert body["max_interval_seconds"] == 86400
+        finally:
+            self._stop(server, thread)
+
+    def test_post_scheduler_enable_persists(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("EMERAUDE_STORAGE_DIR", str(tmp_path))
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            status, body = self._post_json(port, "/api/scheduler", {"enabled": True}, token=token)
+            assert status == 200
+            assert body["enabled"] is True
+            # Re-fetching MUST reflect the persistence.
+            status_get, body_get = self._get(port, "/api/scheduler", token=token)
+            assert status_get == 200
+            assert body_get["enabled"] is True
+        finally:
+            self._stop(server, thread)
+
+    def test_post_scheduler_interval_persists(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("EMERAUDE_STORAGE_DIR", str(tmp_path))
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            status, body = self._post_json(
+                port,
+                "/api/scheduler",
+                {"interval_seconds": 1800},
+                token=token,
+            )
+            assert status == 200
+            assert body["interval_seconds"] == 1800
+        finally:
+            self._stop(server, thread)
+
+    def test_post_scheduler_invalid_interval_400(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("EMERAUDE_STORAGE_DIR", str(tmp_path))
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            status, body = self._post_json(
+                port,
+                "/api/scheduler",
+                {"interval_seconds": 5},  # below MIN
+                token=token,
+            )
+            assert status == 400
+            error = body["error"]
+            assert isinstance(error, str)
+            assert "interval_seconds" in error
+        finally:
+            self._stop(server, thread)
+
+    def test_post_scheduler_invalid_enabled_type_400(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("EMERAUDE_STORAGE_DIR", str(tmp_path))
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            status, body = self._post_json(
+                port,
+                "/api/scheduler",
+                {"enabled": "yes"},  # must be bool
+                token=token,
+            )
+            assert status == 400
+            error = body["error"]
+            assert isinstance(error, str)
+            assert "enabled" in error
+        finally:
+            self._stop(server, thread)
+
+    def test_post_scheduler_requires_auth(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("EMERAUDE_STORAGE_DIR", str(tmp_path))
+        port, _token, thread, server = self._setup_server(tmp_path)
+        try:
+            status, _body = self._post_json(port, "/api/scheduler", {"enabled": True}, token=None)
+            assert status == 403
+        finally:
+            self._stop(server, thread)
+
 
 # ─── AppContext basic smoke ─────────────────────────────────────────────────
 
@@ -1181,6 +1308,17 @@ class TestAppContext:
         assert trader is not None
         # Subsequent access returns the same instance.
         assert ctx.auto_trader is trader
+
+    def test_cycle_scheduler_is_lazy(self) -> None:
+        # Iter #97 : CycleScheduler is built on first access. Tests
+        # that don't exercise the scheduler path don't spawn a thread.
+        ctx = AppContext()
+        assert ctx._cycle_scheduler is None
+        scheduler = ctx.cycle_scheduler
+        assert scheduler is not None
+        assert ctx.cycle_scheduler is scheduler
+        # Default state : not running, not enabled.
+        assert scheduler.is_running is False
 
 
 # ─── web_app helpers ─────────────────────────────────────────────────────────

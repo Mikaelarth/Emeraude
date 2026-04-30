@@ -746,6 +746,95 @@
                                 </v-list>
                             </v-card>
 
+                            <!-- Scheduler — cycle automatique opt-in (iter #97) -->
+                            <v-card class="mb-4" elevation="0" rounded="lg" color="surface">
+                                <v-card-title class="d-flex align-center">
+                                    <v-icon class="mr-2" color="medium-emphasis">mdi-clock-outline</v-icon>
+                                    Cycle automatique
+                                </v-card-title>
+
+                                <v-card-text v-if="!schedulerSnapshot && !schedulerError" class="text-center pa-6">
+                                    <v-progress-circular indeterminate color="primary" size="32"></v-progress-circular>
+                                </v-card-text>
+
+                                <v-card-text v-else-if="schedulerError" class="pa-4">
+                                    <v-alert type="error" variant="tonal" density="compact">
+                                        {{ schedulerError }}
+                                    </v-alert>
+                                </v-card-text>
+
+                                <template v-else>
+                                    <v-card-text class="pt-0 pb-2">
+                                        <p class="text-body-2 text-medium-emphasis">
+                                            Quand activé, le bot lance automatiquement
+                                            un cycle complet (perception, décision,
+                                            exécution) toutes les
+                                            {{ schedulerIntervalLabel }}. Désactivé par
+                                            défaut — tant que vous n'activez pas le
+                                            cycle automatique, vous gardez le
+                                            contrôle manuel via le bouton
+                                            "Lancer un cycle".
+                                        </p>
+                                    </v-card-text>
+
+                                    <v-list bg-color="transparent" density="comfortable">
+                                        <v-list-item>
+                                            <v-list-item-title class="config-key">Cadence</v-list-item-title>
+                                            <template v-slot:append>
+                                                <span class="config-value">{{ schedulerIntervalLabel }}</span>
+                                            </template>
+                                        </v-list-item>
+                                        <v-divider></v-divider>
+                                        <v-list-item>
+                                            <v-list-item-title class="config-key">Thread serveur</v-list-item-title>
+                                            <template v-slot:append>
+                                                <v-chip :color="schedulerThreadChipColor" variant="tonal" size="small">
+                                                    {{ schedulerThreadLabel }}
+                                                </v-chip>
+                                            </template>
+                                        </v-list-item>
+                                    </v-list>
+
+                                    <v-alert
+                                        v-if="schedulerSaveError"
+                                        density="compact"
+                                        type="error"
+                                        variant="tonal"
+                                        icon="mdi-alert-circle-outline"
+                                        class="mx-4 mb-2"
+                                    >
+                                        {{ schedulerSaveError }}
+                                    </v-alert>
+
+                                    <v-card-actions class="px-4 pb-4 pt-0">
+                                        <v-btn
+                                            v-if="!schedulerSnapshot.enabled"
+                                            block
+                                            variant="flat"
+                                            color="primary"
+                                            prepend-icon="mdi-play-circle-outline"
+                                            :loading="schedulerInProgress"
+                                            :disabled="schedulerInProgress"
+                                            @click="enableScheduler"
+                                        >
+                                            Activer le cycle automatique
+                                        </v-btn>
+                                        <v-btn
+                                            v-else
+                                            block
+                                            variant="tonal"
+                                            color="warning"
+                                            prepend-icon="mdi-pause-circle-outline"
+                                            :loading="schedulerInProgress"
+                                            :disabled="schedulerInProgress"
+                                            @click="disableScheduler"
+                                        >
+                                            Désactiver le cycle automatique
+                                        </v-btn>
+                                    </v-card-actions>
+                                </template>
+                            </v-card>
+
                             <v-card class="mb-4" elevation="0" rounded="lg" color="surface">
                                 <v-card-title class="d-flex align-center">
                                     <v-icon class="mr-2" color="medium-emphasis">mdi-key-variant</v-icon>
@@ -1318,6 +1407,17 @@
                 const cycleError = ref(null);
                 const lastCycleSummary = ref(null);
 
+                // ─── Scheduler state (iter #97) ─────────────────────────
+                // ``schedulerSnapshot`` carries the {enabled, interval_seconds,
+                // is_running, min, max} payload. ``schedulerInProgress``
+                // drives the button spinner during a toggle. The
+                // backend snapshot is the source of truth ; we never
+                // optimistically toggle locally.
+                const schedulerSnapshot = ref(null);
+                const schedulerError = ref(null);
+                const schedulerInProgress = ref(false);
+                const schedulerSaveError = ref(null);
+
                 async function fetchJSON(path) {
                     const res = await fetch(path, { credentials: 'include' });
                     if (!res.ok) {
@@ -1412,6 +1512,40 @@
                     } catch (err) {
                         credentialsError.value = String(err);
                     }
+                }
+
+                async function fetchScheduler() {
+                    try {
+                        schedulerSnapshot.value = await fetchJSON('/api/scheduler');
+                        schedulerError.value = null;
+                    } catch (err) {
+                        schedulerError.value = String(err);
+                    }
+                }
+
+                // ─── Scheduler handlers (iter #97) ──────────────────────
+                async function applySchedulerEnabled(enabled, successMessage) {
+                    schedulerInProgress.value = true;
+                    schedulerSaveError.value = null;
+                    try {
+                        schedulerSnapshot.value = await postJSON(
+                            '/api/scheduler',
+                            { enabled },
+                        );
+                        showSuccessToast(successMessage);
+                    } catch (err) {
+                        schedulerSaveError.value = String(err.message || err);
+                    } finally {
+                        schedulerInProgress.value = false;
+                    }
+                }
+
+                async function enableScheduler() {
+                    await applySchedulerEnabled(true, 'Cycle automatique activé.');
+                }
+
+                async function disableScheduler() {
+                    await applySchedulerEnabled(false, 'Cycle automatique désactivé.');
                 }
 
                 // ─── Credentials handlers (iter #81) ────────────────────
@@ -1636,11 +1770,12 @@
                     if (tab === 'journal') {
                         fetchJournal();
                     } else if (tab === 'config') {
-                        // Config tab pulls both the snapshot and the
-                        // credentials status. Both are independent fetches
-                        // so they can run in parallel without sequencing.
+                        // Config tab pulls the snapshot, credentials status
+                        // and scheduler state. All three are independent
+                        // fetches so they run in parallel without sequencing.
                         fetchConfig();
                         fetchCredentials();
+                        fetchScheduler();
                     } else if (tab === 'learning') {
                         fetchLearning();
                     } else if (tab === 'performance') {
@@ -1696,6 +1831,36 @@
                         return `${symbol} ${interval} — ${reason}`;
                     }
                     return `${symbol} ${interval}`;
+                });
+
+                // Scheduler (iter #97) — render the interval as a
+                // human-friendly label. We support seconds < 60 just
+                // in case (test config), minutes for the typical
+                // cadence, hours for long sleeps.
+                const schedulerIntervalLabel = computed(() => {
+                    const s = schedulerSnapshot.value;
+                    if (!s) return '—';
+                    const seconds = Number(s.interval_seconds ?? 0);
+                    if (seconds < 60) return `${seconds} s`;
+                    if (seconds < 3600) {
+                        const minutes = Math.round(seconds / 60);
+                        return minutes <= 1 ? '1 minute' : `${minutes} minutes`;
+                    }
+                    const hours = seconds / 3600;
+                    if (Number.isInteger(hours)) {
+                        return hours <= 1 ? '1 heure' : `${hours} heures`;
+                    }
+                    return `${hours.toFixed(1)} h`;
+                });
+                const schedulerThreadLabel = computed(() => {
+                    const s = schedulerSnapshot.value;
+                    if (!s) return '—';
+                    return s.is_running ? 'Actif' : 'Arrêté';
+                });
+                const schedulerThreadChipColor = computed(() => {
+                    const s = schedulerSnapshot.value;
+                    if (!s) return 'medium-emphasis';
+                    return s.is_running ? 'success' : 'medium-emphasis';
                 });
 
                 // Mode chip — sourced from the dashboard snapshot (live),
@@ -2006,6 +2171,10 @@
                     cycleInProgress,
                     cycleError,
                     lastCycleSummary,
+                    schedulerSnapshot,
+                    schedulerError,
+                    schedulerInProgress,
+                    schedulerSaveError,
                     // computed view-model
                     pageTitle,
                     formattedCapital,
@@ -2056,6 +2225,9 @@
                     formattedMaxDrawdown,
                     lastCycleLabel,
                     lastCycleDetail,
+                    schedulerIntervalLabel,
+                    schedulerThreadLabel,
+                    schedulerThreadChipColor,
                     // handlers
                     openRealDialog,
                     closeRealDialog,
@@ -2074,6 +2246,8 @@
                     confirmEmergencyStop,
                     confirmEmergencyReset,
                     runCycle,
+                    enableScheduler,
+                    disableScheduler,
                 };
             },
         };

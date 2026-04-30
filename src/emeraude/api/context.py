@@ -48,6 +48,7 @@ if TYPE_CHECKING:
 
     from emeraude.services.auto_trader import AutoTrader
     from emeraude.services.config_types import ConfigDataSource
+    from emeraude.services.cycle_scheduler import CycleScheduler
     from emeraude.services.dashboard_types import DashboardDataSource
     from emeraude.services.journal_types import JournalDataSource
     from emeraude.services.learning_types import LearningDataSource
@@ -148,6 +149,12 @@ class AppContext:
         # data-source reads (Dashboard / Journal / Config / etc.).
         self._auto_trader: AutoTrader | None = None
 
+        # CycleScheduler is also built lazily — same rationale plus
+        # tests that don't exercise the scheduler shouldn't spawn a
+        # thread. Constructed on first ``cycle_scheduler`` access.
+        # Iter #97.
+        self._cycle_scheduler: CycleScheduler | None = None
+
     @property
     def dashboard_data_source(self) -> DashboardDataSource:
         """Data source for the Dashboard screen."""
@@ -219,3 +226,32 @@ class AppContext:
                 live_executor=live_executor,
             )
         return self._auto_trader
+
+    @property
+    def cycle_scheduler(self) -> CycleScheduler:
+        """Lazily-instantiated :class:`CycleScheduler` (iter #97).
+
+        Built on first access. The scheduler is **not** auto-started ;
+        :func:`web_app.run_web_app` calls ``start()`` after the HTTP
+        server binds, and ``stop()`` on shutdown. Tests that don't
+        need the thread can skip the property entirely.
+
+        Default ``enabled = False`` and ``interval = 3600`` from DB.
+        The user toggles enabled via the Config screen ; the scheduler
+        re-reads the setting at every tick so a UI toggle propagates
+        within one interval without restart.
+        """
+        if self._cycle_scheduler is None:
+            from emeraude.services.cycle_scheduler import (  # noqa: PLC0415
+                CycleScheduler,
+            )
+
+            # Pull the auto_trader through the property so it's
+            # eagerly built once here ; calling ``run_cycle`` from
+            # the scheduler thread later won't pay the
+            # construction cost on every tick.
+            trader = self.auto_trader
+            self._cycle_scheduler = CycleScheduler(
+                run_cycle=trader.run_cycle,
+            )
+        return self._cycle_scheduler

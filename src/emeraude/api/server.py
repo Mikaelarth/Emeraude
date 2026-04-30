@@ -150,6 +150,7 @@ _GET_API_HANDLERS: Final[dict[str, Callable[[AppContext], Any]]] = {
     "credentials": lambda ctx: ctx.binance_credentials_service.get_status(),
     "learning": lambda ctx: ctx.learning_data_source.fetch_snapshot(),
     "performance": lambda ctx: ctx.performance_data_source.fetch_snapshot(),
+    "scheduler": lambda ctx: ctx.cycle_scheduler.fetch_snapshot(),
 }
 
 
@@ -429,27 +430,22 @@ class _RequestHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.FORBIDDEN, {"error": "forbidden"})
             return
 
-        if route == "toggle-mode":
-            self._handle_toggle_mode()
+        # Dispatch table : route -> bound handler. Keeps the dispatcher
+        # under the PLR0911 cap and makes adding a route a one-line
+        # change. Each handler owns its own body parsing + audit emit.
+        handlers: dict[str, Callable[[], None]] = {
+            "toggle-mode": self._handle_toggle_mode,
+            "credentials": self._handle_save_credentials,
+            "emergency-stop": self._handle_emergency_stop,
+            "emergency-reset": self._handle_emergency_reset,
+            "run-cycle": self._handle_run_cycle,
+            "scheduler": self._handle_scheduler_update,
+        }
+        handler = handlers.get(route)
+        if handler is None:
+            self._send_json(HTTPStatus.NOT_FOUND, {"error": "unknown route"})
             return
-
-        if route == "credentials":
-            self._handle_save_credentials()
-            return
-
-        if route == "emergency-stop":
-            self._handle_emergency_stop()
-            return
-
-        if route == "emergency-reset":
-            self._handle_emergency_reset()
-            return
-
-        if route == "run-cycle":
-            self._handle_run_cycle()
-            return
-
-        self._send_json(HTTPStatus.NOT_FOUND, {"error": "unknown route"})
+        handler()
 
     # ─── DELETE API routes ──────────────────────────────────────────────────
 
@@ -707,6 +703,57 @@ class _RequestHandler(BaseHTTPRequestHandler):
             ),
         }
         self._send_json(HTTPStatus.OK, {"ok": True, "summary": summary})
+
+    def _handle_scheduler_update(self) -> None:
+        """Update ``scheduler.enabled`` / ``scheduler.interval_seconds``.
+
+        Body : ``{"enabled": bool, "interval_seconds": int}`` — both
+        fields optional. Returns the updated :class:`SchedulerSnapshot`
+        so the UI doesn't need a second GET.
+
+        Validation errors (``interval_seconds`` out of range) -> 400
+        with the validator message. Anti-règle A8 : invalid data is
+        rejected, never silently coerced.
+        """
+        from emeraude.services.cycle_scheduler import (  # noqa: PLC0415
+            set_scheduler_enabled,
+            set_scheduler_interval_seconds,
+        )
+
+        body = self._read_json_object()
+        if body is None:
+            return
+
+        enabled = body.get("enabled")
+        interval_seconds = body.get("interval_seconds")
+
+        if enabled is not None and not isinstance(enabled, bool):
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"error": "enabled must be a boolean"},
+            )
+            return
+        if interval_seconds is not None and not isinstance(interval_seconds, int):
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"error": "interval_seconds must be an integer"},
+            )
+            return
+
+        if enabled is not None:
+            set_scheduler_enabled(enabled)
+        if interval_seconds is not None:
+            try:
+                set_scheduler_interval_seconds(interval_seconds)
+            except ValueError as exc:
+                self._send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"error": str(exc)},
+                )
+                return
+
+        snapshot = self.app_context.cycle_scheduler.fetch_snapshot()
+        self._send_json(HTTPStatus.OK, _serialise(snapshot))
 
     def _read_json_object(self) -> dict[str, Any] | None:
         """Parse a JSON object from the POST body.

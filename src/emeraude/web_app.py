@@ -81,10 +81,18 @@ def run_web_app() -> None:  # pragma: no cover  (entry point, runtime only)
 
     The Java side (Android) or the user (desktop) handles the WebView
     that consumes this server.
+
+    Iter #97 : the :class:`CycleScheduler` is started right after the
+    HTTP server binds and stopped on shutdown. The scheduler reads its
+    ``enabled`` flag from DB at every tick — default ``False`` so a
+    fresh install never trades on its own ; the user must opt in
+    from the Config screen.
     """
     context = AppContext()
     web_root = _resolve_web_root()
     server, _auth_token = create_server(context=context, web_root=web_root)
+    scheduler = context.cycle_scheduler
+    scheduler.start()
     url = f"http://{DEFAULT_HOST}:{DEFAULT_PORT}/"
 
     if _is_android():
@@ -94,7 +102,10 @@ def run_web_app() -> None:  # pragma: no cover  (entry point, runtime only)
         # so the Python process stays alive (the bootstrap calls Python
         # via JNI in its own thread but doesn't keep it alive on its own).
         _LOGGER.info("Emeraude HTTP server starting at %s (Android)", url)
-        server.serve_forever()
+        try:
+            server.serve_forever()
+        finally:
+            scheduler.stop()
         return
 
     # Desktop — print the URL for the dev's browser, block.
@@ -105,3 +116,5 @@ def run_web_app() -> None:  # pragma: no cover  (entry point, runtime only)
     except KeyboardInterrupt:
         print("\n  Shutting down.", flush=True)  # noqa: T201
         server.shutdown()
+    finally:
+        scheduler.stop()
