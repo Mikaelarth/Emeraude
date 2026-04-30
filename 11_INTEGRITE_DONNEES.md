@@ -133,22 +133,36 @@ audit (même valeur "ok" doit être présente).
 
 ---
 
-### D5 — Timezone mismatch
+### D5 — Timezone mismatch — ✅ livré (iter #85)
 
 **Règle** : tout timestamp dans le code, la DB, les logs, les
 notifications est en **UTC**. Conversion en locale uniquement à
 l'affichage UI final.
 
-**Mise en œuvre** :
+**Mise en œuvre** (livrée iter #85) :
 
-1. SQLite : tous les `executed_at`, `closed_at` stockés en
-   `datetime.utcnow().isoformat() + "Z"`.
-2. Linter de code (à ajouter) : ban de `datetime.now()` sans
-   `timezone.utc`, ban de `datetime.fromtimestamp()` sans `, tz=UTC`.
-3. Tests pytest : un test global `test_no_naive_datetime.py` qui scanne
-   le code source pour les patterns interdits.
+1. SQLite : tous les `executed_at`, `closed_at` stockés en epoch
+   seconds UTC (`int(time.time())`) — voir
+   `agent/execution/position_tracker.py` et `infra/audit.py`.
+   Note : la rédaction historique du doc parle de
+   `datetime.utcnow().isoformat() + "Z"` ; la stack actuelle a
+   pivoté vers epoch int qui est trivialement timezone-aware
+   (pas de fuseau possible) et plus économe à indexer.
+2. **Linter de code** : `ruff DTZ` activé dans
+   `pyproject.toml` (cf. ligne `"DTZ"` dans `[tool.ruff.lint] select`).
+   Bloque au lint-time `datetime.now()` / `utcnow()` /
+   `fromtimestamp()` sans argument `tz=`.
+3. **Test pytest scanner** : `tests/unit/test_no_naive_datetime.py`
+   parse en AST tous les fichiers sous `src/emeraude/` et lève
+   AssertionError sur tout pattern interdit, **sans échappatoire
+   `# noqa`** (defense in depth vs ruff). Couvre `datetime.now()`,
+   `datetime.utcnow()`, `datetime.fromtimestamp()`. Patterns plus
+   subtils (`fromisoformat` sur string naive, `combine` avec time
+   sans tzinfo) restent à couvrir en iter ultérieure si besoin.
 
-**Critère mesurable** : test pytest vert.
+**Critère mesurable** : ✅ test pytest vert. Iter #85 a confirmé
+les 2 seuls usages actuels (`journal_types.py:185` +
+`tradability.py:226`) — tous deux passent `tz=UTC`.
 
 ---
 

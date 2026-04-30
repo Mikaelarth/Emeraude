@@ -6,6 +6,83 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.89] - 2026-04-30
+
+### Added — iter #85 : D5 Timezone guard (defense-in-depth scanner)
+
+Doc 11 §"D5 — Timezone mismatch" demande **deux garde-fous** pour
+empêcher l'introduction de timestamps naive dans le code source :
+
+1. **Linter** ruff ``DTZ`` au lint-time (déjà actif dans
+   ``pyproject.toml`` depuis l'itération initiale du projet) — peut
+   être bypassé par ``# noqa: DTZ``.
+2. **Test pytest scanner** AST-based qui parse tous les fichiers
+   sous ``src/emeraude/`` et bloque tout pattern interdit, sans
+   échappatoire. **Manquant jusqu'à cet iter.**
+
+Cet iter livre la couche 2 — defense-in-depth bon marché (~50 LOC
+production + ~100 LOC tests) qui ferme une catégorie entière de bugs
+silencieux (timestamps locaux dérivants entre machines, comparaisons
+naive vs aware levant TypeError, etc.).
+
+### Added
+
+- ``tests/unit/test_no_naive_datetime.py`` (nouveau, 230 LOC) :
+  - :class:`TestNoNaiveDatetime` : un test de production qui scanne
+    tous les fichiers ``.py`` sous ``src/emeraude/`` et lève
+    ``AssertionError`` avec un rapport ``file:line  message`` pour
+    chaque pattern interdit détecté. Le scan agrège toutes les
+    violations en un seul shot (pas une à la fois) pour donner
+    immédiatement la full picture en cas de régression.
+  - :class:`TestScannerImplementation` : 10 tests unitaires des
+    helpers ``_visit_calls`` / ``_has_explicit_tz`` sur des snippets
+    AST forgés à la main. Couvre les patterns valides
+    (``datetime.now(UTC)``, ``datetime.now(tz=UTC)``,
+    ``datetime.fromtimestamp(123, tz=UTC)``, etc.) ET les patterns
+    interdits (``datetime.now()``, ``datetime.utcnow()``,
+    ``datetime.fromtimestamp(123)``).
+  - Patterns scannés : ``datetime.now()`` sans argument tz,
+    ``datetime.utcnow()`` (toujours naive, deprecated 3.12),
+    ``datetime.fromtimestamp(ts)`` sans argument tz.
+  - Patterns laissés à des iters ultérieures : ``fromisoformat``
+    sur strings naive (analyse de string nécessaire), ``combine``
+    avec time sans tzinfo (inférence de type call-site).
+  - Helpers privés ``_scan_source_tree`` / ``_visit_calls`` /
+    ``_has_explicit_tz`` réutilisables si on veut élargir le contrat.
+  - Constantes module ``_FORBIDDEN_CALLS`` (dict ``method -> message``)
+    extensibles facilement.
+
+### Changed
+
+- ``11_INTEGRITE_DONNEES.md`` §"D5 — Timezone mismatch" : marqué
+  ✅ livré (iter #85). Statut détaillé des 3 sous-conditions :
+  1. Stockage SQLite en epoch seconds UTC (déjà acquis,
+     `int(time.time())` partout, plus économe que ISO + suffixe Z).
+  2. Linter ruff DTZ activé (acquis).
+  3. Test pytest scanner AST-based (livré cet iter).
+- ``pyproject.toml`` + ``buildozer.spec`` : ``0.0.88`` -> ``0.0.89``.
+
+### Notes
+
+- **Suite stable à 1 800 tests** (+11 vs v0.0.88), coverage **99.49 %**,
+  ruff + ruff format + mypy strict + bandit + pip-audit OK.
+- **Mesure objectif iter #85** :
+  - Avant : 1 garde-fou actif (ruff DTZ, échappable par
+    ``# noqa: DTZ``) ; 0 test pytest scanner indépendant ; D5
+    listé comme 🔴 dans la matrice doc 11.
+  - Après : **2 garde-fous actifs** (ruff DTZ + pytest scanner
+    AST sans échappatoire) ; D5 marqué ✅ ; 0 régression -> ✅ atteint.
+- **Confirmation des usages actuels** : les 2 seuls
+  ``datetime.fromtimestamp`` du codebase
+  (`journal_types.py:185`, `tradability.py:226`) passent tous deux
+  ``tz=UTC``. ``datetime.now`` / ``utcnow`` non utilisés. Le code est
+  donc déjà à 100 % conforme — le test verrouille cette
+  conformité à l'avenir.
+- **R12 fairness** : la méthodologie peut être étendue à d'autres
+  catégories de patterns naive en élargissant la dict
+  ``_FORBIDDEN_CALLS``. Iters futurs candidats : `fromisoformat`,
+  `combine`, time-without-tz dans les fixtures de test.
+
 ## [0.0.88] - 2026-04-30
 
 ### Added — iter #84 : page Performance (5e et dernier écran SPA)
