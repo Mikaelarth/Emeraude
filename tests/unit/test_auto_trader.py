@@ -114,7 +114,9 @@ def _make_trader(
     return AutoTrader(
         symbol="BTCUSDT",
         interval="1h",
-        klines_limit=250,
+        # Aligned with the actual fetched series so the iter #91
+        # ingestion guard treats the cycle as complete (D4 5 % gate).
+        klines_limit=len(klines),
         capital_provider=lambda: capital,
         orchestrator=orchestrator,
         tracker=tracker if tracker is not None else PositionTracker(),
@@ -392,7 +394,9 @@ class TestFetcherInjection:
 
         def fk(symbol: str, interval: str, limit: int) -> list[Kline]:
             klines_calls.append((symbol, interval, limit))
-            return _bull_klines()
+            # Return exactly ``limit`` klines so the iter #91 ingestion
+            # guard treats the cycle as complete (D4 5 % gate).
+            return _bull_klines(limit)
 
         def fp(symbol: str) -> Decimal:
             price_calls.append(symbol)
@@ -873,3 +877,149 @@ class TestGateAutoConstruction:
         custom = Orchestrator()
         at = AutoTrader(orchestrator=custom)
         assert at._orchestrator is custom
+
+
+# ─── Iter #91 : data-ingestion guard wiring ─────────────────────────────────
+
+
+@pytest.mark.unit
+class TestDataIngestionGuardWiring:
+    """The doc 11 D3+D4 guard from iter #90 is wired into ``run_cycle``.
+
+    Three paths to verify :
+
+    * Clean fetch -> no rejection, normal pipeline.
+    * Hard reject (e.g. corrupted bar / incomplete series) ->
+      decision is forced to skip via ``klines=[]``, no position
+      opened, ``CycleReport.data_quality_rejected=True``.
+    * Soft warning (FLAT_VOLUME / TIME_GAP / OUTLIER_RANGE) ->
+      pipeline continues, ``data_quality_rejected=False``.
+    """
+
+    def test_clean_cycle_does_not_set_rejected_flag(self, fresh_db: Path) -> None:
+        circuit_breaker.reset()
+        at = _make_trader()
+        report = at.run_cycle(now=1_700_000_000)
+        assert report.data_quality_rejected is False
+        assert report.data_quality_rejection_reason == ""
+
+    def test_invalid_high_low_rejects_decision(self, fresh_db: Path) -> None:
+        # Build a series with one corrupted bar (high < low).
+        circuit_breaker.reset()
+        good = _bull_klines(220)
+        bad = good[:]
+        c = good[100].close
+        bad[100] = Kline(
+            open_time=good[100].open_time,
+            open=c,
+            high=c * Decimal("0.5"),  # high < low : corruption
+            low=c * Decimal("1.5"),
+            close=c,
+            volume=Decimal("1"),
+            close_time=good[100].close_time,
+            n_trades=1,
+        )
+        at = _make_trader(klines=bad)
+        report = at.run_cycle(now=1_700_000_000)
+
+        assert report.data_quality_rejected is True
+        assert "bar 100 corrupted" in report.data_quality_rejection_reason
+        # Decision is forced to skip via empty klines short-circuit.
+        assert report.decision.should_trade is False
+        assert report.opened_position is None
+
+    def test_incomplete_series_rejects_decision(self, fresh_db: Path) -> None:
+        # Caller asks for 250 bars, fetcher returns only 200 (20 % missing,
+        # well above the 5 % D4 tolerance).
+        circuit_breaker.reset()
+        truncated = _bull_klines(200)
+
+        def fk(symbol: str, interval: str, limit: int) -> list[Kline]:
+            del symbol, interval, limit
+            return truncated
+
+        def fp(symbol: str) -> Decimal:
+            del symbol
+            return Decimal("210")
+
+        at = AutoTrader(
+            symbol="BTCUSDT",
+            interval="1h",
+            klines_limit=250,  # request 250, fetcher returns 200 -> 20 % missing
+            orchestrator=Orchestrator(
+                strategies=[
+                    _FakeStrategy("a", _signal(0.9, confidence=0.9)),
+                    _FakeStrategy("b", _signal(0.9, confidence=0.9)),
+                ],
+            ),
+            fetch_klines=fk,
+            fetch_current_price=fp,
+        )
+        report = at.run_cycle(now=1_700_000_000)
+        assert report.data_quality_rejected is True
+        assert "series too incomplete" in report.data_quality_rejection_reason
+        assert report.opened_position is None
+
+    def test_flat_volume_warning_does_not_reject(self, fresh_db: Path) -> None:
+        # FLAT_VOLUME is a warning, not a hard reject — the cycle
+        # continues normally and ``data_quality_rejected`` stays False.
+        circuit_breaker.reset()
+        kls = _bull_klines(220)
+        # Tamper one bar with volume=0 + non-zero range (already true
+        # via _kline default high/low spread).
+        c = kls[50].close
+        kls[50] = Kline(
+            open_time=kls[50].open_time,
+            open=c,
+            high=c * Decimal("1.01"),
+            low=c * Decimal("0.99"),
+            close=c,
+            volume=Decimal("0"),
+            close_time=kls[50].close_time,
+            n_trades=0,
+        )
+        at = _make_trader(klines=kls)
+        report = at.run_cycle(now=1_700_000_000)
+        assert report.data_quality_rejected is False
+
+    def test_emits_data_ingestion_completed_audit_event(self, fresh_db: Path) -> None:
+        # The wiring must produce one DATA_INGESTION_COMPLETED audit
+        # row per cycle (doc 11 §5 contract).
+        circuit_breaker.reset()
+        at = _make_trader()
+        at.run_cycle(now=1_700_000_000)
+        assert audit.flush_default_logger(timeout=2.0)
+        rows = audit.query_events(event_type="DATA_INGESTION_COMPLETED")
+        assert len(rows) == 1
+        payload = rows[0]["payload"]
+        assert payload["symbol"] == "BTCUSDT"
+        assert payload["interval"] == "1h"
+        assert payload["status"] == "ok"
+
+    def test_rejected_cycle_emits_rejected_status_audit(self, fresh_db: Path) -> None:
+        circuit_breaker.reset()
+        # Use the hard-reject path : 100 bars expected, 20 received.
+        truncated = _bull_klines(20)
+
+        def fk(symbol: str, interval: str, limit: int) -> list[Kline]:
+            del symbol, interval, limit
+            return truncated
+
+        def fp(symbol: str) -> Decimal:
+            del symbol
+            return Decimal("210")
+
+        at = AutoTrader(
+            symbol="BTCUSDT",
+            interval="1h",
+            klines_limit=100,
+            orchestrator=Orchestrator(),
+            fetch_klines=fk,
+            fetch_current_price=fp,
+        )
+        at.run_cycle(now=1_700_000_000)
+        assert audit.flush_default_logger(timeout=2.0)
+        rows = audit.query_events(event_type="DATA_INGESTION_COMPLETED")
+        assert len(rows) == 1
+        assert rows[0]["payload"]["status"] == "rejected"
+        assert "rejection_reason" in rows[0]["payload"]

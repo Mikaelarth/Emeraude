@@ -6,6 +6,86 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.95] - 2026-04-30
+
+### Added — iter #91 : wiring data_ingestion_guard dans run_cycle live
+
+L'iter #90 a livré le service ``data_ingestion_guard`` qui compose
+D3+D4 dans une API cycle-level avec audit. L'iter #91 le **branche
+au cycle live** : chaque cycle ``AutoTrader.run_cycle`` valide
+maintenant les klines fraîchement fetchées et émet le
+``DATA_INGESTION_COMPLETED`` audit row mandé par doc 11 §5.
+
+### Added
+
+- ``src/emeraude/services/auto_trader.py`` :
+  - :class:`CycleReport` gagne deux champs avec defaults
+    backward-compat :
+    - ``data_quality_rejected: bool = False`` — True iff le D3+D4
+      guard a forcé le skip de la décision.
+    - ``data_quality_rejection_reason: str = ""`` — message
+      humain mirror de :class:`IngestionReport.rejection_reason`.
+  - Step 0 nouveau dans ``run_cycle`` : appel à
+    :func:`validate_and_audit_klines` après le fetch klines, avant
+    le tick. Sur rejection, ``klines = []`` est forcé pour faire
+    skip naturel via le mécanisme ``SKIP_EMPTY_KLINES`` existant
+    de l'orchestrator. Le tick continue (current_price reste
+    trustworthy indépendamment des klines).
+
+- ``tests/unit/test_auto_trader.py`` : **+6 tests**
+  ``TestDataIngestionGuardWiring`` :
+  - ``test_clean_cycle_does_not_set_rejected_flag`` : flow normal,
+    flag False.
+  - ``test_invalid_high_low_rejects_decision`` : un bar avec
+    high<low force ``data_quality_rejected=True`` + skip décision +
+    no opened position.
+  - ``test_incomplete_series_rejects_decision`` : 200 bars reçus
+    sur 250 demandés (20 % missing >= 5 %) -> reject.
+  - ``test_flat_volume_warning_does_not_reject`` : un FLAT_VOLUME
+    warning est non bloquant -> flag stays False.
+  - ``test_emits_data_ingestion_completed_audit_event`` : 1 audit
+    row par cycle clean (status=ok).
+  - ``test_rejected_cycle_emits_rejected_status_audit`` : cycle
+    rejected -> audit row avec status=rejected + rejection_reason.
+
+### Changed
+
+- ``tests/unit/test_auto_trader.py`` : fixture ``_make_trader``
+  passe ``klines_limit=len(klines)`` au lieu de ``250`` hardcodé,
+  alignant le request limit avec la série réellement retournée
+  par le fake fetcher (sinon le D4 5 % gate déclencherait un reject
+  systématique sur les fixtures de 220 bars).
+- ``tests/unit/test_auto_trader.py:test_fetchers_called_with_symbol_and_interval``
+  : ``_bull_klines()`` (220 bars) -> ``_bull_klines(limit)`` (300
+  bars) pour matcher le ``klines_limit=300`` du test.
+- ``pyproject.toml`` + ``buildozer.spec`` : ``0.0.94`` -> ``0.0.95``.
+
+### Notes
+
+- **Suite stable** (test count à confirmer après run, +6 vs v0.0.94),
+  coverage 99.35 %+, ruff + ruff format + mypy strict + bandit +
+  pip-audit OK.
+- **Mesure objectif iter #91** :
+  - Avant : module ``data_ingestion_guard`` livré (iter #90) +
+    matrice doc 11 6/6 mais **non câblé** au cycle live ;
+    auto_trader fetch klines sans validation.
+  - Après : ``run_cycle`` appelle ``validate_and_audit_klines``
+    après chaque fetch ; ``CycleReport`` gagne
+    ``data_quality_rejected`` + ``data_quality_rejection_reason`` ;
+    +6 tests couvrant le path reject -> ✅ atteint.
+- **R2 — une variable à la fois** : changements limités au
+  branchement + extension dataclass + tests. Pas de modification
+  de l'orchestrator (le skip via empty klines est suffisant).
+- **Périmètre exclu** : pas de propagation de ``expected_dt_ms`` ni
+  ``atr_value`` cet iter (D3 time_gap + outlier checks restent
+  skipped en wiring live ; viendront dans un iter ultérieur).
+- **Statut intégrité données après iter #91** :
+  - ✅ D1-D6 modules livrés (iters #85-#89)
+  - ✅ Composition cycle-level service (iter #90)
+  - ✅ **Wiring auto_trader live (iter #91, ce iter)**
+  - 🔴 Wiring backtest engine (consume ces modules dans le
+    simulateur kline -> position quand l'engine arrivera)
+
 ## [0.0.94] - 2026-04-30
 
 ### Added — iter #90 : data_ingestion_guard service (compose D3+D4 + audit)

@@ -63,6 +63,7 @@ from emeraude.agent.execution.position_tracker import Position, PositionTracker
 from emeraude.agent.perception.tradability import compute_tradability
 from emeraude.agent.reasoning.risk_manager import Side
 from emeraude.infra import audit, market_data
+from emeraude.services.data_ingestion_guard import validate_and_audit_klines
 from emeraude.services.gate_factories import (
     make_correlation_gate,
     make_microstructure_gate,
@@ -122,10 +123,23 @@ class CycleReport:
             ``breach_this_call`` / ``max_drawdown`` / ``cvar_99``
             / ``threshold`` and the side-effect flags.
         decision: full :class:`CycleDecision` from the orchestrator.
+            On a data-quality rejection the decision still runs but
+            on an empty klines list, yielding ``SKIP_EMPTY_KLINES``.
         tick_outcome: position closed by the pre-decision tick (stop
-            or target hit), or ``None``.
+            or target hit), or ``None``. The tick uses the live
+            ``current_price``, NOT the klines, so it remains valid
+            even when the kline series is rejected.
         opened_position: position newly opened this cycle, or ``None``
             if the orchestrator skipped or the cycle had a tick close.
+        data_quality_rejected: ``True`` iff the doc 11 D3+D4 ingestion
+            guard (iter #90/#91) flagged the freshly-fetched series
+            as untrustworthy and forced the decision pipeline to skip.
+            ``False`` on every clean cycle. Anti-règle A1 : surface
+            the flag rather than hide a "skipped due to bad data"
+            cycle behind a generic empty-klines reason.
+        data_quality_rejection_reason: human-readable reason when
+            ``data_quality_rejected`` is True (mirrors
+            :class:`IngestionReport.rejection_reason`). Empty otherwise.
     """
 
     symbol: str
@@ -138,6 +152,8 @@ class CycleReport:
     decision: CycleDecision
     tick_outcome: Position | None
     opened_position: Position | None
+    data_quality_rejected: bool = False
+    data_quality_rejection_reason: str = ""
 
 
 # ─── AutoTrader ─────────────────────────────────────────────────────────────
@@ -359,6 +375,26 @@ class AutoTrader:
         current_price = self._fetch_current_price(self._symbol)
         klines = self._fetch_klines(self._symbol, self._interval, self._klines_limit)
 
+        # Step 0 : doc 11 D3+D4 ingestion guard (iter #91 wiring).
+        # Validates the freshly-fetched series and emits the
+        # ``DATA_INGESTION_COMPLETED`` audit event mandated by
+        # doc 11 §5. On rejection, we still tick the tracker
+        # (current_price is independent of klines and remains
+        # trustworthy for SL/TP) but force the decision pipeline to
+        # skip by passing an empty klines list — the existing
+        # ``SKIP_EMPTY_KLINES`` short-circuit in the orchestrator
+        # is the natural skip path. The cycle audit row at end-of-
+        # cycle is unaffected ; the ingestion audit row is
+        # additional, distinct, and required by doc 11.
+        ingestion_report = validate_and_audit_klines(
+            klines,
+            symbol=self._symbol,
+            interval=self._interval,
+            expected_count=self._klines_limit,
+        )
+        if ingestion_report.should_reject:
+            klines = []
+
         # Step 1 : tick first so an existing position closes before
         # any new decision is taken on stale state.
         tick_outcome = self._tracker.tick(current_price=current_price, now=ts)
@@ -412,6 +448,8 @@ class AutoTrader:
             decision=decision,
             tick_outcome=tick_outcome,
             opened_position=opened,
+            data_quality_rejected=ingestion_report.should_reject,
+            data_quality_rejection_reason=ingestion_report.rejection_reason,
         )
 
         audit.audit(_AUDIT_EVENT, _audit_payload(report))
