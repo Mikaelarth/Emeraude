@@ -385,6 +385,57 @@ class TestHTTPIntegration:
         finally:
             self._stop(server, thread)
 
+    def test_api_learning_requires_auth(self, tmp_path: Path) -> None:
+        port, _token, thread, server = self._setup_server(tmp_path)
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request("GET", "/api/learning")
+            resp = conn.getresponse()
+            body = json.loads(resp.read())
+            assert resp.status == 403
+            assert "error" in body
+        finally:
+            self._stop(server, thread)
+
+    def test_api_learning_returns_snapshot_shape(self, tmp_path: Path) -> None:
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request(
+                "GET",
+                "/api/learning",
+                headers={"Cookie": f"{AUTH_COOKIE}={token}"},
+            )
+            resp = conn.getresponse()
+            body = json.loads(resp.read())
+            assert resp.status == 200
+
+            # LearningSnapshot keys.
+            assert "strategies" in body
+            assert "champion" in body
+
+            # 3 known strategies (cf. KNOWN_STRATEGIES). Cold-start: each
+            # carries the uniform prior (alpha=beta=1, n_trades=0).
+            strategies = body["strategies"]
+            assert isinstance(strategies, list)
+            assert len(strategies) == 3
+            names = {s["name"] for s in strategies}
+            assert names == {"trend_follower", "mean_reversion", "breakout_hunter"}
+            for s in strategies:
+                assert "alpha" in s
+                assert "beta" in s
+                assert "n_trades" in s
+                assert "win_rate" in s
+                # Decimal -> string per _serialise contract.
+                assert isinstance(s["win_rate"], str)
+                assert isinstance(s["alpha"], int)
+                assert isinstance(s["beta"], int)
+
+            # No champion at cold start.
+            assert body["champion"] is None
+        finally:
+            self._stop(server, thread)
+
     def test_api_unknown_route_returns_404(self, tmp_path: Path) -> None:
         port, token, thread, server = self._setup_server(tmp_path)
         try:
@@ -952,6 +1003,7 @@ class TestAppContext:
         assert ctx.dashboard_data_source is not None
         assert ctx.journal_data_source is not None
         assert ctx.config_data_source is not None
+        assert ctx.learning_data_source is not None
         assert ctx.binance_credentials_service is not None
         assert ctx.wallet is not None
 

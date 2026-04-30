@@ -38,6 +38,7 @@ from emeraude.services.config_types import SETTING_KEY_MODE
 from emeraude.services.dashboard_data_source import TrackerDashboardDataSource
 from emeraude.services.dashboard_types import MODE_PAPER
 from emeraude.services.journal_data_source import QueryEventsJournalDataSource
+from emeraude.services.learning_data_source import BanditLearningDataSource
 from emeraude.services.wallet import DEFAULT_COLD_START_CAPITAL, WalletService
 
 if TYPE_CHECKING:
@@ -46,6 +47,7 @@ if TYPE_CHECKING:
     from emeraude.services.config_types import ConfigDataSource
     from emeraude.services.dashboard_types import DashboardDataSource
     from emeraude.services.journal_types import JournalDataSource
+    from emeraude.services.learning_types import LearningDataSource
 
 #: Default mode at cold start (anti-règle A5 + A11).
 DEFAULT_MODE: Final[str] = MODE_PAPER
@@ -111,6 +113,12 @@ class AppContext:
             default_mode=self._mode,
         )
 
+        # Learning data source — composes the StrategyBandit (Beta
+        # posteriors per strategy) and the ChampionLifecycle (active
+        # champion). Both are stateless SQL wrappers ; the data source
+        # constructs them lazily.
+        self._learning_data_source: LearningDataSource = BanditLearningDataSource()
+
         self._binance_credentials_service = BinanceCredentialsService()
 
     @property
@@ -127,6 +135,11 @@ class AppContext:
     def config_data_source(self) -> ConfigDataSource:
         """Data source for the Config screen."""
         return self._config_data_source
+
+    @property
+    def learning_data_source(self) -> LearningDataSource:
+        """Data source for the IA / Apprentissage screen."""
+        return self._learning_data_source
 
     @property
     def binance_credentials_service(self) -> BinanceCredentialsService:

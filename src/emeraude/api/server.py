@@ -10,6 +10,7 @@ Architecture (cf. ADR-0004) :
     - ``GET    /api/journal``         :class:`JournalSnapshot`  -> JSON
     - ``GET    /api/config``          :class:`ConfigSnapshot`   -> JSON
     - ``GET    /api/credentials``     :class:`BinanceCredentialsStatus` -> JSON
+    - ``GET    /api/learning``        :class:`LearningSnapshot` -> JSON
     - ``POST   /api/toggle-mode``     ``{"mode": ...}`` -> :class:`ConfigSnapshot`
     - ``POST   /api/credentials``     ``{"api_key", "api_secret"}`` -> status
     - ``POST   /api/emergency-stop``  -> ``{state}`` (freeze breaker, audit)
@@ -21,7 +22,9 @@ Architecture (cf. ADR-0004) :
   la première mutation : ``POST /api/toggle-mode`` ; iter #81 ajoute
   la saisie des clés API Binance (``GET/POST/DELETE /api/credentials``) ;
   iter #82 ajoute l'arrêt d'urgence (``POST /api/emergency-stop`` /
-  ``POST /api/emergency-reset``) qui pilote le ``CircuitBreaker``.
+  ``POST /api/emergency-reset``) ; iter #83 ajoute la lecture de
+  l'apprentissage (``GET /api/learning`` : strategy posteriors +
+  champion).
 
 Sécurité loopback
 =================
@@ -397,6 +400,11 @@ class _RequestHandler(BaseHTTPRequestHandler):
         if route == "credentials":
             status = self.app_context.binance_credentials_service.get_status()
             self._send_json(HTTPStatus.OK, _serialise(status))
+            return
+
+        if route == "learning":
+            learning = self.app_context.learning_data_source.fetch_snapshot()
+            self._send_json(HTTPStatus.OK, _serialise(learning))
             return
 
         self._send_json(HTTPStatus.NOT_FOUND, {"error": "unknown route"})

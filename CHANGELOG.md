@@ -6,6 +6,146 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.87] - 2026-04-30
+
+### Added — iter #83 : page IA / Apprentissage (4e écran SPA)
+
+L'iter #82 a fermé la chaîne de sécurité (arrêt d'urgence). L'iter
+#83 livre **le 4ᵉ des 5 écrans doc 02** : « 🤖 IA / Apprentissage »
+qui surface l'état d'apprentissage du bot — champion actif + posterior
+Beta des 3 stratégies. Mission UX (doc 02) : "voir le bot s'améliorer".
+
+Reste **un seul écran** non livré : Backtest. Une fois celui-ci
+posé, le pilier #1 de la doc 06 (UI Kivy 0%) sera entièrement
+remplacé par le SPA Vuetify.
+
+### Added
+
+- ``src/emeraude/services/learning_types.py`` (nouveau, 175 LOC) :
+  - :data:`KNOWN_STRATEGIES` — tuple des 3 noms canoniques
+    (``trend_follower`` / ``mean_reversion`` / ``breakout_hunter``).
+  - :class:`StrategyStats` — Beta posterior d'une stratégie
+    (``alpha``, ``beta``, ``n_trades``, ``win_rate`` Decimal). Pas
+    de propriété calculée — les valeurs viennent pré-calculées du
+    bandit pour rester simples à sérialiser.
+  - :class:`ChampionInfo` — projection UI d'un :class:`ChampionRecord`
+    (sans ``id`` SQL, ``state`` en str pour rester JSON-friendly).
+  - :class:`LearningSnapshot` — collection ordonnée +
+    ``champion: ChampionInfo | None``.
+  - :class:`LearningDataSource` Protocol — contrat consommé par
+    l'API.
+
+- ``src/emeraude/services/learning_data_source.py`` (nouveau, 145 LOC) :
+  - :class:`BanditLearningDataSource` — composition root du panneau
+    Apprentissage. Lit :meth:`StrategyBandit.get_counts` pour chaque
+    stratégie connue + :meth:`ChampionLifecycle.current` pour le
+    champion. Cold start : priors uniformes + ``champion=None``.
+  - :func:`_stats_for` / :func:`_project_champion` / :func:`_opt_decimal`
+    pure helpers, testables sans DB.
+  - **Mini-Protocols internes** ``_BanditLike`` / ``_LifecycleLike``
+    pour permettre l'injection de fakes en test sans subclasser
+    les vraies classes (qui héritent du SQL via ``database``).
+
+- ``src/emeraude/api/context.py`` :
+  - Nouvel attribut ``learning_data_source: LearningDataSource``
+    instancié via ``BanditLearningDataSource()`` par défaut.
+  - Nouvelle property ``learning_data_source`` exposant la data
+    source à la couche API.
+
+- ``src/emeraude/api/server.py`` :
+  - Route ``GET /api/learning`` — ``_serve_api`` route ``"learning"``
+    pour renvoyer le ``LearningSnapshot`` sérialisé. Réutilise le
+    helper ``_serialise`` (Decimal -> str, dataclass -> dict).
+  - Docstring de tête mise à jour : 10 routes maintenant (5 GET +
+    4 POST + 1 DELETE).
+
+- ``src/emeraude/web/index.html`` :
+  - **4ᵉ bouton ``v-bottom-navigation``** ``"learning"`` avec
+    ``mdi-brain``, label « IA », inséré entre Journal et Config.
+  - Nouvelle ``v-window-item value="learning"`` :
+    - **Card "Champion actuel"** : empty-state quand cold-start
+      (icône ``mdi-trophy-broken`` + explication), sinon liste
+      avec chip d'état (Actif/Suspect/Expiré/En validation),
+      identifiant, Sharpe walk-forward, Sharpe live, date promotion,
+      panneau ``v-expansion-panels`` accordion pour les paramètres
+      bruts.
+    - **Card "Stratégies"** : 3 lignes (une par stratégie), nom
+      humanisé (``Trend Follower`` etc.), n_trades observés (avec
+      mention "données insuffisantes" en cold start), chip win rate
+      coloré (success ≥ 55%, warning ≥ 45%, sinon error ; neutral
+      en cold start).
+    - **Alerte info** déclarant honnêtement (anti-règle A1) que
+      les graphiques d'évolution + détecteur de régime arrivent
+      en iter ultérieure.
+  - State Vue : ``learningSnapshot``, ``learningError``.
+  - ``fetchLearning()`` symétrique de ``fetchConfig`` ;
+    ``watch(activeTab)`` déclenche ``fetchLearning`` à l'activation
+    de l'onglet (pas de polling permanent : les apprentissages
+    bougent au rythme des trades, pas de la seconde).
+  - Computed ``championStateLabel`` / ``championChipColor`` /
+    ``formattedSharpeWalkForward`` / ``formattedSharpeLive`` /
+    ``formattedPromotedAt`` (locale fr-FR) /
+    ``championParameterCount`` / ``hasChampionParameters``.
+  - Helpers ``formatStrategyName`` (snake_case -> Title Case) /
+    ``formatStrategyTradesLabel`` / ``formatWinRate`` (% à 0.1) /
+    ``strategyChipColor`` (color policy thresholds 55%/45%) /
+    ``formatParamValue`` (objects -> JSON, primitives -> string).
+  - ``pageTitle`` étendu pour gérer ``activeTab === 'learning'``
+    -> "Apprentissage".
+
+- ``tests/unit/test_learning_data_source.py`` (nouveau) — **+10 tests** :
+  - ``TestStatsFor`` : prior uniforme + observations.
+  - ``TestProjectChampion`` : cold start, projection complète,
+    Sharpe optionnel, dict copié (pas d'aliasing).
+  - ``TestBanditLearningDataSource`` : cold start (priors + no
+    champion), stratégies avec observations partielles, champion
+    actif surfacé, default constructor smoke.
+- ``tests/unit/test_api_server.py`` : **+2 tests intégration HTTP**
+  + 1 assertion ajoutée sur :class:`AppContext` smoke test pour la
+  nouvelle ``learning_data_source`` :
+  - ``test_api_learning_requires_auth`` : 403 sans cookie.
+  - ``test_api_learning_returns_snapshot_shape`` : payload
+    ``strategies`` (3 entrées, types), ``champion: null`` au cold
+    start.
+
+### Changed
+
+- ``src/emeraude/api/server.py`` : docstring listing à jour des
+  routes (10 maintenant).
+- ``pyproject.toml`` + ``buildozer.spec`` : ``0.0.86`` -> ``0.0.87``.
+
+### Notes
+
+- **Suite stable à 1 779 tests** (+12 vs v0.0.86), coverage
+  **99.49 %**, ruff + ruff format + mypy strict + bandit +
+  pip-audit OK.
+- **Mesure objectif iter #83** :
+  - Avant : 3 onglets sur 5 sur le ``v-bottom-navigation`` (Dashboard
+    / Journal / Config) ; aucune surface UX du ``StrategyBandit``
+    ni du ``ChampionLifecycle`` ; le user ne voit pas que le bot
+    apprend.
+  - Après : **4 onglets sur 5** + ``GET /api/learning`` exposant
+    un :class:`LearningSnapshot` (champion actuel + 3 Beta
+    posteriors) -> ✅ atteint.
+- **Anti-règle A1 (pas de fictif)** : la slice livrée se restreint
+  strictement aux données réellement collectées par le bot
+  aujourd'hui (Beta posteriors via ``strategy_performance`` table,
+  champion via ``champion_history`` table). Les graphiques
+  d'évolution / régime / top-trades W/L attendus par doc 02 sont
+  surfacés comme "à venir" via une ``v-alert info`` plutôt qu'avec
+  un placeholder mensonger.
+- **Statut palier P1 après iter #83** :
+  - ✅ P1.8 Toggle Bot Maître exige confirmation (#80)
+  - ✅ Section Connexion Binance complète (#81)
+  - ✅ Stop d'urgence UI (#82)
+  - ✅ **4ᵉ écran SPA livré (Apprentissage)** (#83, ce iter)
+  - 🔴 P1.1-P1.4 (runtime smartphone Android requis)
+  - 🔴 P1.5 Backtest UI (5ᵉ écran SPA, prochain candidat iter
+    pure-code)
+- **Reste à faire** : le 5ᵉ écran (Backtest) est le seul critère
+  P1 attaquable sans runtime. Iter #84+ candidats : Backtest UI
+  ou tests d'intégrité données D1-D6.
+
 ## [0.0.86] - 2026-04-30
 
 ### Added — iter #82 : arrêt d'urgence (Emergency Stop, H2-H4)
