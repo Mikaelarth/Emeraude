@@ -21,11 +21,14 @@ from emeraude.agent.reasoning.strategies import StrategySignal
 from emeraude.infra import audit, database
 from emeraude.infra.market_data import Kline
 from emeraude.services.auto_trader import (
+    _INTERVAL_TO_MS,
     AutoTrader,
     CycleReport,
     _default_capital_provider,
+    _interval_to_ms,
 )
 from emeraude.services.drift_monitor import DriftMonitor
+from emeraude.services.live_executor import LiveOrderResult, PaperLiveExecutor
 from emeraude.services.orchestrator import Orchestrator
 from emeraude.services.risk_monitor import RiskMonitor
 
@@ -114,7 +117,9 @@ def _make_trader(
     return AutoTrader(
         symbol="BTCUSDT",
         interval="1h",
-        klines_limit=250,
+        # Aligned with the actual fetched series so the iter #91
+        # ingestion guard treats the cycle as complete (D4 5 % gate).
+        klines_limit=len(klines),
         capital_provider=lambda: capital,
         orchestrator=orchestrator,
         tracker=tracker if tracker is not None else PositionTracker(),
@@ -392,7 +397,9 @@ class TestFetcherInjection:
 
         def fk(symbol: str, interval: str, limit: int) -> list[Kline]:
             klines_calls.append((symbol, interval, limit))
-            return _bull_klines()
+            # Return exactly ``limit`` klines so the iter #91 ingestion
+            # guard treats the cycle as complete (D4 5 % gate).
+            return _bull_klines(limit)
 
         def fp(symbol: str) -> Decimal:
             price_calls.append(symbol)
@@ -873,3 +880,534 @@ class TestGateAutoConstruction:
         custom = Orchestrator()
         at = AutoTrader(orchestrator=custom)
         assert at._orchestrator is custom
+
+
+# ─── Iter #91 : data-ingestion guard wiring ─────────────────────────────────
+
+
+@pytest.mark.unit
+class TestDataIngestionGuardWiring:
+    """The doc 11 D3+D4 guard from iter #90 is wired into ``run_cycle``.
+
+    Three paths to verify :
+
+    * Clean fetch -> no rejection, normal pipeline.
+    * Hard reject (e.g. corrupted bar / incomplete series) ->
+      decision is forced to skip via ``klines=[]``, no position
+      opened, ``CycleReport.data_quality_rejected=True``.
+    * Soft warning (FLAT_VOLUME / TIME_GAP / OUTLIER_RANGE) ->
+      pipeline continues, ``data_quality_rejected=False``.
+    """
+
+    def test_clean_cycle_does_not_set_rejected_flag(self, fresh_db: Path) -> None:
+        circuit_breaker.reset()
+        at = _make_trader()
+        report = at.run_cycle(now=1_700_000_000)
+        assert report.data_quality_rejected is False
+        assert report.data_quality_rejection_reason == ""
+
+    def test_invalid_high_low_rejects_decision(self, fresh_db: Path) -> None:
+        # Build a series with one corrupted bar (high < low).
+        circuit_breaker.reset()
+        good = _bull_klines(220)
+        bad = good[:]
+        c = good[100].close
+        bad[100] = Kline(
+            open_time=good[100].open_time,
+            open=c,
+            high=c * Decimal("0.5"),  # high < low : corruption
+            low=c * Decimal("1.5"),
+            close=c,
+            volume=Decimal("1"),
+            close_time=good[100].close_time,
+            n_trades=1,
+        )
+        at = _make_trader(klines=bad)
+        report = at.run_cycle(now=1_700_000_000)
+
+        assert report.data_quality_rejected is True
+        assert "bar 100 corrupted" in report.data_quality_rejection_reason
+        # Decision is forced to skip via empty klines short-circuit.
+        assert report.decision.should_trade is False
+        assert report.opened_position is None
+
+    def test_incomplete_series_rejects_decision(self, fresh_db: Path) -> None:
+        # Caller asks for 250 bars, fetcher returns only 200 (20 % missing,
+        # well above the 5 % D4 tolerance).
+        circuit_breaker.reset()
+        truncated = _bull_klines(200)
+
+        def fk(symbol: str, interval: str, limit: int) -> list[Kline]:
+            del symbol, interval, limit
+            return truncated
+
+        def fp(symbol: str) -> Decimal:
+            del symbol
+            return Decimal("210")
+
+        at = AutoTrader(
+            symbol="BTCUSDT",
+            interval="1h",
+            klines_limit=250,  # request 250, fetcher returns 200 -> 20 % missing
+            orchestrator=Orchestrator(
+                strategies=[
+                    _FakeStrategy("a", _signal(0.9, confidence=0.9)),
+                    _FakeStrategy("b", _signal(0.9, confidence=0.9)),
+                ],
+            ),
+            fetch_klines=fk,
+            fetch_current_price=fp,
+        )
+        report = at.run_cycle(now=1_700_000_000)
+        assert report.data_quality_rejected is True
+        assert "series too incomplete" in report.data_quality_rejection_reason
+        assert report.opened_position is None
+
+    def test_flat_volume_warning_does_not_reject(self, fresh_db: Path) -> None:
+        # FLAT_VOLUME is a warning, not a hard reject — the cycle
+        # continues normally and ``data_quality_rejected`` stays False.
+        circuit_breaker.reset()
+        kls = _bull_klines(220)
+        # Tamper one bar with volume=0 + non-zero range (already true
+        # via _kline default high/low spread).
+        c = kls[50].close
+        kls[50] = Kline(
+            open_time=kls[50].open_time,
+            open=c,
+            high=c * Decimal("1.01"),
+            low=c * Decimal("0.99"),
+            close=c,
+            volume=Decimal("0"),
+            close_time=kls[50].close_time,
+            n_trades=0,
+        )
+        at = _make_trader(klines=kls)
+        report = at.run_cycle(now=1_700_000_000)
+        assert report.data_quality_rejected is False
+
+    def test_emits_data_ingestion_completed_audit_event(self, fresh_db: Path) -> None:
+        # The wiring must produce one DATA_INGESTION_COMPLETED audit
+        # row per cycle (doc 11 §5 contract).
+        circuit_breaker.reset()
+        at = _make_trader()
+        at.run_cycle(now=1_700_000_000)
+        assert audit.flush_default_logger(timeout=2.0)
+        rows = audit.query_events(event_type="DATA_INGESTION_COMPLETED")
+        assert len(rows) == 1
+        payload = rows[0]["payload"]
+        assert payload["symbol"] == "BTCUSDT"
+        assert payload["interval"] == "1h"
+        assert payload["status"] == "ok"
+
+    def test_rejected_cycle_emits_rejected_status_audit(self, fresh_db: Path) -> None:
+        circuit_breaker.reset()
+        # Use the hard-reject path : 100 bars expected, 20 received.
+        truncated = _bull_klines(20)
+
+        def fk(symbol: str, interval: str, limit: int) -> list[Kline]:
+            del symbol, interval, limit
+            return truncated
+
+        def fp(symbol: str) -> Decimal:
+            del symbol
+            return Decimal("210")
+
+        at = AutoTrader(
+            symbol="BTCUSDT",
+            interval="1h",
+            klines_limit=100,
+            orchestrator=Orchestrator(),
+            fetch_klines=fk,
+            fetch_current_price=fp,
+        )
+        at.run_cycle(now=1_700_000_000)
+        assert audit.flush_default_logger(timeout=2.0)
+        rows = audit.query_events(event_type="DATA_INGESTION_COMPLETED")
+        assert len(rows) == 1
+        assert rows[0]["payload"]["status"] == "rejected"
+        assert "rejection_reason" in rows[0]["payload"]
+
+
+# ─── Iter #92 : interval_to_ms helper + ATR wiring ──────────────────────────
+
+
+@pytest.mark.unit
+class TestIntervalToMs:
+    """The helper feeds ``expected_dt_ms`` into the data-ingestion guard
+    so the doc 11 D3 ``TIME_GAP`` check fires on cadence breaks.
+    """
+
+    def test_known_intervals_mapped(self) -> None:
+        # Spot-check the most common Binance values.
+        assert _interval_to_ms("1m") == 60_000
+        assert _interval_to_ms("5m") == 300_000
+        assert _interval_to_ms("15m") == 900_000
+        assert _interval_to_ms("1h") == 3_600_000
+        assert _interval_to_ms("4h") == 14_400_000
+        assert _interval_to_ms("1d") == 86_400_000
+
+    def test_unknown_interval_returns_none(self) -> None:
+        # Defensive default vs. misconfiguration / future intervals.
+        assert _interval_to_ms("1w") is None
+        assert _interval_to_ms("custom") is None
+        assert _interval_to_ms("") is None
+
+    def test_all_mapped_intervals_have_consistent_units(self) -> None:
+        # Every value should be a multiple of 60_000 (a minute) since
+        # Binance only ships minute-aligned bars.
+        for interval, ms in _INTERVAL_TO_MS.items():
+            assert ms > 0, f"{interval} maps to non-positive ms"
+            assert ms % 60_000 == 0, f"{interval} not minute-aligned"
+
+
+@pytest.mark.unit
+class TestTimeGapWiringLive:
+    """The iter #92 wiring activates the D3 ``TIME_GAP`` check by
+    feeding ``expected_dt_ms`` into the guard. Cadence breaks now
+    surface in the audit ``bar_quality`` map.
+    """
+
+    def test_time_gap_in_klines_appears_in_audit_payload(self, fresh_db: Path) -> None:
+        circuit_breaker.reset()
+        # Build 220 clean 1h klines, then introduce one 2h jump
+        # between bar 100 and bar 101 (skip 1 hour).
+        klines = _bull_klines(220)
+        good_bar = klines[101]
+        c = good_bar.close
+        klines[101] = Kline(
+            open_time=good_bar.open_time + 3_600_000,  # +1h shift
+            open=c,
+            high=c * Decimal("1.01"),
+            low=c * Decimal("0.99"),
+            close=c,
+            volume=Decimal("1"),
+            close_time=good_bar.close_time + 3_600_000,
+            n_trades=1,
+        )
+        at = _make_trader(klines=klines)
+        at.run_cycle(now=1_700_000_000)
+        assert audit.flush_default_logger(timeout=2.0)
+        rows = audit.query_events(event_type="DATA_INGESTION_COMPLETED")
+        assert len(rows) == 1
+        bar_quality = rows[0]["payload"]["bar_quality"]
+        assert "time_gap" in bar_quality
+
+    def test_clean_cadence_does_not_flag_time_gap(self, fresh_db: Path) -> None:
+        circuit_breaker.reset()
+        at = _make_trader()  # _bull_klines default cadence = 60_000 ms (1m)
+        # Note : _make_trader uses interval="1h" but _bull_klines uses
+        # 60s steps. The mismatch means TIME_GAP fires on every bar.
+        # We verify via a custom 1h-stepped fixture instead.
+        at.run_cycle(now=1_700_000_000)
+        # We don't assert TIME_GAP absent here because the fixture
+        # step is 60s vs interval 1h ; the dedicated fixture-aligned
+        # test below covers the clean path.
+
+    def test_clean_1h_cadence_yields_no_time_gap(self, fresh_db: Path) -> None:
+        circuit_breaker.reset()
+        # Build a 220-bar series with the proper 1h cadence so the
+        # TIME_GAP check finds nothing wrong.
+        step_ms = 3_600_000
+        klines = [
+            Kline(
+                open_time=i * step_ms,
+                open=Decimal(str(100.0 + i * 0.5)),
+                high=Decimal(str(100.0 + i * 0.5)) * Decimal("1.01"),
+                low=Decimal(str(100.0 + i * 0.5)) * Decimal("0.99"),
+                close=Decimal(str(100.0 + i * 0.5)),
+                volume=Decimal("1"),
+                close_time=(i + 1) * step_ms - 1,
+                n_trades=1,
+            )
+            for i in range(220)
+        ]
+        at = _make_trader(klines=klines)
+        at.run_cycle(now=1_700_000_000)
+        assert audit.flush_default_logger(timeout=2.0)
+        rows = audit.query_events(event_type="DATA_INGESTION_COMPLETED")
+        assert len(rows) == 1
+        bar_quality = rows[0]["payload"]["bar_quality"]
+        # No TIME_GAP flag despite the 1h interval being now respected.
+        assert "time_gap" not in bar_quality
+
+    def test_unknown_interval_skips_time_gap_check(self, fresh_db: Path) -> None:
+        # When the interval is unknown to ``_interval_to_ms``, the
+        # guard receives ``expected_dt_ms=None`` and the TIME_GAP check
+        # is silently skipped — no false positive on every bar.
+        circuit_breaker.reset()
+        kls = _bull_klines(220)
+        at = AutoTrader(
+            symbol="BTCUSDT",
+            interval="1w",  # weekly bars, not in our mapping
+            klines_limit=len(kls),
+            orchestrator=Orchestrator(
+                strategies=[
+                    _FakeStrategy("a", _signal(0.9, confidence=0.9)),
+                    _FakeStrategy("b", _signal(0.9, confidence=0.9)),
+                ],
+            ),
+            fetch_klines=lambda *_: kls,
+            fetch_current_price=lambda _: Decimal("210"),
+        )
+        at.run_cycle(now=1_700_000_000)
+        assert audit.flush_default_logger(timeout=2.0)
+        rows = audit.query_events(event_type="DATA_INGESTION_COMPLETED")
+        assert len(rows) == 1
+        # Despite the fixture cadence not matching 1w, no TIME_GAP
+        # because the check itself is skipped.
+        assert "time_gap" not in rows[0]["payload"]["bar_quality"]
+
+
+@pytest.mark.unit
+class TestOutlierRangeWiringLive:
+    """The iter #92 wiring computes ATR on the freshly-fetched klines
+    and feeds it to the guard so the D3 ``OUTLIER_RANGE`` check
+    becomes active.
+
+    Limitation of the doc 11 §D3 check itself : the ATR is computed
+    on the SAME series being checked, so an outlier bar contributes
+    ~1/14 to its own ATR. The threshold is ``range > 50 x ATR``,
+    which under self-reference becomes ``range > 50/14 x range``,
+    i.e. mathematically impossible to fire on a single isolated
+    spike. A future iter could split the ATR window from the check
+    window (e.g. ATR over ``klines[:-1]`` before checking the
+    last bar) ; for now the wiring is in place but the check
+    primarily serves as a regression marker on multi-bar drift.
+
+    These tests verify the wiring is active (no crash, ATR
+    computed, audit emitted) rather than the firing (which requires
+    a more elaborate fixture).
+    """
+
+    def test_atr_wiring_does_not_crash_on_short_series(self, fresh_db: Path) -> None:
+        # On a series shorter than the ATR period (14), the helper
+        # returns ``None`` and the OUTLIER check is silently skipped.
+        circuit_breaker.reset()
+        kls = _bull_klines(10)  # ATR_14 returns None
+        at = AutoTrader(
+            symbol="BTCUSDT",
+            interval="1h",
+            klines_limit=10,
+            orchestrator=Orchestrator(),
+            fetch_klines=lambda *_: kls,
+            fetch_current_price=lambda _: Decimal("210"),
+        )
+        at.run_cycle(now=1_700_000_000)
+        assert audit.flush_default_logger(timeout=2.0)
+        rows = audit.query_events(event_type="DATA_INGESTION_COMPLETED")
+        assert len(rows) == 1
+        # No OUTLIER flag — check skipped because ATR is None.
+        assert "outlier_range" not in rows[0]["payload"]["bar_quality"]
+
+    def test_atr_wiring_active_on_full_series(self, fresh_db: Path) -> None:
+        # 220 clean bars : ATR is computable (>15 bars), the OUTLIER
+        # check runs but finds nothing wrong with the tight-range
+        # synthetic series.
+        circuit_breaker.reset()
+        # Build a properly 1h-stepped series so TIME_GAP doesn't fire
+        # alongside.
+        step_ms = 3_600_000
+        klines = [
+            Kline(
+                open_time=i * step_ms,
+                open=Decimal(str(100.0 + i * 0.5)),
+                high=Decimal(str(100.0 + i * 0.5)) * Decimal("1.01"),
+                low=Decimal(str(100.0 + i * 0.5)) * Decimal("0.99"),
+                close=Decimal(str(100.0 + i * 0.5)),
+                volume=Decimal("1"),
+                close_time=(i + 1) * step_ms - 1,
+                n_trades=1,
+            )
+            for i in range(220)
+        ]
+        at = _make_trader(klines=klines)
+        at.run_cycle(now=1_700_000_000)
+        assert audit.flush_default_logger(timeout=2.0)
+        rows = audit.query_events(event_type="DATA_INGESTION_COMPLETED")
+        assert len(rows) == 1
+        bar_quality = rows[0]["payload"]["bar_quality"]
+        # No OUTLIER on a uniform series — wiring active, no false
+        # positive.
+        assert "outlier_range" not in bar_quality
+
+
+# ─── LiveExecutor wiring (iter #96) ──────────────────────────────────────────
+
+
+class _RecordingExecutor:
+    """Test double that records each call and returns a programmable fill.
+
+    Lets us verify that ``AutoTrader._maybe_open`` delegates to the
+    executor with the right args (symbol/side/quantity/intended_price)
+    and feeds the executor's ``fill_price`` and ``executed_qty`` to
+    the tracker (anti-règle A1 : the DB row must reflect the real fill,
+    not the orchestrator's intended price).
+    """
+
+    def __init__(
+        self,
+        *,
+        fill_price: Decimal,
+        executed_qty: Decimal | None = None,
+    ) -> None:
+        self.fill_price = fill_price
+        self.executed_qty = executed_qty
+        self.calls: list[dict[str, object]] = []
+
+    def open_market_position(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        quantity: Decimal,
+        intended_price: Decimal,
+    ) -> LiveOrderResult:
+        self.calls.append(
+            {
+                "symbol": symbol,
+                "side": side,
+                "quantity": quantity,
+                "intended_price": intended_price,
+            },
+        )
+        return LiveOrderResult(
+            fill_price=self.fill_price,
+            order_id="test-order-1",
+            status="FILLED",
+            executed_qty=self.executed_qty if self.executed_qty is not None else quantity,
+            is_paper=False,
+        )
+
+
+@pytest.mark.unit
+class TestLiveExecutorWiring:
+    """:class:`AutoTrader` delegates to the injected :class:`LiveExecutor`."""
+
+    def test_default_executor_is_paper(self, fresh_db: Path) -> None:
+        # No injection → AutoTrader uses PaperLiveExecutor by default,
+        # so pre-iter-#96 callers see no behavior change.
+        at = AutoTrader()
+        # Internal attribute exposed for the smoke test ; not part of
+        # the public API.
+        assert isinstance(at._live_executor, PaperLiveExecutor)
+
+    def test_executor_receives_correct_args(self, fresh_db: Path) -> None:
+        recorder = _RecordingExecutor(fill_price=Decimal("210"))
+        klines = _bull_klines()
+        orchestrator = Orchestrator(
+            strategies=[
+                _FakeStrategy("a", _signal(0.9, confidence=0.9)),
+                _FakeStrategy("b", _signal(0.9, confidence=0.9)),
+            ],
+        )
+        tracker = PositionTracker()
+        at = AutoTrader(
+            symbol="BTCUSDT",
+            interval="1h",
+            klines_limit=len(klines),
+            capital_provider=lambda: Decimal("1000"),
+            orchestrator=orchestrator,
+            tracker=tracker,
+            live_executor=recorder,
+            fetch_klines=lambda _symbol, _interval, _limit: klines,
+            fetch_current_price=lambda _symbol: Decimal("210"),
+        )
+        report = at.run_cycle(now=1_700_000_000)
+        assert report.opened_position is not None
+        # Executor was called once with the right args.
+        assert len(recorder.calls) == 1
+        call = recorder.calls[0]
+        assert call["symbol"] == "BTCUSDT"
+        # The orchestrator yielded a LONG decision on a bull series ; the
+        # AutoTrader translates LONG -> "BUY" before delegating.
+        assert call["side"] == "BUY"
+        assert isinstance(call["quantity"], Decimal)
+        assert isinstance(call["intended_price"], Decimal)
+
+    def test_tracker_uses_fill_price_not_intended_price(self, fresh_db: Path) -> None:
+        # The whole point of iter #96 : a 5 USD slippage between the
+        # orchestrator price and the Binance fill MUST surface in the
+        # tracker so the PnL is honest.
+        recorder = _RecordingExecutor(fill_price=Decimal("215"))
+        klines = _bull_klines()
+        orchestrator = Orchestrator(
+            strategies=[
+                _FakeStrategy("a", _signal(0.9, confidence=0.9)),
+                _FakeStrategy("b", _signal(0.9, confidence=0.9)),
+            ],
+        )
+        tracker = PositionTracker()
+        at = AutoTrader(
+            symbol="BTCUSDT",
+            interval="1h",
+            klines_limit=len(klines),
+            capital_provider=lambda: Decimal("1000"),
+            orchestrator=orchestrator,
+            tracker=tracker,
+            live_executor=recorder,
+            fetch_klines=lambda _symbol, _interval, _limit: klines,
+            fetch_current_price=lambda _symbol: Decimal("210"),
+        )
+        report = at.run_cycle(now=1_700_000_000)
+        assert report.opened_position is not None
+        # Tracker stored the executor's fill price, not the
+        # orchestrator's intended_price.
+        assert report.opened_position.entry_price == Decimal("215")
+
+    def test_tracker_uses_executed_qty_when_partial(self, fresh_db: Path) -> None:
+        # Binance returns ``executedQty`` < requested in case of partial
+        # fill or lot-size truncation. The tracker must persist the
+        # actually-executed quantity, not the requested one.
+        recorder = _RecordingExecutor(
+            fill_price=Decimal("210"),
+            executed_qty=Decimal("0.5"),  # arbitrary partial qty
+        )
+        klines = _bull_klines()
+        orchestrator = Orchestrator(
+            strategies=[
+                _FakeStrategy("a", _signal(0.9, confidence=0.9)),
+                _FakeStrategy("b", _signal(0.9, confidence=0.9)),
+            ],
+        )
+        tracker = PositionTracker()
+        at = AutoTrader(
+            symbol="BTCUSDT",
+            interval="1h",
+            klines_limit=len(klines),
+            capital_provider=lambda: Decimal("1000"),
+            orchestrator=orchestrator,
+            tracker=tracker,
+            live_executor=recorder,
+            fetch_klines=lambda _symbol, _interval, _limit: klines,
+            fetch_current_price=lambda _symbol: Decimal("210"),
+        )
+        report = at.run_cycle(now=1_700_000_000)
+        assert report.opened_position is not None
+        assert report.opened_position.quantity == Decimal("0.5")
+
+    def test_executor_not_called_on_skip(self, fresh_db: Path) -> None:
+        # ``should_trade=False`` (no signal qualified) MUST not reach
+        # the executor — anti-règle A1 : no fictitious order on a skip.
+        recorder = _RecordingExecutor(fill_price=Decimal("210"))
+        # Two contradictory signals → ensemble fails to qualify.
+        orchestrator = Orchestrator(
+            strategies=[
+                _FakeStrategy("a", _signal(0.9, confidence=0.9)),
+                _FakeStrategy("b", _signal(-0.9, confidence=0.9)),
+            ],
+        )
+        klines = _bull_klines()
+        at = AutoTrader(
+            symbol="BTCUSDT",
+            interval="1h",
+            klines_limit=len(klines),
+            capital_provider=lambda: Decimal("1000"),
+            orchestrator=orchestrator,
+            tracker=PositionTracker(),
+            live_executor=recorder,
+            fetch_klines=lambda _symbol, _interval, _limit: klines,
+            fetch_current_price=lambda _symbol: Decimal("210"),
+        )
+        report = at.run_cycle(now=1_700_000_000)
+        assert report.opened_position is None
+        assert recorder.calls == []

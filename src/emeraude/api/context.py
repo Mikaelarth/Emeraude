@@ -38,14 +38,21 @@ from emeraude.services.config_types import SETTING_KEY_MODE
 from emeraude.services.dashboard_data_source import TrackerDashboardDataSource
 from emeraude.services.dashboard_types import MODE_PAPER
 from emeraude.services.journal_data_source import QueryEventsJournalDataSource
+from emeraude.services.learning_data_source import BanditLearningDataSource
+from emeraude.services.performance_data_source import PositionPerformanceDataSource
 from emeraude.services.wallet import DEFAULT_COLD_START_CAPITAL, WalletService
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from decimal import Decimal
 
+    from emeraude.services.auto_trader import AutoTrader
     from emeraude.services.config_types import ConfigDataSource
+    from emeraude.services.cycle_scheduler import CycleScheduler
     from emeraude.services.dashboard_types import DashboardDataSource
     from emeraude.services.journal_types import JournalDataSource
+    from emeraude.services.learning_types import LearningDataSource
+    from emeraude.services.performance_types import PerformanceDataSource
 
 #: Default mode at cold start (anti-règle A5 + A11).
 DEFAULT_MODE: Final[str] = MODE_PAPER
@@ -72,6 +79,10 @@ class AppContext:
         from emeraude.infra import database  # noqa: PLC0415
 
         tracker = PositionTracker()
+        # Stored for the lazy ``auto_trader`` property below — the
+        # cycle trigger needs the same tracker instance the dashboard
+        # reads so an opened position immediately surfaces in the UI.
+        self._tracker = tracker
 
         # Mode provider : reads the persisted setting on each call,
         # falls back to the constructor-default. Wallet + dashboard +
@@ -80,6 +91,11 @@ class AppContext:
         def _read_mode() -> str:
             persisted = database.get_setting(SETTING_KEY_MODE)
             return persisted if persisted is not None else self._mode
+
+        # Stored for the lazy ``auto_trader`` property (iter #96) — the
+        # BinanceLiveExecutor consumes the same provider so a UI toggle
+        # propagates to live executor without rebuilding it.
+        self._read_mode: Callable[[], str] = _read_mode
 
         # Live Binance balance provider (iter #67).
         balance_provider = BinanceBalanceProvider(
@@ -111,7 +127,33 @@ class AppContext:
             default_mode=self._mode,
         )
 
+        # Learning data source — composes the StrategyBandit (Beta
+        # posteriors per strategy) and the ChampionLifecycle (active
+        # champion). Both are stateless SQL wrappers ; the data source
+        # constructs them lazily.
+        self._learning_data_source: LearningDataSource = BanditLearningDataSource()
+
+        # Performance data source — runs the doc 10 R12 report over
+        # the closed positions. Uses the same tracker as the dashboard
+        # so the metrics are coherent with capital / P&L.
+        self._performance_data_source: PerformanceDataSource = PositionPerformanceDataSource(
+            tracker=tracker
+        )
+
         self._binance_credentials_service = BinanceCredentialsService()
+
+        # AutoTrader is built lazily on first ``auto_trader`` access.
+        # The constructor is heavyweight (instantiates an Orchestrator,
+        # gate factories, etc.) and reaches out to ``infra.market_data``
+        # at run-cycle time, so we don't pay that cost during plain
+        # data-source reads (Dashboard / Journal / Config / etc.).
+        self._auto_trader: AutoTrader | None = None
+
+        # CycleScheduler is also built lazily — same rationale plus
+        # tests that don't exercise the scheduler shouldn't spawn a
+        # thread. Constructed on first ``cycle_scheduler`` access.
+        # Iter #97.
+        self._cycle_scheduler: CycleScheduler | None = None
 
     @property
     def dashboard_data_source(self) -> DashboardDataSource:
@@ -129,6 +171,16 @@ class AppContext:
         return self._config_data_source
 
     @property
+    def learning_data_source(self) -> LearningDataSource:
+        """Data source for the IA / Apprentissage screen."""
+        return self._learning_data_source
+
+    @property
+    def performance_data_source(self) -> PerformanceDataSource:
+        """Data source for the Performance screen."""
+        return self._performance_data_source
+
+    @property
     def binance_credentials_service(self) -> BinanceCredentialsService:
         """Service for Binance API credentials (read/write/clear)."""
         return self._binance_credentials_service
@@ -137,3 +189,69 @@ class AppContext:
     def wallet(self) -> WalletService:
         """Wallet service — exposed for tests and admin actions."""
         return self._wallet
+
+    @property
+    def auto_trader(self) -> AutoTrader:
+        """Lazily-instantiated :class:`AutoTrader` for cycle triggers.
+
+        Built on first access. The same instance is reused across
+        cycles ; it shares the :class:`PositionTracker` with the
+        dashboard so an opened position immediately surfaces in the
+        UI on the next refresh.
+
+        Iter #95 wires this to the ``POST /api/run-cycle`` endpoint
+        so the user can trigger a cycle manually from the APK.
+        Iter #96 injects a :class:`BinanceLiveExecutor` configured
+        with the shared mode provider — when the user toggles to
+        ``"real"`` AND has saved Binance credentials AND the
+        passphrase env var is set, the next cycle will place a real
+        MARKET order. Otherwise the executor falls back to paper
+        with an explicit audit (anti-règle A1).
+        Future iters may add a scheduler that calls ``run_cycle``
+        periodically without UI input.
+        """
+        if self._auto_trader is None:
+            # Local import : ``AutoTrader`` pulls the orchestrator +
+            # gate factories + market_data, all of which are heavier
+            # than the data-source path. Keeping the import lazy
+            # avoids paying for it on plain reads.
+            from emeraude.services.auto_trader import AutoTrader  # noqa: PLC0415
+            from emeraude.services.live_executor import (  # noqa: PLC0415
+                BinanceLiveExecutor,
+            )
+
+            live_executor = BinanceLiveExecutor(mode_provider=self._read_mode)
+            self._auto_trader = AutoTrader(
+                tracker=self._tracker,
+                live_executor=live_executor,
+            )
+        return self._auto_trader
+
+    @property
+    def cycle_scheduler(self) -> CycleScheduler:
+        """Lazily-instantiated :class:`CycleScheduler` (iter #97).
+
+        Built on first access. The scheduler is **not** auto-started ;
+        :func:`web_app.run_web_app` calls ``start()`` after the HTTP
+        server binds, and ``stop()`` on shutdown. Tests that don't
+        need the thread can skip the property entirely.
+
+        Default ``enabled = False`` and ``interval = 3600`` from DB.
+        The user toggles enabled via the Config screen ; the scheduler
+        re-reads the setting at every tick so a UI toggle propagates
+        within one interval without restart.
+        """
+        if self._cycle_scheduler is None:
+            from emeraude.services.cycle_scheduler import (  # noqa: PLC0415
+                CycleScheduler,
+            )
+
+            # Pull the auto_trader through the property so it's
+            # eagerly built once here ; calling ``run_cycle`` from
+            # the scheduler thread later won't pay the
+            # construction cost on every tick.
+            trader = self.auto_trader
+            self._cycle_scheduler = CycleScheduler(
+                run_cycle=trader.run_cycle,
+            )
+        return self._cycle_scheduler

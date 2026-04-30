@@ -63,6 +63,7 @@ def _snapshot(
     pnl: Decimal = Decimal("0"),
     n_closed: int = 0,
     mode: str = MODE_PAPER,
+    circuit_breaker_state: str = "HEALTHY",
 ) -> DashboardSnapshot:
     return DashboardSnapshot(
         capital_quote=capital,
@@ -70,6 +71,7 @@ def _snapshot(
         cumulative_pnl=pnl,
         n_closed_trades=n_closed,
         mode=mode,
+        circuit_breaker_state=circuit_breaker_state,
     )
 
 

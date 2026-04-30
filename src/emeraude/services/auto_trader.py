@@ -60,13 +60,16 @@ from emeraude.agent.execution.breaker_monitor import (
     BreakerMonitor,
 )
 from emeraude.agent.execution.position_tracker import Position, PositionTracker
+from emeraude.agent.perception.indicators import atr as _compute_atr
 from emeraude.agent.perception.tradability import compute_tradability
 from emeraude.agent.reasoning.risk_manager import Side
 from emeraude.infra import audit, market_data
+from emeraude.services.data_ingestion_guard import validate_and_audit_klines
 from emeraude.services.gate_factories import (
     make_correlation_gate,
     make_microstructure_gate,
 )
+from emeraude.services.live_executor import LiveExecutor, PaperLiveExecutor
 from emeraude.services.orchestrator import (
     CycleDecision,
     Orchestrator,
@@ -93,6 +96,47 @@ _DEFAULT_KLINES_LIMIT: Final[int] = 250
 _DEFAULT_COLD_START_CAPITAL: Final[Decimal] = Decimal("20")
 
 _AUDIT_EVENT: Final[str] = "AUTO_TRADER_CYCLE"
+
+
+#: Mapping Binance interval string -> milliseconds. Used by the iter
+#: #92 wiring to feed ``expected_dt_ms`` into the data-ingestion guard
+#: so the doc 11 D3 ``TIME_GAP`` check can fire on cadence breaks.
+#: Returning ``None`` for an unknown interval (e.g. a future
+#: weekly bar or a custom string) intentionally skips the check
+#: rather than raising — defensive default vs. misconfiguration.
+_INTERVAL_TO_MS: Final[dict[str, int]] = {
+    "1m": 60_000,
+    "3m": 180_000,
+    "5m": 300_000,
+    "15m": 900_000,
+    "30m": 1_800_000,
+    "1h": 3_600_000,
+    "2h": 7_200_000,
+    "4h": 14_400_000,
+    "6h": 21_600_000,
+    "8h": 28_800_000,
+    "12h": 43_200_000,
+    "1d": 86_400_000,
+}
+
+
+def _interval_to_ms(interval: str) -> int | None:
+    """Return the millisecond width of a Binance kline interval string.
+
+    Returns ``None`` for unknown / custom intervals so the caller can
+    skip the time-gap check rather than fabricate a wrong delta.
+    """
+    return _INTERVAL_TO_MS.get(interval)
+
+
+#: Period used when the iter #92 wiring computes the ATR_N reference
+#: feeding the D3 ``OUTLIER_RANGE`` check. The doc 11 row literally
+#: says "Range > 50x ATR_30" but our :func:`indicators.atr` exposes
+#: a 14-period default ; we keep 14 to match the rest of the
+#: codebase (RSI / MACD / Stochastic also use 14) — the multiplier
+#: 50 in :func:`check_bar_quality` is the actual outlier threshold,
+#: not the period.
+_INGESTION_ATR_PERIOD: Final[int] = 14
 
 
 # ─── Public types ───────────────────────────────────────────────────────────
@@ -122,10 +166,23 @@ class CycleReport:
             ``breach_this_call`` / ``max_drawdown`` / ``cvar_99``
             / ``threshold`` and the side-effect flags.
         decision: full :class:`CycleDecision` from the orchestrator.
+            On a data-quality rejection the decision still runs but
+            on an empty klines list, yielding ``SKIP_EMPTY_KLINES``.
         tick_outcome: position closed by the pre-decision tick (stop
-            or target hit), or ``None``.
+            or target hit), or ``None``. The tick uses the live
+            ``current_price``, NOT the klines, so it remains valid
+            even when the kline series is rejected.
         opened_position: position newly opened this cycle, or ``None``
             if the orchestrator skipped or the cycle had a tick close.
+        data_quality_rejected: ``True`` iff the doc 11 D3+D4 ingestion
+            guard (iter #90/#91) flagged the freshly-fetched series
+            as untrustworthy and forced the decision pipeline to skip.
+            ``False`` on every clean cycle. Anti-règle A1 : surface
+            the flag rather than hide a "skipped due to bad data"
+            cycle behind a generic empty-klines reason.
+        data_quality_rejection_reason: human-readable reason when
+            ``data_quality_rejected`` is True (mirrors
+            :class:`IngestionReport.rejection_reason`). Empty otherwise.
     """
 
     symbol: str
@@ -138,6 +195,8 @@ class CycleReport:
     decision: CycleDecision
     tick_outcome: Position | None
     opened_position: Position | None
+    data_quality_rejected: bool = False
+    data_quality_rejection_reason: str = ""
 
 
 # ─── AutoTrader ─────────────────────────────────────────────────────────────
@@ -167,6 +226,7 @@ class AutoTrader:
         breaker_monitor: BreakerMonitor | None = None,
         drift_monitor: DriftMonitor | None = None,
         risk_monitor: RiskMonitor | None = None,
+        live_executor: LiveExecutor | None = None,
         enable_tradability_gate: bool = False,
         correlation_symbols: list[str] | None = None,
         enable_microstructure_gate: bool = False,
@@ -216,6 +276,17 @@ class AutoTrader:
                 Evaluates the I5 criterion ``max DD <= 1.2 *
                 |CVaR_99|`` and escalates the breaker to ``WARNING``
                 on breach. Sticky semantics like the drift monitor.
+            live_executor: iter #96 — délégué d'exécution d'ordres.
+                Default = :class:`PaperLiveExecutor` (aucun appel
+                réseau, comportement strictement identique pré-iter
+                #96). En production, l'``AppContext`` injecte un
+                :class:`BinanceLiveExecutor` qui place de vrais ordres
+                MARKET sur Binance quand le mode courant est ``"real"``,
+                et fallback proprement sur le paper sinon. Cet
+                argument est le point de bascule entre paper et live :
+                tant que l'utilisateur n'a pas un BinanceLiveExecutor
+                injecté ET un mode "real" actif ET des credentials
+                Binance valides, AUCUN appel ne part vers Binance.
             enable_tradability_gate: opt-in for the doc 10 R8
                 meta-gate. When ``True`` AND ``orchestrator is None``,
                 AutoTrader auto-builds the orchestrator with
@@ -300,6 +371,13 @@ class AutoTrader:
             if fetch_current_price is not None
             else market_data.get_current_price
         )
+        # Iter #96 : default = PaperLiveExecutor → aucun appel réseau.
+        # Production injecte BinanceLiveExecutor via AppContext, qui
+        # gère lui-même le fallback paper quand mode != real ou que
+        # les credentials manquent.
+        self._live_executor: LiveExecutor = (
+            live_executor if live_executor is not None else PaperLiveExecutor()
+        )
 
     @property
     def symbol(self) -> str:
@@ -359,6 +437,35 @@ class AutoTrader:
         current_price = self._fetch_current_price(self._symbol)
         klines = self._fetch_klines(self._symbol, self._interval, self._klines_limit)
 
+        # Step 0 : doc 11 D3+D4 ingestion guard (iter #91 wiring,
+        # iter #92 fully active).
+        # Validates the freshly-fetched series and emits the
+        # ``DATA_INGESTION_COMPLETED`` audit event mandated by
+        # doc 11 §5. On rejection, we still tick the tracker
+        # (current_price is independent of klines and remains
+        # trustworthy for SL/TP) but force the decision pipeline to
+        # skip by passing an empty klines list — the existing
+        # ``SKIP_EMPTY_KLINES`` short-circuit in the orchestrator
+        # is the natural skip path.
+        #
+        # Iter #92 : we now compute the ATR reference and the
+        # interval-ms delta so the ``OUTLIER_RANGE`` and
+        # ``TIME_GAP`` checks fire (5/5 D3 checks active live).
+        # Both are skipped silently by the guard when their input
+        # is ``None`` (cold-start ATR not yet computable, or
+        # unknown interval string), so passing them is always safe.
+        atr_value = _compute_atr(klines, period=_INGESTION_ATR_PERIOD) if klines else None
+        ingestion_report = validate_and_audit_klines(
+            klines,
+            symbol=self._symbol,
+            interval=self._interval,
+            expected_count=self._klines_limit,
+            atr_value=atr_value,
+            expected_dt_ms=_interval_to_ms(self._interval),
+        )
+        if ingestion_report.should_reject:
+            klines = []
+
         # Step 1 : tick first so an existing position closes before
         # any new decision is taken on stale state.
         tick_outcome = self._tracker.tick(current_price=current_price, now=ts)
@@ -412,6 +519,8 @@ class AutoTrader:
             decision=decision,
             tick_outcome=tick_outcome,
             opened_position=opened,
+            data_quality_rejected=ingestion_report.should_reject,
+            data_quality_rejection_reason=ingestion_report.rejection_reason,
         )
 
         audit.audit(_AUDIT_EVENT, _audit_payload(report))
@@ -457,14 +566,30 @@ class AutoTrader:
         confidence = (
             decision.ensemble_vote.confidence if decision.ensemble_vote is not None else None
         )
+        # Iter #96 : délègue l'exécution au LiveExecutor pour récupérer
+        # le ``fill_price`` réel (ou théorique en paper). En mode Paper,
+        # ``PaperLiveExecutor`` retourne ``intended_price`` immédiatement,
+        # donc le tracker stocke la même valeur qu'avant. En mode Réel
+        # avec credentials, ``BinanceLiveExecutor`` appelle Binance et
+        # retourne le prix moyen pondéré du fill — le tracker stocke
+        # alors le prix d'exécution réel pour que le PnL soit honnête
+        # (anti-règle A1). Une exception remonte ici et est mappée en
+        # 502/500 par le serveur HTTP (anti-règle A8).
+        side_str = "BUY" if side is Side.LONG else "SELL"
+        order_result = self._live_executor.open_market_position(
+            symbol=self._symbol,
+            side=side_str,
+            quantity=decision.position_quantity,
+            intended_price=decision.trade_levels.entry,
+        )
         return self._tracker.open_position(
             strategy=decision.dominant_strategy,
             regime=decision.regime,
             side=side,
-            entry_price=decision.trade_levels.entry,
+            entry_price=order_result.fill_price,
             stop=decision.trade_levels.stop,
             target=decision.trade_levels.target,
-            quantity=decision.position_quantity,
+            quantity=order_result.executed_qty,
             risk_per_unit=decision.trade_levels.risk_per_unit,
             confidence=confidence,
             opened_at=ts,

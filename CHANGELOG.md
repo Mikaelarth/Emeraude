@@ -6,6 +6,1953 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.101] - 2026-04-30
+
+### Added — iter #97 : CycleScheduler — passage de "1 cycle = 1 tap utilisateur" à "agent qui tourne tout seul"
+
+L'iter #95 a livré le bouton manuel, l'iter #96 a câblé le live
+executor. Reste un trou : **le bot ne tournait jamais tout seul** —
+l'utilisateur devait taper "Lancer un cycle" à chaque fois. Le
+positionnement "agent autonome" du cahier des charges restait
+aspirationnel. Cette iter livre le scheduler : un thread daemon qui
+appelle :meth:`AutoTrader.run_cycle` toutes les 60 minutes
+(configurable). **Opt-in** par défaut — un fresh install reste à
+``enabled=False`` jusqu'à ce que l'utilisateur active explicitement
+depuis l'écran Config.
+
+### Added
+
+- ``src/emeraude/services/cycle_scheduler.py`` (nouveau, ~270 lignes) :
+  - :class:`CycleScheduler` thread daemon avec lifecycle
+    ``start()``/``stop()`` et :class:`threading.Event` pour exit
+    immédiat (pas de polling busy-wait).
+  - :class:`SchedulerSnapshot` (frozen+slotted) ``(enabled,
+    interval_seconds, is_running, min, max)`` pour l'API.
+  - 4 settings DB helpers : :func:`is_scheduler_enabled`,
+    :func:`set_scheduler_enabled`,
+    :func:`get_scheduler_interval_seconds`,
+    :func:`set_scheduler_interval_seconds` (validate range
+    [60, 86400]).
+  - **Re-lecture des settings à chaque tick** : un toggle UI
+    propage en un seul tick maximum, pas de redémarrage.
+  - **Lock anti-overlap** : si un cycle déborde, le tick suivant
+    audite ``SCHEDULER_TICK_OVERLAP`` plutôt que de le faire
+    silencieusement (anti-règle A1).
+  - **Erreurs absorbées** : ``except Exception`` autour de
+    ``run_cycle`` audite ``SCHEDULER_TICK_ERROR`` puis continue —
+    le thread ne meurt pas. Anti-règle A8 : pas de
+    ``except: pass`` silencieux, type + message logués.
+  - 6 audit events : ``SCHEDULER_STARTED``, ``SCHEDULER_STOPPED``,
+    ``SCHEDULER_TICK_FIRED``, ``SCHEDULER_TICK_SKIPPED`` (disabled),
+    ``SCHEDULER_TICK_ERROR``, ``SCHEDULER_TICK_OVERLAP``.
+
+- ``src/emeraude/api/context.py`` :
+  - Lazy property ``AppContext.cycle_scheduler`` qui construit
+    le scheduler à la première demande, en lui injectant
+    ``auto_trader.run_cycle`` comme callable.
+
+- ``src/emeraude/api/server.py`` :
+  - ``GET /api/scheduler`` retourne le :class:`SchedulerSnapshot`.
+  - ``POST /api/scheduler`` body ``{"enabled": bool,
+    "interval_seconds": int}`` (les deux optionnels) ; validation
+    type strict (400 si type incorrect), validation range
+    interval (400 si hors [60, 86400]).
+  - Refactor du dispatcher POST en table dict ``route ->
+    handler`` (PLR0911 cap respecté, ajout d'une route = 1 ligne).
+
+- ``src/emeraude/web_app.py`` :
+  - Le scheduler démarre juste après le bind du serveur HTTP et
+    s'arrête sur shutdown (``finally`` block, autant sur Android
+    que desktop). Le scheduler ``stop(timeout=5)`` accorde 5 s
+    à un éventuel cycle en cours pour finir.
+
+- ``src/emeraude/web/index.html`` :
+  - Nouvelle carte **"Cycle automatique"** sur l'écran Config
+    juste avant la carte Connexion Binance.
+  - Affiche la cadence (label humanisé `"60 minutes"`/`"1 heure"`
+    selon le seuil), l'état du thread serveur (chip vert "Actif"
+    ou gris "Arrêté"), et un bouton primary/warning selon le
+    flag ``enabled``.
+  - Toggle button avec spinner + alerte erreur inline + snackbar
+    de succès. Refetch immédiat après update via la réponse de
+    ``POST /api/scheduler``.
+
+- ``tests/unit/test_cycle_scheduler.py`` (nouveau) — **+25 tests** :
+  - ``TestSettingsHelpers`` (10) : round-trip enabled, interval,
+    min/max accept, below/above min/max raise, corruption
+    tolerance.
+  - ``TestSchedulerLifecycle`` (5) : not_running before start,
+    start spawns thread, start idempotent, stop signals exit,
+    stop on not_running is noop.
+  - ``TestTickFiring`` (6) : enabled tick fires run_cycle,
+    disabled tick skipped (no call), disabled emits skipped
+    audit, error doesn't kill thread, error emits audit, started/
+    fired/stopped audits emitted.
+  - ``TestSnapshot`` (3) : shape, reflects running state, frozen.
+  - L'``interval_provider=lambda: 1`` permet aux tests de
+    déclencher un tick en moins de 3 s sans busy-wait.
+
+- ``tests/unit/test_api_server.py`` — **+8 tests + 1 AppContext** :
+  - ``test_get_scheduler_requires_auth`` (403).
+  - ``test_get_scheduler_returns_default_snapshot``.
+  - ``test_post_scheduler_enable_persists``.
+  - ``test_post_scheduler_interval_persists``.
+  - ``test_post_scheduler_invalid_interval_400``.
+  - ``test_post_scheduler_invalid_enabled_type_400``.
+  - ``test_post_scheduler_requires_auth``.
+  - ``test_cycle_scheduler_is_lazy`` (dans ``TestAppContext``).
+  - Ajout du helper ``_get`` dans ``TestHTTPIntegration`` pour
+    tester les endpoints GET sans répéter le boilerplate
+    ``http.client``.
+
+### Changed
+
+- ``pyproject.toml`` + ``buildozer.spec`` : ``0.0.100`` -> ``0.0.101``.
+- ``src/emeraude/__init__.py`` : ``_FALLBACK_VERSION = "0.0.101"``.
+
+### Notes
+
+- **Suite stable** : 2043 tests passent (+33 vs v0.0.100), 99.17 %
+  coverage. Ruff + format + mypy strict + bandit + pip-audit
+  (sauf CVE-2026-3219 sur pip 26.0.1 du host uv, sans impact APK)
+  tous OK.
+- **Mesure objectif iter #97** :
+  - Avant : ``run_cycle`` n'avait que 2 callsites — ``POST
+    /api/run-cycle`` (utilisateur tape) + tests. Zéro scheduler.
+    Le bot ne tournait pas tout seul.
+  - Après : un thread daemon démarre avec le serveur HTTP, lit
+    ``scheduler.enabled`` à chaque tick, et appelle ``run_cycle``
+    toutes les ``interval_seconds``. L'utilisateur peut activer/
+    désactiver depuis Config. **Premier passage où le bot a la
+    capacité technique de fonctionner en autonomie.**
+- **Garde-fou de sécurité** : ``scheduler.enabled = False`` par
+  défaut. Un fresh install ne déclenche AUCUN cycle automatique
+  jusqu'à ce que l'utilisateur fasse explicitement le toggle.
+  Combiné avec iter #96 (mode Réel par défaut absent + creds par
+  défaut absents), il faut **3 actes explicites** pour passer en
+  trading autonome réel : (1) saisir credentials Binance,
+  (2) toggler mode Réel (anti-règle A5), (3) toggler scheduler.
+- **Suite logique iter #98** : Cold-start protocol (CS1-CS4) —
+  cap dynamique sur les premiers trades, rétrogradation
+  automatique, bandeau UI cold-start. Sans ça, activer Réel +
+  scheduler aujourd'hui ferait tradeer à 100 % Kelly dès le
+  trade #1.
+
+## [0.0.100] - 2026-04-30
+
+### Added — iter #96 : LiveExecutor wiring (passage de "0 ordre Binance jamais envoyé" à "appel `place_market_order` brançable en mode Réel")
+
+L'audit franc post-iter #95 a confirmé un trou critique : le toggle
+"mode Réel" était cosmétique parce que :func:`AutoTrader._maybe_open`
+appelait directement :meth:`PositionTracker.open_position`, qui
+n'écrit qu'en DB locale. **Aucun ordre Binance ne partait jamais**,
+ni en paper ni en réel. Cette iter introduit la couche d'abstraction
+qui fait le pont, sans changer le runtime tant que le mode reste
+Paper et que les credentials ne sont pas configurés (par défaut).
+
+### Added
+
+- ``src/emeraude/services/live_executor.py`` (nouveau, ~480 lignes) :
+  - :class:`LiveExecutor` Protocol avec
+    ``open_market_position(symbol, side, quantity, intended_price)``
+    retournant un :class:`LiveOrderResult` ``(fill_price, order_id,
+    status, executed_qty, is_paper)``.
+  - :class:`PaperLiveExecutor` — implémentation par défaut, aucun
+    appel réseau, retourne immédiatement avec
+    ``fill_price = intended_price``. Émet un audit
+    ``LIVE_ORDER_FALLBACK_PAPER`` avec ``reason="paper_executor"``
+    pour que l'opérateur voie clairement qu'aucun ordre n'a été
+    placé.
+  - :class:`BinanceLiveExecutor` — appelle vraiment
+    :meth:`BinanceClient.place_market_order` quand le mode courant
+    est ``"real"`` ET que les credentials + passphrase sont
+    disponibles. Trois branches sécurisées :
+    1. mode != ``"real"`` -> fallback paper (zéro appel Binance).
+    2. mode == ``"real"`` mais passphrase ou credentials manquants
+       -> fallback paper avec audit explicite (``reason``=
+       ``"passphrase_missing"`` ou ``"credentials_missing"``).
+    3. mode == ``"real"`` + credentials valides -> appel
+       :meth:`place_market_order`, parse du ``fill_price`` moyen
+       pondéré depuis le tableau ``fills`` de la réponse Binance,
+       audit ``LIVE_ORDER_PLACED`` avec slippage en bps.
+  - Helpers purs testables en isolation : :func:`_extract_fill_price`
+    (moyenne pondérée), :func:`_extract_executed_qty`,
+    :func:`_slippage_bps` (positif = défavorable, signé selon
+    ``BUY``/``SELL``), :func:`_to_order_side` (validation
+    défensive).
+  - Erreurs réseau (``OSError``, ``URLError``) et erreurs API
+    (``HTTPError``, ``RuntimeError``) re-raisées après audit
+    ``LIVE_ORDER_REJECTED`` — anti-règle A8 (jamais de
+    ``except: pass`` silencieux).
+
+- ``src/emeraude/services/auto_trader.py`` :
+  - Nouveau paramètre ``live_executor: LiveExecutor | None`` au
+    constructor (default = :class:`PaperLiveExecutor` -> strict
+    backward-compat avec pré-iter #96).
+  - ``_maybe_open`` délègue à l'executor pour récupérer le
+    ``fill_price`` réel et la quantité réellement exécutée.
+    L'``entry_price`` stocké dans le tracker est désormais le
+    prix de fill (pas le prix théorique de l'orchestrator) —
+    quand l'executor est :class:`BinanceLiveExecutor` et que
+    Binance fait du slippage de 5 USD, le PnL devient honnête
+    (anti-règle A1).
+
+- ``src/emeraude/api/context.py`` :
+  - ``AppContext`` stocke désormais ``self._read_mode`` pour le
+    réutiliser au-delà du wiring ``WalletService``.
+  - Lazy property ``auto_trader`` injecte automatiquement un
+    :class:`BinanceLiveExecutor` configuré avec le même
+    ``mode_provider`` que les autres composants — un toggle UI
+    "mode Réel" propage immédiatement au LiveExecutor au cycle
+    suivant, sans redémarrage.
+
+- ``tests/unit/test_live_executor.py`` (nouveau) — **+42 tests** :
+  - :class:`TestPaperLiveExecutor` : 6 tests sur le chemin paper
+    (fill_price = intended, executed_qty = requested, prefix
+    ``"paper-"``, status, is_paper flag, audit fallback).
+  - :class:`TestBinanceExecutorPaperMode` : 2 tests garantissant
+    qu'un mode Paper ne touche **jamais** Binance, même avec des
+    credentials persistés.
+  - :class:`TestBinanceExecutorMissingCredentials` : 4 tests sur
+    les 2 chemins de fallback (passphrase manquante, creds
+    manquants) avec audit explicite.
+  - :class:`TestBinanceExecutorSuccess` : 6 tests sur le succès —
+    args envoyés, parsing single-fill, parsing weighted-average
+    multi-fill, order_id/status/executed_qty, audit
+    ``LIVE_ORDER_PLACED`` avec slippage 10 bps, fallback
+    intended sur ``fills`` vide.
+  - :class:`TestBinanceExecutorErrors` : 5 tests — ``OSError``,
+    ``URLError``, ``RuntimeError`` propagent + audit
+    ``LIVE_ORDER_REJECTED``.
+  - :class:`TestSlippageBps` : 5 tests purs sur le helper
+    (BUY défavorable +, SELL défavorable +, BUY favorable -,
+    égal = 0, intended=0 = 0).
+  - :class:`TestExtractFillPrice` : 5 tests — fills vide,
+    single, multi-fill weighted, malformé skip, total_qty=0
+    fallback.
+  - :class:`TestExtractExecutedQty` + :class:`TestToOrderSide`
+    + :class:`TestLiveOrderResult` : 8 tests sur les helpers
+    et le dataclass frozen+slots.
+
+- ``tests/unit/test_auto_trader.py`` — **+5 tests**
+  (:class:`TestLiveExecutorWiring`) :
+  - ``test_default_executor_is_paper`` : default = PaperLiveExecutor
+    (backward-compat).
+  - ``test_executor_receives_correct_args`` : symbol/side/quantity/
+    intended_price propagés.
+  - ``test_tracker_uses_fill_price_not_intended_price`` : le PnL
+    reflète le slippage, pas le prix théorique.
+  - ``test_tracker_uses_executed_qty_when_partial`` : un fill
+    partiel se reflète dans la quantité du tracker.
+  - ``test_executor_not_called_on_skip`` : ``should_trade=False``
+    ne touche jamais l'executor.
+
+### Changed
+
+- ``pyproject.toml`` + ``buildozer.spec`` : ``0.0.99`` -> ``0.0.100``.
+- ``src/emeraude/__init__.py`` : ``_FALLBACK_VERSION = "0.0.100"``.
+
+### Notes
+
+- **Suite stable** : 2010 tests passent (+47 vs v0.0.99), 99.31 %
+  coverage. Ruff + ruff format + mypy strict + bandit + pip-audit
+  (sauf CVE-2026-3219 sur pip 26.0.1 du host uv, sans impact APK)
+  tous OK.
+- **Mesure objectif iter #96** :
+  - Avant : ``Grep place_market_order`` dans ``src/`` retourne **un
+    seul fichier** (sa propre définition dans ``infra/exchange.py``).
+    0 callsite. Le toggle Réel était cosmétique.
+  - Après : ``BinanceLiveExecutor.open_market_position`` appelle
+    ``place_market_order`` sur la bonne branche, audit complet,
+    erreurs propagées en 502/500 via le serveur HTTP. Le toggle
+    Réel est désormais brançable — tant que l'utilisateur a
+    saisi ses credentials Binance ET son passphrase, le prochain
+    cycle place un vrai ordre. Sans credentials, fallback paper
+    avec audit explicite (anti-règle A1).
+- **Sécurité** : par défaut l'utilisateur de la v0.0.100 voit
+  exactement le même comportement que la v0.0.99 — mode Paper
+  par défaut, pas de credentials, pas d'appel Binance. Le mode
+  Réel ne reste **brançable** qu'une fois cold-start protocol
+  livré (iter #98 estimée), donc avant ça il faut explicitement :
+  (a) saisir des credentials, (b) toggler Réel via la double-
+  validation A5 — deux étapes intentionnellement laborieuses.
+- **Suite logique iter #97** : scheduler 60 min (asyncio thread
+  Android-safe) — sans lui, "agent autonome" reste aspirationnel
+  car l'utilisateur doit taper "Lancer un cycle" à chaque fois.
+
+## [0.0.99] - 2026-04-30
+
+### Added — iter #95 : déclencheur de cycle manuel exposé sur APK
+
+Le runtime APK iter #93 a confirmé que les 5 onglets SPA Vuetify
+fonctionnent, **mais l'utilisateur n'a aucun moyen de déclencher un
+cycle**. Sans scheduler ni bouton, toutes les pages restent en empty
+state : 0 décision dans le Journal, 0 trade fermé, learning vide.
+Cet iter ajoute le bouton "Lancer un cycle" sur le Tableau de bord
+et la route HTTP qui le sert, pour que l'utilisateur puisse exercer
+le pipeline complet (perception → décision → exécution) end-to-end
+depuis le smartphone.
+
+### Added
+
+- ``src/emeraude/api/context.py`` :
+  - Nouveau lazy property ``AppContext.auto_trader`` qui construit
+    l'``AutoTrader`` à la première demande seulement. La
+    ``PositionTracker`` est partagée avec le ``DashboardDataSource``,
+    de sorte qu'une position ouverte par un cycle apparaît
+    immédiatement sur le tableau de bord (pas de cache à invalider).
+  - L'import d'``AutoTrader`` reste local (``noqa: PLC0415``) pour
+    éviter de tirer l'orchestrator + gate factories + market_data
+    sur le chemin lecture pure (Dashboard / Journal / Config).
+
+- ``src/emeraude/api/server.py`` :
+  - Nouvelle route ``POST /api/run-cycle`` (cookie auth requis,
+    sinon 403). Appelle ``AppContext.auto_trader.run_cycle()`` et
+    renvoie un résumé compact JSON :
+    ``{ok, summary: {symbol, interval, fetched_at, should_trade,
+    skip_reason?, opened_position?, data_quality_rejected,
+    data_quality_reason?}}``.
+  - Mapping erreurs honnête (anti-règle A8) :
+    - ``OSError`` / ``URLError`` (réseau Binance) → **502 Bad Gateway**
+      avec le message upstream.
+    - ``Exception`` générique → **500** avec le type + le message.
+    Aucun ``except: pass`` silencieux ; aucun mock prod.
+
+- ``src/emeraude/web/index.html`` :
+  - Nouvelle carte **"Cycle manuel"** sur le Tableau de bord, juste
+    après la carte Sécurité.
+  - Bouton primary "Lancer un cycle" avec spinner ``:loading``
+    pendant la requête (``cycleInProgress`` ref).
+  - Alerte tonal qui rend en vert (``should_trade``), en bleu (skip)
+    ou en rouge (502/500) avec un détail ``symbole intervalle —
+    raison`` parsé depuis le payload du backend.
+  - Snackbar de succès "Cycle exécuté — trade." ou "Cycle exécuté
+    — pas de trade." selon ``summary.should_trade``.
+  - ``fetchDashboard()`` rappelé immédiatement après succès pour
+    ne pas attendre le prochain tick 5 s.
+
+- ``tests/unit/test_api_server.py`` — **+5 tests** :
+  - ``test_run_cycle_requires_auth`` : 403 sans cookie.
+  - ``test_run_cycle_returns_summary_on_success`` : 200 + payload
+    compact, ``data_quality_rejected = False``, ``skip_reason``
+    propagé.
+  - ``test_run_cycle_502_on_upstream_fetch_failure`` : ``OSError``
+    → 502, message preserved.
+  - ``test_run_cycle_500_on_unexpected_exception`` :
+    ``RuntimeError`` → 500, type + message preserved.
+  - ``test_auto_trader_is_lazy`` (dans ``TestAppContext``) :
+    ``ctx._auto_trader`` part à ``None`` ; la première lecture
+    de la propriété construit l'instance, la deuxième renvoie
+    le **même** objet (idempotence).
+
+### Changed
+
+- ``pyproject.toml`` + ``buildozer.spec`` : ``0.0.98`` -> ``0.0.99``.
+- ``src/emeraude/__init__.py`` : ``_FALLBACK_VERSION = "0.0.99"``.
+
+### Notes
+
+- **Suite stable** : 1963 tests passent (+5 vs v0.0.98), 99.30%
+  coverage, ruff + ruff format + mypy strict + bandit + pip-audit
+  OK. ``pip-audit`` continue de signaler ``CVE-2026-3219`` sur le
+  ``pip 26.0.1`` de l'environnement uv ; la CVE n'affecte pas
+  l'APK packagé (p4a ne ship pas pip dans le binaire).
+- **Mesure objectif iter #95** :
+  - Avant : APK runtime → 0 cycle exécutable depuis l'UI ; le
+    pipeline ne tourne que via test pytest. Tableau / Journal /
+    Performance / IA tous en empty state.
+  - Après : un tap sur "Lancer un cycle" déclenche un cycle
+    complet, le résultat surface dans la même carte (alerte
+    tonal) et le Journal voit la décision apparaître au tick
+    suivant. R/R observable sans CLI ni adb.
+- **Suite logique** : prochain iter peut soit (a) rajouter un
+  scheduler interne avec intervalle configurable depuis la page
+  Config, soit (b) commencer la boucle d'apprentissage offline
+  (walk-forward + champion lifecycle) maintenant que la collecte
+  de décisions live est débloquée.
+
+## [0.0.98] - 2026-04-30
+
+### Fixed — iter #94 : version "vunknown" affichée sur l'APK runtime
+
+Le test runtime sur smartphone (PR #1, iter #93 build APK v0.0.94)
+a révélé que l'écran Configuration affichait ``Version: vunknown`` au
+lieu de la vraie version. Cause : ``importlib.metadata.version`` ne
+résout pas en p4a-packaged APK (pas de ``.dist-info``), et le fallback
+historique était ``"unknown"``.
+
+### Added
+
+- ``src/emeraude/__init__.py`` :
+  - Constante module ``_FALLBACK_VERSION = "0.0.98"`` qui sert de
+    fallback when ``importlib.metadata.version`` échoue (cas APK).
+  - **Maintenance contract** documenté dans le docstring : la
+    constante DOIT rester synchronisée avec
+    ``pyproject.toml [project] version`` et
+    ``buildozer.spec version =``. Trois copies, un seul vrai
+    "single source of truth" maintenu par un test pytest qui
+    fait rougir la suite si désync.
+  - Fallback final dans le ``except`` : ``__version__ =
+    _FALLBACK_VERSION`` au lieu de ``"unknown"``.
+
+- ``tests/unit/test_version_sync.py`` (nouveau) — **+4 tests** :
+  - ``test_fallback_matches_pyproject`` : compare
+    ``_FALLBACK_VERSION`` à ``pyproject.toml`` parsé via
+    :mod:`tomllib`.
+  - ``test_buildozer_matches_pyproject`` : compare la ligne
+    ``version =`` de ``buildozer.spec`` (regex) à ``pyproject.toml``.
+  - ``test_fallback_matches_buildozer`` : transitive, kept explicit
+    pour pointer la pair exacte qui diverge en CI.
+  - ``test_runtime_version_is_set`` : assert ``__version__ !=
+    "unknown"`` — verrou anti-régression du fix iter #94.
+
+### Changed
+
+- ``pyproject.toml`` + ``buildozer.spec`` : ``0.0.97`` -> ``0.0.98``.
+- ``src/emeraude/__init__.py`` : ``_FALLBACK_VERSION = "0.0.98"``.
+
+### Notes
+
+- **Suite stable** (test count à confirmer après run, +4 vs v0.0.97),
+  ruff + ruff format + mypy strict + bandit + pip-audit OK.
+- **Mesure objectif iter #94** :
+  - Avant : APK affiche ``Version: vunknown`` sur la page Config
+    (capture utilisateur, iter #93 runtime test).
+  - Après : APK doit afficher ``v0.0.98`` (à confirmer après
+    re-build CI Android APK + install). Le test
+    ``test_runtime_version_is_set`` empêche tout retour à
+    ``"unknown"``.
+- **Maintenance** : à chaque iter, **3 endroits à bumper**
+  (pyproject + buildozer + __init__). Le test pytest fail-fast les
+  oublis. C'est le compromis "DRY pragmatique vs read pyproject.toml
+  at runtime" — la lecture runtime aurait nécessité d'embarquer
+  ``pyproject.toml`` dans l'APK + parser tomllib au boot, ce qui
+  n'est pas l'idiome p4a et ajoute du fragile pour gagner une copie.
+
+## [0.0.97] - 2026-04-30
+
+### Added — iter #93 : backtest fill simulator (1er morceau backtest engine)
+
+Premier building block de l'engine de backtest qui fermera P1.5
+(doc 06 "Backtest UI produit un rapport lisible"). Module
+:mod:`emeraude.agent.learning.backtest_simulator` qui simule un
+**round-trip complet** sur des klines historiques : entry fill +
+SL/TP scan + exit avec calcul du R-multiple et du PnL.
+
+L'engine end-to-end (run loop sur toutes les bars + signal
+generation via orchestrator + agrégation) viendra dans iters #94+.
+
+### Added
+
+- ``src/emeraude/agent/learning/backtest_simulator.py`` (nouveau,
+  ~370 LOC) :
+  - :class:`SimulatedExitReason` StrEnum : ``STOP`` / ``TARGET`` /
+    ``BOTH_STOP_WINS`` / ``EXPIRED``.
+  - :class:`SimulatedTrade` dataclass immutable (side, entry/exit
+    bar indices, AdversarialFill entry+exit, exit_reason,
+    realized_pnl, r_realized).
+  - :func:`simulate_position(...)` entry point :
+    1. Entry fill via :func:`apply_adversarial_fill` au bar
+       ``signal_bar_index + latency_bars``.
+    2. Scan bars suivants pour le **premier** SL/TP hit. LONG : SL
+       quand ``bar.low <= stop`` ; TP quand ``bar.high >= target``.
+       SHORT : symétrique.
+    3. **Both same bar** : ``BOTH_STOP_WINS`` (doc 10 R2 pessimisme).
+    4. EXPIRED après ``max_hold`` : market exit au close du dernier
+       bar via :func:`apply_adversarial_fill`.
+    5. PnL via :func:`compute_realized_pnl`, R-multiple via
+       ``(exit - entry) / risk_per_unit``.
+  - Validation des inputs : quantity > 0, max_hold >= 0, signal_price
+    > 0, SL/TP positions cohérentes vs signal selon le side.
+  - Helpers internes ``_hits_stop_*``, ``_hits_target_*``,
+    ``_build_known_price_fill``, ``_r_multiple``,
+    ``_validate_levels``.
+
+- ``tests/unit/test_backtest_simulator.py`` (nouveau) — **+17 tests** :
+  - ``TestLongTargetHit`` (1) : LONG TP exit, R > 0, fees deducted.
+  - ``TestLongStopHit`` (1) : LONG SL exit, R < 0.
+  - ``TestLongBothSameBar`` (1) : both flags, BOTH_STOP_WINS,
+    exit_price = stop.
+  - ``TestLongExpired`` (1) : flat series, EXPIRED at last scanned
+    bar.
+  - ``TestShortMirror`` (2) : SHORT target hit + SHORT stop hit
+    (mirror logic).
+  - ``TestInsufficientKlines`` (2) : signal at last bar -> None ;
+    max_hold=0 -> EXPIRED at entry bar (degenerate well-defined).
+  - ``TestValidation`` (5) : zero quantity, negative max_hold,
+    LONG stop above signal, LONG target below signal, SHORT stop
+    below signal, zero signal_price.
+  - ``TestRMultiple`` (2) : R ≈ 0.5-1.0 sur TP hit (pessimisme entry
+    réduit le R en dessous de 1) ; R ≈ -1.0--2.0 sur SL hit.
+  - ``TestSimulatedTradeShape`` (1) : frozen=True smoke.
+
+### Changed
+
+- ``pyproject.toml`` + ``buildozer.spec`` : ``0.0.96`` -> ``0.0.97``.
+
+### Notes
+
+- **Suite stable** (test count à confirmer après run, +17 vs v0.0.96),
+  coverage 99.35 %+, ruff + ruff format + mypy strict + bandit +
+  pip-audit OK.
+- **Mesure objectif iter #93** :
+  - Avant : 0 fonction qui simule l'évolution d'une position sur des
+    klines historiques. ``apply_adversarial_fill`` existe pour les
+    fills mais pas le SL/TP scan.
+  - Après : **1 module backtest_simulator + 17 tests + 4 exit reasons
+    couverts** -> ✅ atteint.
+- **Limitations documentées** :
+  - SL/TP exits assument fill at trigger price (no slippage). La
+    pessimistic slippage sur ces exits est différée.
+  - Gap risk : si bar.open est déjà au-delà du stop/target, fill
+    quand même at stop/target. OK pour spot crypto où gaps > 1 %
+    sont rares.
+  - Quantity sizing : caller responsibility (Kelly fractional
+    intégration en iter #94+).
+- **R2 — une variable à la fois** : changements limités au nouveau
+  module + ses tests. Pas de modification de l'orchestrator ni de
+  composition end-to-end (lands en iter #94).
+- **CI Android APK** : v0.0.94 buildée avec succès en background sur
+  l'iter #91 commit (workflow_dispatch). APK artifact dispo dans
+  GitHub Actions run ``25173919154``.
+
+## [0.0.96] - 2026-04-30
+
+### Added — iter #92 : 5/5 checks D3 actifs live (TIME_GAP + OUTLIER_RANGE)
+
+L'iter #91 a câblé le ``data_ingestion_guard`` dans ``run_cycle`` mais
+avec ``expected_dt_ms=None`` et ``atr_value=None``, ce qui skippait
+silencieusement 2/5 checks D3 (TIME_GAP, OUTLIER_RANGE). Iter #92
+les active en propageant les bons paramètres.
+
+### Added
+
+- ``src/emeraude/services/auto_trader.py`` :
+  - Constante module ``_INTERVAL_TO_MS`` : mapping des 12 intervals
+    Binance standards (``"1m"`` -> 60_000, ``"1h"`` -> 3_600_000,
+    ``"1d"`` -> 86_400_000, etc.) vers leur largeur en ms.
+  - Helper ``_interval_to_ms(interval)`` : retourne ``None`` pour
+    un interval inconnu (defensive default vs misconfiguration).
+  - Constante ``_INGESTION_ATR_PERIOD = 14`` : période pour le
+    calcul ATR de référence du check OUTLIER_RANGE.
+  - ``run_cycle`` étend l'appel ``validate_and_audit_klines`` avec
+    ``atr_value = _compute_atr(klines, period=14)`` et
+    ``expected_dt_ms = _interval_to_ms(self._interval)``.
+
+- ``tests/unit/test_auto_trader.py`` : **+9 tests**
+  - ``TestIntervalToMs`` (3) : mappings standards corrects, unknown
+    -> None, all values minute-aligned.
+  - ``TestTimeGapWiringLive`` (3) : time gap dans klines apparaît
+    dans audit ``bar_quality`` ; cadence 1h propre = pas de TIME_GAP ;
+    interval inconnu (``"1w"``) skip silencieusement le check.
+  - ``TestOutlierRangeWiringLive`` (2) : ATR wiring ne crash pas sur
+    série courte (<15 bars, ATR=None, check skipped) ; ATR actif sur
+    série complète sans false positive.
+
+### Changed
+
+- ``src/emeraude/services/auto_trader.py`` : Step 0 commentaire mis
+  à jour pour refléter "iter #92 fully active" au lieu de "iter #91
+  wiring".
+- ``pyproject.toml`` + ``buildozer.spec`` : ``0.0.95`` -> ``0.0.96``.
+
+### Notes
+
+- **Suite stable** (test count à confirmer après run, +9 vs v0.0.95),
+  coverage 99.35 %+, ruff + ruff format + mypy strict + bandit +
+  pip-audit OK.
+- **Mesure objectif iter #92** :
+  - Avant : iter #91 a câblé D3+D4 mais avec ``expected_dt_ms=None``
+    et ``atr_value=None`` -> 3/5 checks D3 actifs (FLAT_VOLUME,
+    INVALID_HIGH_LOW, CLOSE_OUT_OF_RANGE).
+  - Après : **5/5 checks D3 actifs** dans ``run_cycle`` (TIME_GAP
+    fire prouvé sur cadence cassée + OUTLIER ATR computed sans
+    crash + skips defensive sur ATR=None / interval inconnu) ->
+    ✅ atteint.
+- **Limitation documentée** : la doc 11 §D3 row 4 ``range > 50 x ATR``
+  est self-referential — le bar checké contribue ~1/14 à son propre
+  ATR, ce qui rend le check mathématiquement impossible à fire sur
+  un spike isolé (50/14 × range > range ne peut être vrai). Un
+  iter ultérieur pourrait splitter la fenêtre ATR de la fenêtre
+  check (e.g. ATR sur ``klines[:-1]`` avant de checker le dernier
+  bar). Pour l'instant, le check sert de regression marker pour
+  les drifts multi-bars. Documenté dans ``TestOutlierRangeWiringLive``
+  docstring.
+- **R2 — une variable à la fois** : changements limités au wiring
+  des paramètres (mapping + ATR compute) + tests. Pas de
+  modification de la logique des checks dans ``data_quality.py``
+  (le bug du multiplier resterait pour iter dédiée si besoin).
+
+## [0.0.95] - 2026-04-30
+
+### Added — iter #91 : wiring data_ingestion_guard dans run_cycle live
+
+L'iter #90 a livré le service ``data_ingestion_guard`` qui compose
+D3+D4 dans une API cycle-level avec audit. L'iter #91 le **branche
+au cycle live** : chaque cycle ``AutoTrader.run_cycle`` valide
+maintenant les klines fraîchement fetchées et émet le
+``DATA_INGESTION_COMPLETED`` audit row mandé par doc 11 §5.
+
+### Added
+
+- ``src/emeraude/services/auto_trader.py`` :
+  - :class:`CycleReport` gagne deux champs avec defaults
+    backward-compat :
+    - ``data_quality_rejected: bool = False`` — True iff le D3+D4
+      guard a forcé le skip de la décision.
+    - ``data_quality_rejection_reason: str = ""`` — message
+      humain mirror de :class:`IngestionReport.rejection_reason`.
+  - Step 0 nouveau dans ``run_cycle`` : appel à
+    :func:`validate_and_audit_klines` après le fetch klines, avant
+    le tick. Sur rejection, ``klines = []`` est forcé pour faire
+    skip naturel via le mécanisme ``SKIP_EMPTY_KLINES`` existant
+    de l'orchestrator. Le tick continue (current_price reste
+    trustworthy indépendamment des klines).
+
+- ``tests/unit/test_auto_trader.py`` : **+6 tests**
+  ``TestDataIngestionGuardWiring`` :
+  - ``test_clean_cycle_does_not_set_rejected_flag`` : flow normal,
+    flag False.
+  - ``test_invalid_high_low_rejects_decision`` : un bar avec
+    high<low force ``data_quality_rejected=True`` + skip décision +
+    no opened position.
+  - ``test_incomplete_series_rejects_decision`` : 200 bars reçus
+    sur 250 demandés (20 % missing >= 5 %) -> reject.
+  - ``test_flat_volume_warning_does_not_reject`` : un FLAT_VOLUME
+    warning est non bloquant -> flag stays False.
+  - ``test_emits_data_ingestion_completed_audit_event`` : 1 audit
+    row par cycle clean (status=ok).
+  - ``test_rejected_cycle_emits_rejected_status_audit`` : cycle
+    rejected -> audit row avec status=rejected + rejection_reason.
+
+### Changed
+
+- ``tests/unit/test_auto_trader.py`` : fixture ``_make_trader``
+  passe ``klines_limit=len(klines)`` au lieu de ``250`` hardcodé,
+  alignant le request limit avec la série réellement retournée
+  par le fake fetcher (sinon le D4 5 % gate déclencherait un reject
+  systématique sur les fixtures de 220 bars).
+- ``tests/unit/test_auto_trader.py:test_fetchers_called_with_symbol_and_interval``
+  : ``_bull_klines()`` (220 bars) -> ``_bull_klines(limit)`` (300
+  bars) pour matcher le ``klines_limit=300`` du test.
+- ``pyproject.toml`` + ``buildozer.spec`` : ``0.0.94`` -> ``0.0.95``.
+
+### Notes
+
+- **Suite stable** (test count à confirmer après run, +6 vs v0.0.94),
+  coverage 99.35 %+, ruff + ruff format + mypy strict + bandit +
+  pip-audit OK.
+- **Mesure objectif iter #91** :
+  - Avant : module ``data_ingestion_guard`` livré (iter #90) +
+    matrice doc 11 6/6 mais **non câblé** au cycle live ;
+    auto_trader fetch klines sans validation.
+  - Après : ``run_cycle`` appelle ``validate_and_audit_klines``
+    après chaque fetch ; ``CycleReport`` gagne
+    ``data_quality_rejected`` + ``data_quality_rejection_reason`` ;
+    +6 tests couvrant le path reject -> ✅ atteint.
+- **R2 — une variable à la fois** : changements limités au
+  branchement + extension dataclass + tests. Pas de modification
+  de l'orchestrator (le skip via empty klines est suffisant).
+- **Périmètre exclu** : pas de propagation de ``expected_dt_ms`` ni
+  ``atr_value`` cet iter (D3 time_gap + outlier checks restent
+  skipped en wiring live ; viendront dans un iter ultérieur).
+- **Statut intégrité données après iter #91** :
+  - ✅ D1-D6 modules livrés (iters #85-#89)
+  - ✅ Composition cycle-level service (iter #90)
+  - ✅ **Wiring auto_trader live (iter #91, ce iter)**
+  - 🔴 Wiring backtest engine (consume ces modules dans le
+    simulateur kline -> position quand l'engine arrivera)
+
+## [0.0.94] - 2026-04-30
+
+### Added — iter #90 : data_ingestion_guard service (compose D3+D4 + audit)
+
+Les iters #85-#89 ont livré 6 modules utilitaires purs qui ferment
+la matrice doc 11 (D1-D6) à 6/6. Iter #90 livre le **service-level
+composant** qui assemble les checks D3 + D4 dans un workflow
+cycle-level avec audit, conformément à doc 11 §5 ("Chaque cycle doit
+produire dans audit_log un événement data_ingestion_completed").
+
+Cet iter ne touche pas l'orchestrator (R2 - le wiring auto_trader
+qui gère le ``should_reject`` retour viendra dans un iter dédié).
+Le service est testable en isolation et fournit le contrat stable
+qu'un futur caller live consommera.
+
+### Added
+
+- ``src/emeraude/services/data_ingestion_guard.py`` (nouveau, ~210 LOC) :
+  - :class:`IngestionReport` dataclass immutable agrégeant le verdict
+    (symbol, completeness, per_bar reports, flag_counts, should_reject,
+    rejection_reason).
+  - :func:`validate_and_audit_klines(klines, *, symbol, interval,
+    expected_count, atr_value, expected_dt_ms)` — entry point unique :
+    1. Run :func:`check_history_completeness` (D4).
+    2. Run :func:`check_bar_quality` per kline avec ``prev_kline``
+       pour le check time-gap.
+    3. Aggrégation flags par-bar dans ``flag_counts`` map.
+    4. Émet **exactement un** audit event ``DATA_INGESTION_COMPLETED``
+       (status ``ok`` ou ``rejected``) avec payload complet.
+    5. Retourne :class:`IngestionReport` ; caller MUST honorer
+       ``should_reject`` (skip cycle si True).
+  - Hard-reject conditions cascadent : empty fetch + expected > 0,
+    completeness ``should_reject`` (>= 5 % missing), n'importe quel
+    bar avec flag du sous-ensemble HARD-reject (``INVALID_HIGH_LOW``
+    / ``CLOSE_OUT_OF_RANGE``).
+  - :func:`summarize_flags(reports)` pure helper exposé pour callers
+    backtest qui veulent agréger sans audit emit.
+  - Constante module ``AUDIT_DATA_INGESTION_COMPLETED =
+    "DATA_INGESTION_COMPLETED"``.
+  - L'invariant doc 11 §5 "0 cycle sans data_quality field rempli"
+    est satisfait par construction : un seul audit row par appel,
+    toujours émis.
+
+- ``tests/unit/test_data_ingestion_guard.py`` (nouveau) — **+17 tests** :
+  - ``TestEmptyFetch`` (2) : zero klines + expected=0 -> ok ;
+    zero klines + expected>0 -> reject avec status="rejected".
+  - ``TestCleanSeries`` (1) : audit row status=ok, flag_counts vide,
+    pas de rejection_reason.
+  - ``TestHardRejects`` (3) : INVALID_HIGH_LOW, CLOSE_OUT_OF_RANGE,
+    completeness incomplete (>=5%) -> chacun should_reject=True
+    avec rejection_reason précise et audit status="rejected".
+  - ``TestWarningsOnly`` (4) : FLAT_VOLUME, OUTLIER_RANGE, TIME_GAP,
+    et missing<5% -> chacun warning sans reject + status="ok".
+  - ``TestAuditPayload`` (3) : payload complet (7 keys), 1 audit
+    par call (deux calls = deux rows), flag_counts agrégés
+    correctement (multi-flag même fetch).
+  - ``TestSummarizeFlags`` (3) : empty input, no flags, agrégation
+    multi-bar.
+  - ``TestIngestionReportShape`` (1) : frozen=True smoke.
+  - Fixture ``captured_audit`` qui mocke ``audit.audit`` via
+    ``monkeypatch.setattr`` au call site (les tests ne touchent pas
+    la SQLite audit log).
+
+### Changed
+
+- ``11_INTEGRITE_DONNEES.md`` : nouvelle section "3.5 Composition
+  cycle-level — service ``data_ingestion_guard`` (iter #90)" qui
+  documente l'API ``validate_and_audit_klines`` et le contrat audit
+  cycle-level. Mention explicite que le branchement orchestrator
+  reste pour iter ultérieure.
+- ``pyproject.toml`` + ``buildozer.spec`` : ``0.0.93`` -> ``0.0.94``.
+
+### Notes
+
+- **Suite stable** (test count à confirmer après run, +17 vs v0.0.93),
+  coverage 99.34 %+, ruff + ruff format + mypy strict + bandit +
+  pip-audit OK.
+- **Mesure objectif iter #90** :
+  - Avant : 3 modules utilitaires purs livrés (data_quality D3+D4,
+    data_snapshot D6, coin_universe_snapshot D2) mais **0 service
+    composé** qui les orchestre dans un workflow cycle-level avec
+    audit.
+  - Après : **1 module service-level + 17 tests + section doc 11
+    §3.5 livrée** -> ✅ atteint.
+- **R2 — une variable à la fois** : changements limités au module
+  service + sa doc + ses tests. Pas de wiring auto_trader cet iter
+  (la signature ``CycleReport`` doit évoluer pour propager
+  ``should_reject``, et les tests existants doivent être ajustés
+  — iter dédié pour bissection facile).
+- **Prochaines iters candidates** :
+  1. **Wiring auto_trader** (modeste) : brancher
+     ``validate_and_audit_klines`` dans ``_step_internal``, propager
+     ``should_reject`` dans ``CycleReport``, ajuster tests.
+  2. **Backtest engine MVP** (gros, ~500-800 LOC) : consume
+     l'ensemble des modules livrés (D1-D6 + ingestion_guard) +
+     simulateur kline → position avec ``apply_adversarial_fill``,
+     ferme P1.5.
+
+## [0.0.93] - 2026-04-30
+
+### Added — iter #89 : D2 Coin universe snapshot (anti survivorship bias)
+
+Doc 11 §"D2 — Survivorship bias" exige que tout backtest démarrant
+sur la date T opère sur **l'univers de coins qui existait à T**, pas
+sur le top-10 d'aujourd'hui (qui par définition ne contient que les
+survivants). Le fix : capturer un snapshot périodique de l'univers
+investable et forcer chaque backtest à interroger
+:func:`universe_at(t)` plutôt que "ce qui est listé aujourd'hui".
+
+Cet iter livre le module utilitaire pur — le wiring orchestrator
++ la capture mensuelle restent pour l'iter qui livrera l'engine de
+backtest (R2 — une variable à la fois).
+
+**6/6 critères doc 11 sont ✅** après cet iter — la matrice
+intégrité données est entièrement fermée.
+
+### Added
+
+- ``src/emeraude/infra/coin_universe_snapshot.py`` (nouveau, ~370 LOC) :
+  - :class:`CoinEntry` dataclass immutable (symbol, market_cap_rank).
+    Pas de listing_date_ms parce que CoinGecko ne le retourne pas
+    dans /coins/markets — anti-règle A1 : on ne fabrique pas.
+  - :class:`CoinUniverseSnapshot` dataclass immutable (snapshot_date_ms,
+    entries, captured_at_ms, content_hash).
+  - :func:`compute_universe_hash` pure : SHA-256 sur représentation
+    canonique pipe-séparée des entries (symbol|rank). Indépendant
+    du formatting JSON sur disque.
+  - :func:`make_universe_snapshot` constructor convenience.
+  - :func:`save_universe_snapshot(snapshot, path)` : écriture
+    **atomique** (tmp + rename) au format JSONL.
+  - :func:`load_universe_snapshot(path)` : parse + recompute hash +
+    verify ; raise :class:`SnapshotIntegrityError` si mismatch.
+  - **:func:`universe_at(snapshot_date_ms, snapshots)` 🎯 API
+    anti-survivorship-bias** : retourne le snapshot le plus récent
+    avec ``snapshot_date_ms <= target``. Pure function, ordre input
+    indifférent. ``None`` quand aucun candidat ne qualifie — caller
+    MUST traiter ça comme un hard error (refus du backtest, doc 11
+    §D2 explicit policy).
+  - Réutilise :class:`SnapshotFormatError` /
+    :class:`SnapshotIntegrityError` de
+    :mod:`infra.data_snapshot` (DRY ; même vocabulaire pour OHLCV
+    et univers).
+  - :class:`_UniverseHeader` TypedDict interne pour mypy strict.
+  - Constantes ``UNIVERSE_FORMAT_VERSION = 1``,
+    ``_EXPECTED_ENTRY_FIELDS = 2``.
+
+- ``tests/unit/test_coin_universe_snapshot.py`` (nouveau) — **+30 tests** :
+  - ``TestComputeUniverseHash`` (5) : empty input, déterminisme,
+    order-sensitive, field-sensitive (symbol et rank séparément).
+  - ``TestMakeUniverseSnapshot`` (1) : auto-hash.
+  - ``TestRoundTrip`` (3) : full round-trip, empty entries, atomic
+    write (.tmp absent).
+  - ``TestIntegrityCheck`` (3) : entry tampered ->
+    SnapshotIntegrityError, ajouté/retiré -> SnapshotFormatError.
+  - ``TestFormatErrors`` (10) : empty file, JSON invalide, header
+    non-dict, field manquant, type incorrect, version mismatch,
+    entry non-array, wrong field count, symbol non-str,
+    rank non-int (incl. ``isinstance(True, int)`` rejeté
+    explicitement), file inexistant.
+  - ``TestUniverseAt`` (5) : empty input -> None, no qualifying ->
+    None (future-only), exact match, latest match wins parmi
+    plusieurs candidats, skips future snapshots ; input ordre
+    indifférent.
+  - ``TestCoinEntry`` (1) : frozen=True smoke.
+
+### Changed
+
+- ``11_INTEGRITE_DONNEES.md`` §D2 marqué ✅ module livré (iter #89)
+  avec statut détaillé incluant l'API ``universe_at`` qui retourne
+  ``None`` pour bloquer la reconstruction post-hoc, et la note que
+  la capture mensuelle + branchement orchestrator restent pour iter
+  ultérieure.
+- ``pyproject.toml`` + ``buildozer.spec`` : ``0.0.92`` -> ``0.0.93``.
+
+### Notes
+
+- **Suite stable** (test count à confirmer après run, +30 vs v0.0.92),
+  coverage 99.39 %+, ruff + ruff format + mypy strict + bandit +
+  pip-audit OK.
+- **Mesure objectif iter #89** :
+  - Avant : 0 module pour persister un univers de coins horodaté,
+    D2 listé 🔴, aucun moyen de garantir que ``universe = top10_at(T)``
+    n'inclut pas par erreur des coins listés post-T.
+  - Après : **1 module utilitaire pur + 30 tests + D2 ✅** ->
+    ✅ atteint.
+- **Anti-règle A1** : pas de wiring live dans le data_ingestion path,
+  pas de capture mensuelle automatique. Les iters ultérieures qui
+  brancheront universe_at() au backtest doivent émettre l'audit
+  "header listant N coins de l'univers + leur rank au snapshot date"
+  conformément au doc 11 §D2.
+- **R2 — une variable à la fois** : changements limités au module pur
+  + sa doc + ses tests. Pas d'helper paths.coin_universe_snapshots_dir
+  ; les exceptions sont importées depuis data_snapshot (DRY).
+- **Statut intégrité données après iter #89** :
+  - ✅ D1 (shift invariance, iter #87)
+  - ✅ **D2 (universe snapshot, iter #89, ce iter)**
+  - ✅ D3 (data_quality module, iter #86)
+  - ✅ D4 (data_quality module, iter #86)
+  - ✅ D5 (naive datetime scanner, iter #85)
+  - ✅ D6 (data_snapshot module, iter #88)
+  - **6/6 critères doc 11 sont ✅** -> matrice intégrité données
+    fermée à 100 %.
+- **Reste à faire** : brancher les modules D1-D6 au data_ingestion
+  path live + à l'engine de backtest (iter ultérieure quand l'engine
+  arrivera). Plus le 5e onglet Backtest UI (P1.5) si on attaque le
+  gros morceau.
+
+## [0.0.92] - 2026-04-30
+
+### Added — iter #88 : D6 Data revision snapshots (immutable + hashed)
+
+Doc 11 §"D6 — Data revision (Binance corrige a posteriori)" exige
+des snapshots horodatés immuables avec hash SHA-256 prouvant que
+deux runs ont utilisé la **même donnée bit-à-bit**. Sans ça, deux
+runs du "même" backtest peuvent diverger silencieusement quand
+Binance corrige une bougie post-hoc — typique de leur protocole de
+rollback exchange (rare en spot mais possible).
+
+Cet iter livre le module utilitaire pur — le wiring dans le
+data_ingestion path live reste pour l'iter qui livrera l'engine de
+backtest (R2 — une variable à la fois).
+
+**6/6 critères doc 11 sont ✅** après cet iter.
+
+### Added
+
+- ``src/emeraude/infra/data_snapshot.py`` (nouveau, ~350 LOC) :
+  - :class:`KlineSnapshot` dataclass immutable (frozen, slots) :
+    symbol, interval, period_start_ms, period_end_ms, klines tuple,
+    captured_at_ms, content_hash.
+  - :func:`compute_snapshot_hash` pure : SHA-256 sur représentation
+    canonique pipe-séparée des champs Decimal-as-string. Indépendant
+    du formatting JSON sur disque — deux fichiers avec layout
+    différent mais content identique produisent le même hash.
+  - :func:`make_snapshot` constructor convenience qui calcule
+    automatiquement le ``content_hash``.
+  - :func:`save_snapshot(snapshot, path)` : écriture **atomique**
+    (tmp + rename) au format JSONL — header JSON line 1 + une
+    ligne Binance-positional par kline.
+  - :func:`load_snapshot(path)` : parse + recompute hash + verify ;
+    raise :class:`SnapshotIntegrityError` si le hash diffère du
+    header. Distinct de :class:`SnapshotFormatError` (problèmes
+    structurels : JSON invalide, field manquant, type incorrect,
+    n_klines incohérent, version mismatch).
+  - :class:`_SnapshotHeader` TypedDict interne pour mypy strict.
+  - Constantes module ``SNAPSHOT_FORMAT_VERSION = 1``,
+    ``_EXPECTED_KLINE_FIELDS = 8``, ``_HASH_PREFIX = "sha256:"``.
+
+- ``tests/unit/test_data_snapshot.py`` (nouveau) — **+23 tests** :
+  - ``TestComputeSnapshotHash`` (5) : empty -> SHA-256 of empty,
+    déterminisme, ordre-sensible (reverse change le hash), 8 variants
+    field-sensitive, canonical form Decimal("100") ≠ Decimal("100.0").
+  - ``TestMakeSnapshot`` (1) : populates content_hash automatique.
+  - ``TestRoundTrip`` (4) : full round-trip preserve every field,
+    empty klines, 8 décimales precision préservée (cas crypto réel),
+    atomic write (.tmp absent après save).
+  - ``TestIntegrityCheck`` (3) : kline tampered -> SnapshotIntegrityError,
+    kline ajouté/retiré -> SnapshotFormatError (n_klines mismatch).
+  - ``TestFormatErrors`` (8) : empty file, JSON invalide, header non-
+    dict, field manquant, type incorrect, version mismatch, kline
+    line non-array, wrong field count, file inexistant.
+  - ``TestKlineSnapshot`` (1) : frozen=True smoke (assignment échoue).
+
+### Changed
+
+- ``11_INTEGRITE_DONNEES.md`` §D6 marqué ✅ module livré (iter #88)
+  avec statut détaillé incluant la justification du hash canonique
+  indépendant du JSON sur disque, et le branchement live laissé pour
+  l'iter qui livrera l'engine de backtest.
+- ``pyproject.toml`` + ``buildozer.spec`` : ``0.0.91`` -> ``0.0.92``.
+
+### Notes
+
+- **Suite stable** (test count à confirmer après run, +23 vs v0.0.91),
+  coverage 99.50 %+, ruff + ruff format + mypy strict + bandit +
+  pip-audit OK.
+- **Mesure objectif iter #88** :
+  - Avant : 0 module pour persister immutablement une série OHLCV ;
+    D6 listé 🔴 ; aucun moyen de re-runs un backtest avec garantie
+    de reproductibilité quand Binance corrige une bougie.
+  - Après : **1 module utilitaire pur + 23 tests + D6 ✅** ->
+    ✅ atteint.
+- **Anti-règle A1** : pas de wiring live dans le data_ingestion path.
+  Le module est utilitaire pur ; l'iter ultérieure qui branchera la
+  persistance des snapshots au moment du fetch live doit propager le
+  ``content_hash`` dans le rapport de backtest (cf. doc 11 §5
+  ``data_snapshot_hash`` field).
+- **R2 — une variable à la fois** : changements limités au module pur
+  + sa doc + ses tests. Pas d'helper ``paths.data_snapshots_dir``
+  (ajoutable trivialement quand le wiring live arrivera).
+- **Statut intégrité données après iter #88** :
+  - ✅ D1 (shift invariance, iter #87)
+  - 🔴 D2 (survivorship bias — coin_universe_snapshots)
+  - ✅ D3 (data_quality module, iter #86)
+  - ✅ D4 (data_quality module, iter #86)
+  - ✅ D5 (naive datetime scanner, iter #85)
+  - ✅ **D6 (data_snapshot module, iter #88, ce iter)**
+  - **5/6 critères doc 11 sont ✅** après cet iter. Reste D2 (univers
+    coin snapshot) qui demande une décision d'architecture (table
+    SQL coin_universe_snapshots + maintenance manuelle mensuelle).
+
+## [0.0.91] - 2026-04-30
+
+### Added — iter #87 : D1 Look-ahead bias guard (shift-invariance test)
+
+Doc 11 §"D1 — Look-ahead bias (le plus dangereux)" exige un test
+"shift invariance" qui vérifie qu'aucun indicateur n'utilise des
+bars ≥ T pour calculer la décision à l'instant T. C'est la
+catégorie de bug la plus dangereuse : un backtest brillant qui
+collapse en live parce que le calcul a vu les bars futurs.
+
+Cet iter livre le test pytest dédié couvrant les 7 indicateurs
+publics. Aucun bug détecté à l'état actuel — le code est conforme
+par construction. Le test verrouille cette conformité contre toute
+régression future.
+
+### Added
+
+- ``tests/unit/test_lookahead_invariance.py`` (nouveau, ~330 LOC,
+  +12 tests) :
+  - 2 helpers ``_assert_no_lookahead_scalar`` /
+    ``_assert_no_lookahead_klines`` qui vérifient 3 propriétés par
+    indicateur :
+    1. **Déterminisme** : 2 appels identiques retournent la même
+       valeur byte-pour-byte.
+    2. **Non-mutation** : la liste passée n'est pas modifiée par la
+       fonction (input integrity).
+    3. **Indépendance future** : le résultat sur ``values[:t]``
+       reste stable même après un appel intermédiaire sur la série
+       complète (catches tout cache global / état partagé).
+  - **Order matters** : les helpers mesurent le résultat pristine
+    AVANT toute pollution, puis exécutent un appel sur la série
+    complète, puis re-mesurent — sinon la pollution serait déjà en
+    place quand la valeur de référence est captée.
+  - 7 tests ``TestScalarIndicators`` + ``TestKlineIndicators`` qui
+    appliquent les helpers à ``sma``, ``ema``, ``rsi``, ``macd``,
+    ``bollinger_bands``, ``atr``, ``stochastic``.
+  - 3 tests ``TestHelperCatchesBugs`` qui construisent des
+    "indicateurs buggés" exprès (mutation, non-déterminisme,
+    future-dépendance) et vérifient que les helpers les attrapent.
+    Verrou vital : si un helper passe silencieusement tout input,
+    on n'a pas réellement de garde-fou.
+  - 2 tests ``TestFixtureSanity`` qui vérifient que les fixtures
+    synthétiques (sine-like avec drift) sont assez riches pour
+    activer toutes les branches des indicateurs.
+  - Synthetic series generators ``_scalar_series`` /
+    ``_kline_series`` déterministes pure-Python (pas de RNG) avec
+    drift + modulo pour exercer gain/loss tracking, variance,
+    cross-overs.
+
+### Changed
+
+- ``11_INTEGRITE_DONNEES.md`` §D1 marqué ✅ test "shift invariance"
+  livré (iter #87) avec statut détaillé :
+  - API implicite (liste tronquée) plutôt que API explicite avec
+    ``as_of: datetime`` — choix justifié dans le doc (toutes les
+    fonctions sont déjà conformes structurellement).
+  - Test "shift invariance" implémenté via 3 propriétés : déterminisme,
+    non-mutation, indépendance future.
+  - Cas spécifique stop-loss / take-profit : noté comme conformité
+    par construction via ``apply_adversarial_fill`` qui prend un
+    ``execution_bar`` ≠ signal_bar.
+  - Backtest harness checker : différé jusqu'à l'iter qui livrera
+    l'engine de backtest (réutilisera les helpers de cet iter).
+- ``pyproject.toml`` + ``buildozer.spec`` : ``0.0.90`` -> ``0.0.91``.
+
+### Notes
+
+- **Suite stable** (test count à confirmer après run, +12 vs v0.0.90),
+  coverage 99.50 %+, ruff + ruff format + mypy strict + bandit +
+  pip-audit OK.
+- **Mesure objectif iter #87** :
+  - Avant : 0 test pytest dédié à la shift-invariance, D1 listé 🔴,
+    indicateurs présumés propres mais sans verrou contre une
+    régression future.
+  - Après : **1 test pytest module + 12 tests verts couvrant les 7
+    indicateurs publics** + D1 ✅ -> ✅ atteint.
+- **Anti-règle A1** : pas de modif des indicateurs eux-mêmes (seraient
+  déjà conformes au test). Pas de wiring assert_no_lookahead() dans
+  le code de production (le doc 11 le mentionne pour une harness
+  backtest qui n'existe pas encore).
+- **R2 — une variable à la fois** : changements limités aux nouveaux
+  tests + leur doc.
+- **Statut intégrité données après iter #87** :
+  - ✅ **D1** (test "shift invariance" livré, iter #87)
+  - 🔴 D2 (survivorship bias — table coin_universe_snapshots)
+  - ✅ D3 (module data_quality livré, iter #86)
+  - ✅ D4 (module data_quality livré, iter #86)
+  - ✅ D5 (test scanner naive datetime livré, iter #85)
+  - 🔴 D6 (data revision — snapshots horodatés immuables)
+  - **4 critères sur 6 du doc 11 sont ✅** après cet iter.
+
+## [0.0.90] - 2026-04-30
+
+### Added — iter #86 : D3 + D4 data quality (5 checks par bar + completeness série)
+
+Doc 11 §"D3 — Bougies corrompues" décrit 5 checks à appliquer à
+chaque kline reçue (volume nul, high<low, close hors range, range
+outlier, time gap) ; doc 11 §"D4 — Bougies manquantes" décrit la
+politique 5 % interpolation / 5 % rejet sur la complétude d'une
+série. Aucun module n'implémentait ces vérifications jusqu'à cet
+iter — le code de production se contentait de faire confiance aux
+klines reçues de Binance / CoinGecko.
+
+Cet iter livre un module **utilitaire pur** (`infra/data_quality.py`)
+qui encapsule les deux contrats. Le branchement live dans
+l'orchestrator reste pour un iter ultérieur — anti-règle R2 « une
+variable à la fois ».
+
+### Added
+
+- ``src/emeraude/infra/data_quality.py`` (nouveau, ~210 LOC) :
+  - :class:`BarQualityFlag` enum (StrEnum, JSON-friendly) avec 5
+    valeurs : ``FLAT_VOLUME``, ``INVALID_HIGH_LOW``,
+    ``CLOSE_OUT_OF_RANGE``, ``OUTLIER_RANGE``, ``TIME_GAP``.
+  - :class:`BarQualityReport` dataclass avec proprieté
+    ``should_reject`` (HARD reject ssi un flag du sous-ensemble
+    ``{INVALID_HIGH_LOW, CLOSE_OUT_OF_RANGE}``) et ``is_clean``
+    (no flag at all).
+  - :func:`check_bar_quality(kline, *, prev_kline, expected_dt_ms,
+    atr_value, outlier_atr_mult)` : pure function qui run les 5
+    checks D3 et renvoie la liste des flags. Tous les inputs
+    optionnels skip silencieusement leur check correspondant
+    (cold start, ATR pas encore calculable, etc.).
+  - :class:`HistoryCompletenessReport` dataclass avec
+    ``missing_pct``, ``should_reject``, ``should_interpolate``,
+    ``flags``.
+  - :func:`check_history_completeness(*, n_received, n_expected,
+    tolerance)` : applique le seuil 5 % du doc 11 §D4. Edge cases
+    couverts : ``n_expected == 0`` (trivialement complet),
+    ``n_received > n_expected`` (off-by-one over-fetch, clamp à 0).
+  - Constantes module ``DEFAULT_OUTLIER_ATR_MULT = Decimal("50")``,
+    ``DEFAULT_INTERPOLATION_LIMIT = Decimal("0.05")`` (configurables
+    par appel).
+
+- ``tests/unit/test_data_quality.py`` (nouveau, ~370 LOC) — **+40 tests** :
+  - ``TestBarQualityReport`` (5 tests) : propriétés ``should_reject``
+    + ``is_clean`` sur tous les patterns possibles (clean, warning
+    only, hard-reject, mix).
+  - ``TestCheckBarQualityClean`` (2) : bar propre seul + avec inputs
+    optionnels valides.
+  - ``TestCheckBarQualityFlatVolume`` (3) : volume=0 + range≠0
+    flagged, volume=0 + range=0 OK, volume>0 OK.
+  - ``TestCheckBarQualityInvalidHighLow`` (2) : high<low rejet, flat
+    bar (high=low) OK.
+  - ``TestCheckBarQualityCloseOutOfRange`` (4) : close>high rejet,
+    close<low rejet, close==high OK, close==low OK.
+  - ``TestCheckBarQualityOutlierRange`` (5) : range>50×ATR flagged,
+    boundary (×50 exact) OK, no ATR skip, ATR=0 skip, custom
+    multiplier.
+  - ``TestCheckBarQualityTimeGap`` (4) : matching dt OK, mismatched
+    dt flagged, no prev_kline skip, no expected_dt skip.
+  - ``TestCheckBarQualityCombined`` (1) : 3 flags simultanés
+    yieldés dans l'ordre des checks ; HARD reject l'emporte.
+  - ``TestCheckHistoryCompleteness`` (10) : complete série, zero
+    expected, < 5 %, == 5 % (boundary strict reject), > 5 %, extras
+    clamped, custom tolerance, validation des arguments négatifs.
+  - ``TestDefaultsStability`` (3) : verrou les valeurs publiques
+    contre tweaks accidentels.
+
+### Changed
+
+- ``11_INTEGRITE_DONNEES.md`` :
+  - §D3 marqué ✅ module livré (iter #86) avec mapping check ->
+    flag enum et statut détaillé.
+  - §D4 marqué ✅ module livré (iter #86) avec API
+    :func:`check_history_completeness` + edge cases listés.
+  - Les deux sections explicitent que le branchement live au
+    data_ingestion path de l'orchestrator reste pour iter
+    ultérieure (R2).
+- ``pyproject.toml`` + ``buildozer.spec`` : ``0.0.89`` -> ``0.0.90``.
+
+### Notes
+
+- **Suite stable** (test count à confirmer après run, +40 vs v0.0.89),
+  coverage 99.49 %+, ruff + ruff format + mypy strict + bandit +
+  pip-audit OK.
+- **Mesure objectif iter #86** :
+  - Avant : 0 module dédié à la qualité des klines, 0 detection
+    systematic des high<low / close hors range / volume nul / outlier
+    range / time gap, D3+D4 listés 🔴 dans matrice doc 11.
+  - Après : **1 module utilitaire pur + 40 tests** + D3 ✅ + D4 ✅
+    -> ✅ atteint.
+- **Anti-règle A1** : pas de wiring orchestrator dans cet iter. Le
+  module est utilitaire pur ; l'iter ultérieure qui branchera la
+  validation au data_ingestion path doit ajouter l'audit
+  ``bar_quality_warning`` selon la politique du doc 11 ("≥ 1
+  événement par mois pour prouver que la détection tourne et
+  n'est pas zombie").
+- **R2 — une variable à la fois** : changements limités au module
+  pur + sa doc + ses tests. L'orchestrator reste intouché.
+- **Statut intégrité données après iter #86** :
+  - ✅ D3 (module livré, iter #86)
+  - ✅ D4 (module livré, iter #86)
+  - ✅ D5 (test scanner livré, iter #85)
+  - 🔴 D1 (look-ahead bias — test "shift invariance" + assert_no_lookahead à créer)
+  - 🔴 D2 (survivorship bias — table coin_universe_snapshots)
+  - 🔴 D6 (data revision — snapshots horodatés immuables)
+- **Reste à faire** : iter ultérieure pour brancher D3+D4 au live
+  data_ingestion path, plus iters dédiées à D1, D2, D6.
+
+## [0.0.89] - 2026-04-30
+
+### Added — iter #85 : D5 Timezone guard (defense-in-depth scanner)
+
+Doc 11 §"D5 — Timezone mismatch" demande **deux garde-fous** pour
+empêcher l'introduction de timestamps naive dans le code source :
+
+1. **Linter** ruff ``DTZ`` au lint-time (déjà actif dans
+   ``pyproject.toml`` depuis l'itération initiale du projet) — peut
+   être bypassé par ``# noqa: DTZ``.
+2. **Test pytest scanner** AST-based qui parse tous les fichiers
+   sous ``src/emeraude/`` et bloque tout pattern interdit, sans
+   échappatoire. **Manquant jusqu'à cet iter.**
+
+Cet iter livre la couche 2 — defense-in-depth bon marché (~50 LOC
+production + ~100 LOC tests) qui ferme une catégorie entière de bugs
+silencieux (timestamps locaux dérivants entre machines, comparaisons
+naive vs aware levant TypeError, etc.).
+
+### Added
+
+- ``tests/unit/test_no_naive_datetime.py`` (nouveau, 230 LOC) :
+  - :class:`TestNoNaiveDatetime` : un test de production qui scanne
+    tous les fichiers ``.py`` sous ``src/emeraude/`` et lève
+    ``AssertionError`` avec un rapport ``file:line  message`` pour
+    chaque pattern interdit détecté. Le scan agrège toutes les
+    violations en un seul shot (pas une à la fois) pour donner
+    immédiatement la full picture en cas de régression.
+  - :class:`TestScannerImplementation` : 10 tests unitaires des
+    helpers ``_visit_calls`` / ``_has_explicit_tz`` sur des snippets
+    AST forgés à la main. Couvre les patterns valides
+    (``datetime.now(UTC)``, ``datetime.now(tz=UTC)``,
+    ``datetime.fromtimestamp(123, tz=UTC)``, etc.) ET les patterns
+    interdits (``datetime.now()``, ``datetime.utcnow()``,
+    ``datetime.fromtimestamp(123)``).
+  - Patterns scannés : ``datetime.now()`` sans argument tz,
+    ``datetime.utcnow()`` (toujours naive, deprecated 3.12),
+    ``datetime.fromtimestamp(ts)`` sans argument tz.
+  - Patterns laissés à des iters ultérieures : ``fromisoformat``
+    sur strings naive (analyse de string nécessaire), ``combine``
+    avec time sans tzinfo (inférence de type call-site).
+  - Helpers privés ``_scan_source_tree`` / ``_visit_calls`` /
+    ``_has_explicit_tz`` réutilisables si on veut élargir le contrat.
+  - Constantes module ``_FORBIDDEN_CALLS`` (dict ``method -> message``)
+    extensibles facilement.
+
+### Changed
+
+- ``11_INTEGRITE_DONNEES.md`` §"D5 — Timezone mismatch" : marqué
+  ✅ livré (iter #85). Statut détaillé des 3 sous-conditions :
+  1. Stockage SQLite en epoch seconds UTC (déjà acquis,
+     `int(time.time())` partout, plus économe que ISO + suffixe Z).
+  2. Linter ruff DTZ activé (acquis).
+  3. Test pytest scanner AST-based (livré cet iter).
+- ``pyproject.toml`` + ``buildozer.spec`` : ``0.0.88`` -> ``0.0.89``.
+
+### Notes
+
+- **Suite stable à 1 800 tests** (+11 vs v0.0.88), coverage **99.49 %**,
+  ruff + ruff format + mypy strict + bandit + pip-audit OK.
+- **Mesure objectif iter #85** :
+  - Avant : 1 garde-fou actif (ruff DTZ, échappable par
+    ``# noqa: DTZ``) ; 0 test pytest scanner indépendant ; D5
+    listé comme 🔴 dans la matrice doc 11.
+  - Après : **2 garde-fous actifs** (ruff DTZ + pytest scanner
+    AST sans échappatoire) ; D5 marqué ✅ ; 0 régression -> ✅ atteint.
+- **Confirmation des usages actuels** : les 2 seuls
+  ``datetime.fromtimestamp`` du codebase
+  (`journal_types.py:185`, `tradability.py:226`) passent tous deux
+  ``tz=UTC``. ``datetime.now`` / ``utcnow`` non utilisés. Le code est
+  donc déjà à 100 % conforme — le test verrouille cette
+  conformité à l'avenir.
+- **R12 fairness** : la méthodologie peut être étendue à d'autres
+  catégories de patterns naive en élargissant la dict
+  ``_FORBIDDEN_CALLS``. Iters futurs candidats : `fromisoformat`,
+  `combine`, time-without-tz dans les fixtures de test.
+
+## [0.0.88] - 2026-04-30
+
+### Added — iter #84 : page Performance (5e et dernier écran SPA)
+
+L'iter #83 a livré le 4e écran (IA / Apprentissage). L'iter #84
+livre **le 5e et dernier écran SPA** : « 📊 Performance ». Cela ferme
+la chaîne UI doc 02 — 5/5 onglets fonctionnels sur la
+``v-bottom-navigation``.
+
+**Note honnêteté (anti-règle A1)** : doc 02 § "📈 BACKTEST" demandait
+une page de backtest historique avec formulaire ``{days, capital,
+strategies}``. L'engine simulateur kline -> position n'existe pas
+encore (~500 LOC + tests + intégration ``apply_adversarial_fill``,
+hors scope d'un iter UI). Cet iter livre donc la version **honnête**
+de ce qu'on peut surfacer aujourd'hui : les 12 métriques R12 sur les
+**trades réellement fermés** par le bot. Le critère doc 06 P1.5
+"Backtest UI" reste 🔴 explicite ; un iter ultérieur livrera l'engine.
+
+### Added
+
+- ``src/emeraude/services/performance_types.py`` (nouveau, 96 LOC) :
+  - :class:`PerformanceSnapshot` — mirror du :class:`PerformanceReport`
+    doc 10 R12 + flag ``has_data: bool`` qui simplifie le branching
+    cold-start côté UI (empty-state vs métriques).
+  - :class:`PerformanceDataSource` Protocol — contrat consommé par
+    l'API, testable avec un fake.
+
+- ``src/emeraude/services/performance_data_source.py`` (nouveau, 117 LOC) :
+  - :class:`PositionPerformanceDataSource` — composition root du
+    panneau. Lit :meth:`PositionTracker.history` (cap configurable
+    via :data:`DEFAULT_HISTORY_LIMIT` = 200) puis délègue à
+    :func:`compute_performance_report`. Cold start = empty
+    snapshot (``has_data=False``, tous les champs Decimal("0")).
+  - :func:`_project_report` pure projector, testable sans tracker.
+  - **Mini-Protocol** ``_TrackerLike`` pour permettre l'injection de
+    fakes en test sans subclasser ``PositionTracker``.
+
+- ``src/emeraude/api/context.py`` :
+  - Nouvel attribut ``performance_data_source: PerformanceDataSource``
+    instancié via ``PositionPerformanceDataSource(tracker=tracker)``
+    en utilisant le **même** tracker que le dashboard pour garantir
+    la cohérence capital ↔ P&L ↔ métriques R12.
+  - Nouvelle property ``performance_data_source``.
+
+- ``src/emeraude/api/server.py`` :
+  - Route ``GET /api/performance`` ajoutée au nouveau
+    ``_GET_API_HANDLERS`` (dict ``route -> AppContext -> payload``).
+  - **Refactor du dispatcher GET** : la chaîne if/return de 6 routes
+    est remplacée par un lookup dict + serialise. Une nouvelle route
+    GET tient désormais en une ligne dans le dict. Les POST/DELETE
+    gardent leurs handlers explicites (audits + parse de body).
+  - Docstring de tête mise à jour (11 routes maintenant).
+
+- ``src/emeraude/web/index.html`` :
+  - **5e bouton ``v-bottom-navigation``** ``"performance"`` avec
+    ``mdi-chart-line``, label « Perf », inséré entre IA et Config.
+    La nav passe à 5 boutons sur 5.
+  - Nouvelle ``v-window-item value="performance"`` :
+    - **Empty state** quand ``has_data=false`` (icône
+      ``mdi-chart-line`` + explication "Aucun trade fermé"
+      mentionnant les 12 métriques R12 à venir).
+    - **Hero card "Expectancy R / trade"** colorée (text-success
+      si > 0, text-error si < 0) avec sous-titre ``X trades fermés
+      observés``.
+    - **Card "Distribution"** : win rate (chip coloré thresholds
+      55%/45%), ratio trades W/L, R moyen sur gain (vert), R moyen
+      sur perte (rouge avec préfixe ``-``).
+    - **Card "Ajusté du risque"** : Sharpe, Sortino, Calmar,
+      Profit Factor, Max Drawdown, chacun avec sa formule en
+      sous-titre (mean(R)/std(R), etc.). Profit Factor rend ``∞``
+      via ``formatRatio`` quand le bot n'a aucune perte.
+    - **Alerte info** déclarant honnêtement que le rapport
+      agrège les trades **réellement fermés** (pas un backtest
+      simulé) et que P1.5 reste à venir.
+  - State Vue : ``performanceSnapshot``, ``performanceError``.
+  - ``fetchPerformance()`` symétrique des autres data sources ;
+    ``watch(activeTab)`` déclenche le fetch à l'activation.
+  - 12 computed : ``formattedExpectancy``, ``expectancyColorClass``,
+    ``formattedTradesLabel``, ``formattedWinRate``, ``winRateChipColor``,
+    ``formattedAvgWin``, ``formattedAvgLoss``, ``formattedSharpe``,
+    ``formattedSortino``, ``formattedCalmar``, ``formattedProfitFactor``,
+    ``formattedMaxDrawdown``.
+  - 3 helpers locaux : ``formatRatio`` (Infinity-aware -> ``∞``),
+    ``formatRMagnitude`` (R-multiple sans signe), ``formatRSigned``
+    (R-multiple avec signe).
+  - ``pageTitle`` étendu pour ``activeTab === 'performance'``
+    -> "Performance".
+
+- ``tests/unit/test_performance_data_source.py`` (nouveau) — **+8 tests** :
+  - ``TestProjectReport`` : empty -> ``has_data=False``, non-empty ->
+    ``has_data=True`` + projection field-by-field.
+  - ``TestPositionPerformanceDataSource`` : cold start, agrégation
+    de positions fermées (expectancy mathématique vérifiée), default
+    history-limit + custom propagé, validation ``history_limit < 1``,
+    smoke du constructor par défaut.
+
+- ``tests/unit/test_api_server.py`` : **+2 tests intégration HTTP**
+  + 1 assertion ajoutée sur :class:`AppContext` smoke pour la
+  nouvelle ``performance_data_source`` :
+  - ``test_api_performance_requires_auth`` : 403 sans cookie.
+  - ``test_api_performance_returns_snapshot_shape`` : payload
+    complet (13 champs présents, types Decimal->str, ``has_data=False``
+    au cold start).
+
+### Changed
+
+- ``src/emeraude/api/server.py`` :
+  - Constante module ``_GET_API_HANDLERS`` ajoutée (dict
+    route -> handler).
+  - ``_serve_api`` simplifiée (passe de 7 returns à 3).
+  - Docstring de tête : 11 routes maintenant (6 GET + 4 POST + 1
+    DELETE) + mention explicite que P1.5 "Backtest historique"
+    reste 🔴.
+- ``pyproject.toml`` + ``buildozer.spec`` : ``0.0.87`` -> ``0.0.88``.
+
+### Notes
+
+- **Suite stable à 1 789 tests** (+10 vs v0.0.87), coverage
+  **99.49 %**, ruff + ruff format + mypy strict + bandit +
+  pip-audit OK.
+- **Mesure objectif iter #84** :
+  - Avant : 4 onglets sur 5 ; aucune surface UX du module
+    ``performance_report`` ; le user voit uniquement capital +
+    P&L cumulé sur le Dashboard.
+  - Après : **5 onglets sur 5 fonctionnels** + ``GET /api/performance``
+    exposant les **12 métriques R12** (Sharpe, Sortino, Calmar,
+    Profit Factor, Expectancy, Max DD, Win Rate, Avg Win, Avg
+    Loss, n_trades, n_wins, n_losses, has_data flag) ->
+    ✅ atteint.
+- **Pilier #1 doc 02 (UI)** : 100 % livré côté shell SPA. Reste à
+  brancher Backtest historique (P1.5) quand l'engine simulateur
+  sera prêt.
+- **Statut palier P1 après iter #84** :
+  - ✅ P1.8 Toggle Bot Maître exige confirmation argent réel (#80)
+  - ✅ Section Connexion Binance complète (#81)
+  - ✅ Stop d'urgence UI (#82)
+  - ✅ 4ᵉ écran SPA livré — Apprentissage (#83)
+  - ✅ **5ᵉ écran SPA livré — Performance** (#84, ce iter)
+  - 🔴 P1.1-P1.4 (runtime smartphone Android requis)
+  - 🔴 P1.5 Backtest UI sur historique (engine simulateur à
+    construire en iter dédiée)
+
+## [0.0.87] - 2026-04-30
+
+### Added — iter #83 : page IA / Apprentissage (4e écran SPA)
+
+L'iter #82 a fermé la chaîne de sécurité (arrêt d'urgence). L'iter
+#83 livre **le 4ᵉ des 5 écrans doc 02** : « 🤖 IA / Apprentissage »
+qui surface l'état d'apprentissage du bot — champion actif + posterior
+Beta des 3 stratégies. Mission UX (doc 02) : "voir le bot s'améliorer".
+
+Reste **un seul écran** non livré : Backtest. Une fois celui-ci
+posé, le pilier #1 de la doc 06 (UI Kivy 0%) sera entièrement
+remplacé par le SPA Vuetify.
+
+### Added
+
+- ``src/emeraude/services/learning_types.py`` (nouveau, 175 LOC) :
+  - :data:`KNOWN_STRATEGIES` — tuple des 3 noms canoniques
+    (``trend_follower`` / ``mean_reversion`` / ``breakout_hunter``).
+  - :class:`StrategyStats` — Beta posterior d'une stratégie
+    (``alpha``, ``beta``, ``n_trades``, ``win_rate`` Decimal). Pas
+    de propriété calculée — les valeurs viennent pré-calculées du
+    bandit pour rester simples à sérialiser.
+  - :class:`ChampionInfo` — projection UI d'un :class:`ChampionRecord`
+    (sans ``id`` SQL, ``state`` en str pour rester JSON-friendly).
+  - :class:`LearningSnapshot` — collection ordonnée +
+    ``champion: ChampionInfo | None``.
+  - :class:`LearningDataSource` Protocol — contrat consommé par
+    l'API.
+
+- ``src/emeraude/services/learning_data_source.py`` (nouveau, 145 LOC) :
+  - :class:`BanditLearningDataSource` — composition root du panneau
+    Apprentissage. Lit :meth:`StrategyBandit.get_counts` pour chaque
+    stratégie connue + :meth:`ChampionLifecycle.current` pour le
+    champion. Cold start : priors uniformes + ``champion=None``.
+  - :func:`_stats_for` / :func:`_project_champion` / :func:`_opt_decimal`
+    pure helpers, testables sans DB.
+  - **Mini-Protocols internes** ``_BanditLike`` / ``_LifecycleLike``
+    pour permettre l'injection de fakes en test sans subclasser
+    les vraies classes (qui héritent du SQL via ``database``).
+
+- ``src/emeraude/api/context.py`` :
+  - Nouvel attribut ``learning_data_source: LearningDataSource``
+    instancié via ``BanditLearningDataSource()`` par défaut.
+  - Nouvelle property ``learning_data_source`` exposant la data
+    source à la couche API.
+
+- ``src/emeraude/api/server.py`` :
+  - Route ``GET /api/learning`` — ``_serve_api`` route ``"learning"``
+    pour renvoyer le ``LearningSnapshot`` sérialisé. Réutilise le
+    helper ``_serialise`` (Decimal -> str, dataclass -> dict).
+  - Docstring de tête mise à jour : 10 routes maintenant (5 GET +
+    4 POST + 1 DELETE).
+
+- ``src/emeraude/web/index.html`` :
+  - **4ᵉ bouton ``v-bottom-navigation``** ``"learning"`` avec
+    ``mdi-brain``, label « IA », inséré entre Journal et Config.
+  - Nouvelle ``v-window-item value="learning"`` :
+    - **Card "Champion actuel"** : empty-state quand cold-start
+      (icône ``mdi-trophy-broken`` + explication), sinon liste
+      avec chip d'état (Actif/Suspect/Expiré/En validation),
+      identifiant, Sharpe walk-forward, Sharpe live, date promotion,
+      panneau ``v-expansion-panels`` accordion pour les paramètres
+      bruts.
+    - **Card "Stratégies"** : 3 lignes (une par stratégie), nom
+      humanisé (``Trend Follower`` etc.), n_trades observés (avec
+      mention "données insuffisantes" en cold start), chip win rate
+      coloré (success ≥ 55%, warning ≥ 45%, sinon error ; neutral
+      en cold start).
+    - **Alerte info** déclarant honnêtement (anti-règle A1) que
+      les graphiques d'évolution + détecteur de régime arrivent
+      en iter ultérieure.
+  - State Vue : ``learningSnapshot``, ``learningError``.
+  - ``fetchLearning()`` symétrique de ``fetchConfig`` ;
+    ``watch(activeTab)`` déclenche ``fetchLearning`` à l'activation
+    de l'onglet (pas de polling permanent : les apprentissages
+    bougent au rythme des trades, pas de la seconde).
+  - Computed ``championStateLabel`` / ``championChipColor`` /
+    ``formattedSharpeWalkForward`` / ``formattedSharpeLive`` /
+    ``formattedPromotedAt`` (locale fr-FR) /
+    ``championParameterCount`` / ``hasChampionParameters``.
+  - Helpers ``formatStrategyName`` (snake_case -> Title Case) /
+    ``formatStrategyTradesLabel`` / ``formatWinRate`` (% à 0.1) /
+    ``strategyChipColor`` (color policy thresholds 55%/45%) /
+    ``formatParamValue`` (objects -> JSON, primitives -> string).
+  - ``pageTitle`` étendu pour gérer ``activeTab === 'learning'``
+    -> "Apprentissage".
+
+- ``tests/unit/test_learning_data_source.py`` (nouveau) — **+10 tests** :
+  - ``TestStatsFor`` : prior uniforme + observations.
+  - ``TestProjectChampion`` : cold start, projection complète,
+    Sharpe optionnel, dict copié (pas d'aliasing).
+  - ``TestBanditLearningDataSource`` : cold start (priors + no
+    champion), stratégies avec observations partielles, champion
+    actif surfacé, default constructor smoke.
+- ``tests/unit/test_api_server.py`` : **+2 tests intégration HTTP**
+  + 1 assertion ajoutée sur :class:`AppContext` smoke test pour la
+  nouvelle ``learning_data_source`` :
+  - ``test_api_learning_requires_auth`` : 403 sans cookie.
+  - ``test_api_learning_returns_snapshot_shape`` : payload
+    ``strategies`` (3 entrées, types), ``champion: null`` au cold
+    start.
+
+### Changed
+
+- ``src/emeraude/api/server.py`` : docstring listing à jour des
+  routes (10 maintenant).
+- ``pyproject.toml`` + ``buildozer.spec`` : ``0.0.86`` -> ``0.0.87``.
+
+### Notes
+
+- **Suite stable à 1 779 tests** (+12 vs v0.0.86), coverage
+  **99.49 %**, ruff + ruff format + mypy strict + bandit +
+  pip-audit OK.
+- **Mesure objectif iter #83** :
+  - Avant : 3 onglets sur 5 sur le ``v-bottom-navigation`` (Dashboard
+    / Journal / Config) ; aucune surface UX du ``StrategyBandit``
+    ni du ``ChampionLifecycle`` ; le user ne voit pas que le bot
+    apprend.
+  - Après : **4 onglets sur 5** + ``GET /api/learning`` exposant
+    un :class:`LearningSnapshot` (champion actuel + 3 Beta
+    posteriors) -> ✅ atteint.
+- **Anti-règle A1 (pas de fictif)** : la slice livrée se restreint
+  strictement aux données réellement collectées par le bot
+  aujourd'hui (Beta posteriors via ``strategy_performance`` table,
+  champion via ``champion_history`` table). Les graphiques
+  d'évolution / régime / top-trades W/L attendus par doc 02 sont
+  surfacés comme "à venir" via une ``v-alert info`` plutôt qu'avec
+  un placeholder mensonger.
+- **Statut palier P1 après iter #83** :
+  - ✅ P1.8 Toggle Bot Maître exige confirmation (#80)
+  - ✅ Section Connexion Binance complète (#81)
+  - ✅ Stop d'urgence UI (#82)
+  - ✅ **4ᵉ écran SPA livré (Apprentissage)** (#83, ce iter)
+  - 🔴 P1.1-P1.4 (runtime smartphone Android requis)
+  - 🔴 P1.5 Backtest UI (5ᵉ écran SPA, prochain candidat iter
+    pure-code)
+- **Reste à faire** : le 5ᵉ écran (Backtest) est le seul critère
+  P1 attaquable sans runtime. Iter #84+ candidats : Backtest UI
+  ou tests d'intégrité données D1-D6.
+
+## [0.0.86] - 2026-04-30
+
+### Added — iter #82 : arrêt d'urgence (Emergency Stop, H2-H4)
+
+L'iter #81 a fermé la chaîne de saisie des credentials. L'iter #82
+livre la **dernière brique de sécurité** côté UI avant le test
+runtime smartphone du palier P1 : un bouton **« Arrêt d'urgence »**
+qui gèle immédiatement le bot (Circuit Breaker -> ``FROZEN``) +
+banner d'alerte + bouton **« Reprendre l'activité »** pour réinitialiser.
+
+Implémente le critère 🔴 **H2-H4 Human override** (stop d'urgence UI).
+
+### Added
+
+- ``src/emeraude/services/dashboard_types.py`` :
+  - ``DashboardSnapshot`` gagne un champ
+    ``circuit_breaker_state: str`` (un de ``HEALTHY`` /
+    ``WARNING`` / ``TRIGGERED`` / ``FROZEN``). Surfacé pour que le
+    Dashboard polling 5 s pump le banner d'alerte sans nouvelle
+    route HTTP. Anti-règle A1 : pas d'état caché.
+- ``src/emeraude/services/dashboard_data_source.py`` :
+  - ``TrackerDashboardDataSource.fetch_snapshot()`` populate le
+    nouveau champ via ``circuit_breaker.get_state().value``.
+    Read-only — la data source ne mute jamais le breaker.
+
+- ``src/emeraude/api/server.py`` :
+  - Route ``POST /api/emergency-stop`` (handler
+    ``_handle_emergency_stop``) : appelle
+    ``circuit_breaker.freeze(reason="emergency_stop:user")`` puis
+    audit ``EMERGENCY_STOP`` avec ``{from, to, source}``. Renvoie
+    ``{state}``. Idempotent : refreezer un breaker déjà gelé est OK.
+  - Route ``POST /api/emergency-reset`` (handler
+    ``_handle_emergency_reset``) : symétrique, appelle
+    ``circuit_breaker.reset(reason="emergency_reset:user")``, audit
+    ``EMERGENCY_RESET``. Rest la mode courant — l'éventuel re-toggle
+    Paper -> Réel reste protégé par le double-tap A5 5 s (iter #80).
+  - Constantes ``_AUDIT_EMERGENCY_STOP`` / ``_AUDIT_EMERGENCY_RESET``
+    distinctes du ``CIRCUIT_BREAKER_STATE_CHANGE`` émis par
+    ``circuit_breaker`` lui-même : permet de filter dans l'audit log
+    "show me when the user pulled the plug" sans faux positifs venant
+    des trips automatisés (drift, drawdown, etc.).
+  - Body POST optionnel : aucun paramètre requis pour ces deux
+    endpoints — l'action est non-ambiguë. Le handler skip
+    proprement le ``_read_json_object`` qui exige un body.
+
+- ``src/emeraude/web/index.html`` :
+  - Nouvelle ligne **"État Circuit Breaker"** dans la card
+    "Statut du bot" du Dashboard, avec chip coloré (vert sain /
+    jaune warning / rouge déclenché ou gelé).
+  - Nouvelle card **"Sécurité"** sur le Dashboard :
+    - Quand ``HEALTHY`` : explication concise + bouton rouge
+      ``Arrêt d'urgence`` (variant flat, color error).
+    - Quand non-``HEALTHY`` : ``v-alert error tonal`` indiquant
+      "Bot arrêté ({state})" + bouton primary ``Reprendre l'activité``.
+  - **Dialog de confirmation arrêt** (``v-dialog persistent``) :
+    titre rouge, explication des conséquences (FROZEN, positions
+    intactes, mode inchangé), boutons Annuler / Confirmer l'arrêt.
+  - **Dialog de confirmation reprise** (``v-dialog persistent``) :
+    titre primary, mention explicite que reprendre ne réactive PAS
+    le mode Réel par lui-même (l'A5 5 s reste appliqué au toggle).
+  - Snackbar feedback ``"Arrêt d'urgence activé."`` /
+    ``"Activité reprise."``.
+  - Computed ``breakerState`` / ``isBreakerHealthy`` /
+    ``breakerLabel`` (Sain / Vigilance / Déclenché / Gelé) /
+    ``breakerChipColor`` / ``breakerChipIcon``
+    (mdi-shield-check-outline / mdi-shield-alert-outline /
+    mdi-alert-octagon-outline / mdi-snowflake).
+  - Helper interne ``applyEmergencyAction(path, msg, onSuccess)``
+    pour DRY entre stop et reset (POST + refetch dashboard +
+    snackbar + ferme le dialog).
+
+- ``tests/unit/test_api_server.py`` : **+7 tests intégration HTTP**
+  - ``test_emergency_stop_requires_auth`` /
+    ``test_emergency_reset_requires_auth`` : 403 sans cookie.
+  - ``test_emergency_stop_freezes_breaker_and_returns_state`` :
+    POST stop -> 200 ``{state: "FROZEN"}`` + round-trip via
+    ``/api/dashboard`` confirme ``circuit_breaker_state === "FROZEN"``.
+  - ``test_emergency_reset_returns_to_healthy`` : freeze puis
+    reset -> ``HEALTHY`` ; round-trip dashboard confirme.
+  - ``test_emergency_stop_idempotent`` /
+    ``test_emergency_reset_idempotent_on_healthy`` : double appel
+    OK pour les deux endpoints.
+  - ``test_emergency_stop_ignores_request_body`` : envoyer un
+    body inattendu ne casse pas l'endpoint.
+- ``tests/unit/test_api_server.py::test_api_dashboard_returns_snapshot``
+  étendu pour assert la présence + le type de
+  ``circuit_breaker_state``.
+- ``tests/unit/test_dashboard_formatter.py`` /
+  ``tests/unit/test_dashboard_screen.py`` /
+  ``tests/unit/test_refresh_cycle.py`` : factories
+  ``_snapshot()`` / fakes mises à jour pour fournir le nouveau
+  champ avec le default ``"HEALTHY"``.
+
+### Changed
+
+- ``src/emeraude/api/server.py`` : docstring de tête mise à jour
+  pour lister les 9 routes (4 GET + 4 POST + 1 DELETE).
+- ``pyproject.toml`` + ``buildozer.spec`` : ``0.0.85`` -> ``0.0.86``.
+
+### Notes
+
+- **Suite stable à 1 767 tests** (+7 vs v0.0.85), coverage **99.48 %**,
+  ruff + ruff format + mypy strict + bandit + pip-audit OK.
+- **Mesure objectif iter #82** :
+  - Avant : 0 endpoint emergency stop ; pas de bouton « Arrêt
+    d'urgence » côté SPA ; le ``CircuitBreaker`` est câblé infra
+    mais pas exposé HTTP.
+  - Après : **2 routes POST + champ breaker dans DashboardSnapshot
+    + carte Sécurité avec stop/reset + 2 dialogs + audit
+    ``EMERGENCY_STOP``/``EMERGENCY_RESET``** -> ✅ atteint.
+- **Sécurité (anti-règle A5 + R10)** :
+  - Pas de countdown 5 s sur le **stop** (A5 protège l'**activation**
+    du trading réel — un stop est l'inverse, doit être instantané).
+  - Pas de countdown sur le **reset** non plus : la barrière A5
+    s'applique au prochain toggle Paper -> Réel, qui reste séparé.
+  - **R10 Circuit Breaker non-bypass** : aucune route n'expose un
+    "skip breaker" — la seule façon de retrader après un stop est
+    le reset explicite + (si Réel) le double-tap A5.
+  - L'``EMERGENCY_STOP`` audit trace la décision **utilisateur**
+    spécifiquement, séparé du ``CIRCUIT_BREAKER_STATE_CHANGE``
+    technique du breaker.
+- **Statut palier P1 après iter #82** :
+  - ✅ P1.8 Toggle Bot Maître exige confirmation argent réel (#80)
+  - ✅ Section Connexion Binance complète (#81)
+  - ✅ Stop d'urgence UI (#82, ce iter)
+  - 🔴 P1.1-P1.4 (runtime smartphone Android requis)
+- Reste pour l'iter #83+ : merge sur main pour déclencher le build
+  APK CI, puis test runtime sur Redmi (P1.1-P1.4).
+
+## [0.0.85] - 2026-04-30
+
+### Added — iter #81 : saisie clés API Binance (GET/POST/DELETE /api/credentials)
+
+L'iter #80 a livré la première mutation API (toggle Paper/Réel).
+L'iter #81 ferme la section "Connexion Binance" du panneau Config doc 02
+en exposant le ``BinanceCredentialsService`` (iter #66) côté HTTP +
+côté UI Vuetify. C'est la **dernière brique** du panneau Config avant
+le test runtime smartphone du palier P1.
+
+### Added
+
+- ``src/emeraude/api/server.py`` :
+  - Méthode ``do_DELETE`` ajoutée à ``_RequestHandler`` (parallèle de
+    ``do_POST``). Dispatcher minimal : 404 hors ``/api/<route>``.
+  - Méthode ``_serve_api_delete`` : auth cookie obligatoire puis
+    dispatch sur la route ``credentials``.
+  - Route ``GET /api/credentials`` ajoutée à ``_serve_api`` :
+    renvoie :class:`BinanceCredentialsStatus` (api_key_set,
+    api_secret_set, api_key_suffix, passphrase_available) en JSON.
+  - Méthode ``_handle_save_credentials`` :
+    - Parse + valide le body
+      (``{"api_key": "...", "api_secret": "..."}`` strings).
+    - Délègue à ``BinanceCredentialsService.save_credentials()``
+      qui gère validation format + chiffrement PBKDF2+XOR + persistance.
+    - Mappe les exceptions service -> codes HTTP :
+      :class:`PassphraseUnavailableError` -> **503 Service Unavailable**
+      (signal honnête : env var manquante) ; :class:`CredentialFormatError`
+      -> **400 Bad Request** (message validateur réutilisé tel quel).
+    - **Émet un audit event ``CREDENTIALS_SAVED``** avec le **suffix
+      uniquement** (les 4 derniers caractères, jamais la clé en clair —
+      le payload audit ne doit pas casser le contrat encryption-at-rest).
+  - Méthode ``_handle_clear_credentials`` :
+    - Délègue à ``BinanceCredentialsService.clear_credentials()`` qui
+      écrase les deux entrées avec une chaîne vide (idempotent).
+    - **Émet un audit event ``CREDENTIALS_CLEARED``** sur chaque appel
+      (back-to-back observables).
+    - Renvoie le ``BinanceCredentialsStatus`` mis à jour.
+  - Constantes ``_AUDIT_CREDENTIALS_SAVED`` / ``_AUDIT_CREDENTIALS_CLEARED``
+    (convention ``<DOMAIN>_<ACTION>``).
+
+- ``src/emeraude/web/index.html`` :
+  - Nouvelle carte **"Connexion Binance"** sur la page Config :
+    - Loading / error states cohérents avec le reste du SPA.
+    - **Alerte tonale warning** si ``passphrase_available === false``
+      (env var ``EMERAUDE_API_PASSPHRASE`` manquante) — dirige
+      l'utilisateur vers la définition de la variable et anticipe
+      la migration E7 Android KeyStore.
+    - **Status row** quand des clés sont enregistrées : suffix
+      ``**** **** WXYZ`` masqué + chip "Défini" pour le secret.
+    - **Empty state** quand aucune clé : icône + texte explicatif
+      mentionnant le chiffrement PBKDF2.
+    - **Formulaire** avec deux ``v-text-field`` ``type="password"`` +
+      ``v-icon`` ``mdi-eye`` / ``mdi-eye-off`` toggle pour révéler
+      ponctuellement les valeurs ; ``autocomplete="off"`` +
+      ``spellcheck="false"`` pour empêcher le navigateur de cacher
+      des fragments de clé. La valeur saisie n'est jamais
+      round-trippée vers la UI : les champs se vident dès que le
+      POST aboutit.
+    - Bouton **"Enregistrer les clés"** (visible si pas de clé
+      stockée) ``disabled`` tant que les inputs ne passent pas la
+      validation côté client (16-128 alphanumériques) — économise un
+      round-trip réseau sur les typos évidentes.
+    - Bouton **"Supprimer les clés"** (visible si clés stockées)
+      ``variant="text" color="error"`` ouvre un ``v-dialog persistent``
+      de confirmation avant l'appel DELETE.
+  - **Dialog** ``Supprimer les clés API`` (``v-dialog persistent``)
+    avec message clair sur le rationale (ré-saisie nécessaire pour
+    trader, positions ouvertes intactes).
+  - Helper ``deleteJSON(path)`` symétrique de ``postJSON``.
+  - Snackbar feedback ``"Clés API enregistrées."`` / ``"Clés API
+    supprimées."`` après succès.
+  - Computed ``apiKeyDisplay`` (rendu suffix masqué) +
+    ``canSaveCredentials`` (validation client mirror du serveur).
+
+- ``tests/unit/test_api_server.py`` : **+12 tests intégration HTTP**
+  - ``test_credentials_get_requires_auth`` + ``..._delete_requires_auth``
+    + ``..._post_requires_auth`` : 403 sans cookie.
+  - ``test_credentials_get_returns_status_shape`` : présence et types
+    des 4 champs ``BinanceCredentialsStatus``.
+  - ``test_credentials_post_persists_when_passphrase_set`` : POST
+    happy path (avec ``monkeypatch.setenv``), round-trip GET pour
+    persistance, DELETE de cleanup.
+  - ``test_credentials_post_503_when_passphrase_missing`` : env
+    absente -> 503 + message contenant ``EMERAUDE_API_PASSPHRASE``.
+  - ``test_credentials_post_400_on_bad_format`` : api_key trop court
+    -> 400 avec le message validateur.
+  - ``test_credentials_post_400_on_missing_fields`` /
+    ``..._on_non_string_fields`` : 400 sur body partiel ou types mauvais.
+  - ``test_credentials_delete_idempotent`` : 2 DELETE consécutifs
+    sans précédent save.
+  - ``test_unknown_delete_route_returns_404`` /
+    ``test_delete_to_non_api_path_returns_404``.
+  - Helper privé ``_delete`` ajouté pour DRY (parallèle de
+    ``_post_json``).
+
+### Changed
+
+- ``src/emeraude/api/server.py`` : docstring de tête mise à jour pour
+  lister les 7 routes (3 GET + 2 POST + 1 DELETE + l'index/static).
+- ``pyproject.toml`` + ``buildozer.spec`` : ``0.0.84`` -> ``0.0.85``.
+
+### Notes
+
+- **Suite stable à 1 760 tests** (+12 vs v0.0.84), coverage **99.48 %**,
+  ruff + ruff format + mypy strict + bandit + pip-audit OK.
+- **Mesure objectif iter #81** :
+  - Avant : 1 mutation API (POST /api/toggle-mode) ; clés saisissables
+    uniquement via env var directe ; ``BinanceCredentialsService``
+    construit mais non exposé HTTP.
+  - Après : **3 routes API** (``GET``/``POST``/``DELETE`` ``/api/credentials``)
+    + **section Vuetify avec formulaire masqué + suffix `**** xxxx`**
+    + gestion ``PassphraseUnavailableError`` + ``CredentialFormatError``
+    + audit ``CREDENTIALS_SAVED``/``CREDENTIALS_CLEARED`` -> ✅ atteint.
+- **Sécurité** :
+  - Les clés saisies traversent HTTP cleartext **uniquement sur
+    127.0.0.1** + cookie ``HttpOnly`` requis. Aucune exposition réseau.
+  - Le payload POST n'est **jamais loggé** : le ``log_message`` override
+    n'inscrit que la ligne de requête (méthode + URL), pas le body.
+  - L'audit log ne contient **que le suffix** (4 derniers caractères),
+    jamais la clé complète.
+  - Le formulaire wipe les champs ``apiKeyInput`` / ``apiSecretInput``
+    après save réussi (le plaintext ne traîne pas dans l'état Vue).
+- **Reste pour l'iter #82** : passage runtime sur APK Android pour le
+  smoke test palier P1 (P1.1 App tourne sans crash 1h, P1.2 Persistance
+  survit redémarrage, P1.3 Connexion Binance fonctionne).
+
+## [0.0.84] - 2026-04-30
+
+### Added — iter #80 : POST /api/toggle-mode + dialog A5 (anti-règle A5)
+
+L'iter #79 a livré les pages Vuetify Journal + Config en **lecture
+seule**. L'iter #80 ouvre la première mutation : POST /api/toggle-mode
+qui persiste le mode utilisateur dans la table ``settings``, et le
+``v-dialog`` A5 qui impose un double-tap avec délai 5 s + capital en
+jeu visible avant l'activation du mode Réel (cf. doc 02 §"⚙ CONFIG"
++ anti-règle A5 §07_REGLES_OR_ET_ANTI_REGLES.md).
+
+### Added
+
+- ``src/emeraude/api/server.py`` :
+  - Méthode ``do_POST`` ajoutée à ``_RequestHandler``. Dispatcher
+    minimal : tout ce qui n'est pas ``/api/<route>`` -> 404.
+  - Méthode ``_serve_api_post`` : auth cookie obligatoire (constant-time
+    compare réutilisé du chemin GET) puis route vers le handler.
+  - Méthode ``_handle_toggle_mode`` :
+    - Parse + valide le body (``{"mode": "paper"|"real"|"unconfigured"}``).
+    - Délègue à ``config_data_source.set_mode()`` qui persiste dans
+      ``settings`` (clé ``ui.mode``).
+    - **Émet un audit event ``MODE_CHANGED``** avec ``{from, to,
+      source: "api"}`` pour traçabilité R9 — utile en post-mortem
+      pour tracer "qui a basculé en Réel et quand".
+    - Renvoie le ``ConfigSnapshot`` mis à jour pour que le client
+      puisse refléter immédiatement la nouvelle valeur sans refetch.
+  - Méthode helper ``_read_json_object`` : parse le body JSON avec
+    validation de Content-Length (cap à ``_MAX_BODY_BYTES = 4096``,
+    rejet sur entête non numérique, body vide, JSON invalide, valeur
+    racine non-objet). Sur erreur, envoie la réponse JSON
+    ``{"error": ...}`` et retourne ``None`` au caller.
+  - Constante ``_MAX_BODY_BYTES = 4096`` : cap DoS sur les payloads
+    POST. Largement assez pour ``{"mode": "real"}`` (~20 bytes) et
+    le futur payload clés API Binance.
+  - Constante ``_AUDIT_MODE_CHANGED = "MODE_CHANGED"`` (convention
+    ``<DOMAIN>_<ACTION>`` cf. ``POSITION_OPENED`` etc.).
+
+- ``src/emeraude/web/index.html`` :
+  - Carte **Mode et capital** (page Config) enrichie de 2 boutons :
+    - ``Activer le mode Réel`` (visible quand mode != real).
+    - ``Repasser en mode Paper`` (visible quand mode != paper).
+  - **Dialog A5 Real** (``v-dialog persistent`` non dismissable au
+    backdrop) : titre ``Activation du mode Réel``, capital affiché,
+    mode actuel, alerte tonale, bouton **Confirmer** ``disabled``
+    avec compte à rebours ``Confirmer (5)``...``(1)``...``Confirmer``
+    contrôlé par ``setInterval(1000)``. Bouton **Annuler** toujours
+    actif. Erreur affichée inline en cas d'échec POST.
+  - **Dialog Paper** (retour Réel -> Paper) : confirmation simple
+    sans countdown — repasser en simulation est strictement plus
+    safe, n'a pas besoin du gate A5.
+  - **Snackbar** ``v-snackbar location="top" color="success"`` :
+    feedback `Mode Réel activé.` / `Mode Paper activé.` après
+    succès POST, auto-dismiss 3 s.
+  - Helper ``postJSON(path, body)`` qui parse les ``{"error": ...}``
+    backend pour les exposer à l'UI.
+  - Computed ``isPaperMode`` / ``isRealMode`` /
+    ``realConfirmDisabled`` / ``realConfirmLabel``.
+  - Cleanup ``countdownTimer`` dans ``onBeforeUnmount`` (en plus du
+    ``dashboardTimer`` existant).
+
+- ``tests/unit/test_api_server.py`` : **+11 tests intégration HTTP**
+  - ``test_toggle_mode_requires_auth`` : 403 sans cookie.
+  - ``test_toggle_mode_persists_and_returns_snapshot`` : POST paper->
+    real, vérifie ``mode`` dans la réponse + round-trip GET /api/config
+    pour persistance, puis revert à paper pour propreté.
+  - ``test_toggle_mode_rejects_invalid_mode`` : 400 sur ``"moon"``.
+  - ``test_toggle_mode_rejects_missing_mode`` : 400 sur ``{}``.
+  - ``test_toggle_mode_rejects_non_object_body`` : 400 sur liste racine.
+  - ``test_toggle_mode_rejects_invalid_json`` : 400 sur JSON malformé.
+  - ``test_toggle_mode_rejects_empty_body`` : 400 sur ``Content-Length: 0``.
+  - ``test_toggle_mode_rejects_non_numeric_content_length`` : 400 via
+    raw socket (http.client refuse de l'envoyer côté client) pour
+    couvrir l'``except ValueError`` sur ``int(length_header)``.
+  - ``test_toggle_mode_rejects_oversized_body`` : 413 sur body > 4 KB.
+  - ``test_unknown_post_route_returns_404`` + ``test_post_to_non_api_path_returns_404``.
+  - Helper privé ``_post_json`` ajouté pour DRY.
+
+### Changed
+
+- ``src/emeraude/api/server.py`` : docstring de tête + commentaires
+  inline mis à jour pour lister la nouvelle route POST et renvoyer
+  l'iter #81 pour la saisie clés API Binance (``credentials``).
+- ``src/emeraude/web/index.html`` : l'alerte info "iter #80" sur la
+  page Config est remplacée par "iter #81" (saisie clés API).
+- ``pyproject.toml`` + ``buildozer.spec`` : ``0.0.83`` -> ``0.0.84``.
+
+### Notes
+
+- **Suite stable à 1 748 tests** (+11 vs v0.0.83), coverage **99.51 %**,
+  ruff + ruff format + mypy strict + bandit + pip-audit OK.
+- **Mesure objectif iter #80** :
+  - Avant : 0 endpoint API mutation, toggle Paper/Réel non implémenté
+    côté SPA, A5 non vérifiable runtime.
+  - Après : **1 endpoint POST `/api/toggle-mode` + 1 dialog A5 actif
+    (countdown 5 s + capital affiché)** -> ✅ atteint.
+- **Sécurité** : la double-tap A5 est enforced **côté UI** (countdown
+  bloque le bouton Confirmer pendant 5 s). Le serveur accepte tout
+  appel POST bien formé ; l'audit ``MODE_CHANGED`` permet d'observer
+  toute utilisation directe de l'API. Defense in depth pourrait aussi
+  imposer un délai serveur, mais l'attaque est restreinte à
+  loopback + cookie ``HttpOnly``, donc le gate UI est suffisant à ce
+  stade. Reportable en iter ultérieure si nécessaire.
+- **A14** : toute fonction publique (``do_POST``, ``_handle_toggle_mode``,
+  ``_read_json_object``) couverte par au moins un test pytest.
+- Reste pour l'iter #81 : saisie clés API Binance via ``v-text-field``
+  Vuetify -> ``POST /api/credentials`` -> ``BinanceCredentialsService``.
+
+## [0.0.83] - 2026-04-30
+
+### Added — iter #79 : pages Vuetify Journal + Config (ADR-0004 §"Plan de migration")
+
+L'iter #78 a livré le pivot architecture (WebView + Vue 3 + Vuetify) et
+la page Dashboard. Les onglets Journal et Config étaient présents dans
+le ``v-bottom-navigation`` mais marqués ``disabled``. L'iter #79 les
+active de bout en bout : 2 nouvelles routes API GET côté Python +
+2 nouvelles ``v-window-item`` côté Vue.
+
+### Added
+
+- ``src/emeraude/api/server.py`` :
+  - Route ``GET /api/journal`` -> :class:`JournalSnapshot` JSON
+    (rows = liste d'événements ``audit_log`` formattés, most-recent-first,
+    capped à :data:`DEFAULT_HISTORY_LIMIT` = 50).
+  - Route ``GET /api/config`` -> :class:`ConfigSnapshot` JSON (mode,
+    starting_capital, app_version, total_audit_events, db_path).
+  - Les deux routes réutilisent le helper ``_serialise`` existant
+    (Decimal -> str, dataclass -> dict). Pas de nouveau code de
+    sérialisation.
+  - Auth cookie ``HttpOnly`` toujours requis (constant-time compare).
+- ``src/emeraude/web/index.html`` :
+  - ``v-window`` enveloppant 3 ``v-window-item`` (dashboard / journal /
+    config). Le ``v-bottom-navigation`` pilote ``activeTab`` ; les
+    boutons Journal et Config ne sont plus ``disabled``.
+  - Page **Journal** : liste des décisions du bot (``time_label`` en
+    monospace + ``event_type`` en titre + ``summary`` payload tronqué)
+    avec un empty-state quand ``audit_log`` est vide.
+  - Page **Config** : 2 cards lisant Mode + Capital de référence puis
+    Version + Événements audit + Chemin DB. Footer ``v-alert`` info qui
+    annonce que le toggle Paper/Réel et la saisie clés API arrivent
+    en iter #80.
+  - ``v-app-bar-title`` réactif (``Emeraude`` / ``Journal`` /
+    ``Configuration``) selon l'onglet actif.
+  - Refresh dashboard inchangé (5 s, comme iter #78). Journal et
+    Config sont fetchés à l'activation de l'onglet (``watch(activeTab)``)
+    pour minimiser le churn de données : un journal listant 50
+    événements audit n'a pas vocation à être polled à 5 s.
+- ``tests/unit/test_api_server.py`` : **+4 tests intégration HTTP**
+  - ``test_api_journal_requires_auth`` : 403 sans cookie.
+  - ``test_api_journal_returns_snapshot`` : shape ``rows`` +
+    ``total_returned``, invariant ``total_returned == len(rows)``.
+  - ``test_api_config_requires_auth`` : 403 sans cookie.
+  - ``test_api_config_returns_snapshot`` : shape complète
+    (``mode``, ``starting_capital``, ``app_version``,
+    ``total_audit_events``, ``db_path``) + types post-sérialisation
+    (``starting_capital`` = ``str | None``, ``total_audit_events`` =
+    ``int``, etc.).
+
+### Changed
+
+- ``pyproject.toml`` + ``buildozer.spec`` : ``0.0.82`` -> ``0.0.83``.
+
+### Notes
+
+- **Suite stable à 1 737 tests** (+4 vs v0.0.82), coverage 99.51 %,
+  ruff + ruff format + mypy strict + bandit + pip-audit OK.
+- Mesure objectif iter #79 :
+  - Avant : 1 page Vuetify fonctionnelle / 3, 1 endpoint API / 3,
+    2 onglets ``v-bottom-navigation`` ``disabled``.
+  - Après : **3 / 3, 3 / 3, 0 ``disabled``** -> ✅ atteint.
+- Restent en chantier doc 02 : la saisie clés API Binance, le toggle
+  Paper/Réel double-tap (anti-règle A5), Backtest, Telegram, Emergency
+  Stop. Tous regroupés dans iter #80.
+
 ## [0.0.82] - 2026-04-30
 
 ### Changed — pivot bootstrap p4a (cf. ADR-0004)

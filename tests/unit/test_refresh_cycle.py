@@ -118,6 +118,7 @@ class _CountingDashboardDataSource:
             cumulative_pnl=Decimal("0"),
             n_closed_trades=0,
             mode=MODE_PAPER,
+            circuit_breaker_state="HEALTHY",
         )
 
 

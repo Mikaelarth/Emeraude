@@ -301,9 +301,192 @@ class TestHTTPIntegration:
             assert "cumulative_pnl" in body
             assert "n_closed_trades" in body
             assert "mode" in body
+            # iter #82 : circuit_breaker_state surfaced for the
+            # emergency-stop banner.
+            assert "circuit_breaker_state" in body
+            assert isinstance(body["circuit_breaker_state"], str)
             # cumulative_pnl was Decimal("0") at cold start ; serialises
             # as the string "0".
             assert isinstance(body["cumulative_pnl"], str)
+        finally:
+            self._stop(server, thread)
+
+    def test_api_journal_requires_auth(self, tmp_path: Path) -> None:
+        port, _token, thread, server = self._setup_server(tmp_path)
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request("GET", "/api/journal")
+            resp = conn.getresponse()
+            body = json.loads(resp.read())
+            assert resp.status == 403
+            assert "error" in body
+        finally:
+            self._stop(server, thread)
+
+    def test_api_journal_returns_snapshot(self, tmp_path: Path) -> None:
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request(
+                "GET",
+                "/api/journal",
+                headers={"Cookie": f"{AUTH_COOKIE}={token}"},
+            )
+            resp = conn.getresponse()
+            body = json.loads(resp.read())
+
+            assert resp.status == 200
+            # JournalSnapshot keys (cf. journal_types.JournalSnapshot).
+            assert "rows" in body
+            assert "total_returned" in body
+            assert isinstance(body["rows"], list)
+            # total_returned matches len(rows) by construction.
+            assert body["total_returned"] == len(body["rows"])
+        finally:
+            self._stop(server, thread)
+
+    def test_api_config_requires_auth(self, tmp_path: Path) -> None:
+        port, _token, thread, server = self._setup_server(tmp_path)
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request("GET", "/api/config")
+            resp = conn.getresponse()
+            body = json.loads(resp.read())
+            assert resp.status == 403
+            assert "error" in body
+        finally:
+            self._stop(server, thread)
+
+    def test_api_config_returns_snapshot(self, tmp_path: Path) -> None:
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request(
+                "GET",
+                "/api/config",
+                headers={"Cookie": f"{AUTH_COOKIE}={token}"},
+            )
+            resp = conn.getresponse()
+            body = json.loads(resp.read())
+
+            assert resp.status == 200
+            # ConfigSnapshot keys (cf. config_types.ConfigSnapshot).
+            assert "mode" in body
+            assert "starting_capital" in body
+            assert "app_version" in body
+            assert "total_audit_events" in body
+            assert "db_path" in body
+            # Decimal -> string per _serialise contract ; None when not
+            # configured.
+            assert body["starting_capital"] is None or isinstance(body["starting_capital"], str)
+            assert isinstance(body["app_version"], str)
+            assert isinstance(body["total_audit_events"], int)
+            assert isinstance(body["db_path"], str)
+        finally:
+            self._stop(server, thread)
+
+    def test_api_learning_requires_auth(self, tmp_path: Path) -> None:
+        port, _token, thread, server = self._setup_server(tmp_path)
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request("GET", "/api/learning")
+            resp = conn.getresponse()
+            body = json.loads(resp.read())
+            assert resp.status == 403
+            assert "error" in body
+        finally:
+            self._stop(server, thread)
+
+    def test_api_learning_returns_snapshot_shape(self, tmp_path: Path) -> None:
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request(
+                "GET",
+                "/api/learning",
+                headers={"Cookie": f"{AUTH_COOKIE}={token}"},
+            )
+            resp = conn.getresponse()
+            body = json.loads(resp.read())
+            assert resp.status == 200
+
+            # LearningSnapshot keys.
+            assert "strategies" in body
+            assert "champion" in body
+
+            # 3 known strategies (cf. KNOWN_STRATEGIES). Cold-start: each
+            # carries the uniform prior (alpha=beta=1, n_trades=0).
+            strategies = body["strategies"]
+            assert isinstance(strategies, list)
+            assert len(strategies) == 3
+            names = {s["name"] for s in strategies}
+            assert names == {"trend_follower", "mean_reversion", "breakout_hunter"}
+            for s in strategies:
+                assert "alpha" in s
+                assert "beta" in s
+                assert "n_trades" in s
+                assert "win_rate" in s
+                # Decimal -> string per _serialise contract.
+                assert isinstance(s["win_rate"], str)
+                assert isinstance(s["alpha"], int)
+                assert isinstance(s["beta"], int)
+
+            # No champion at cold start.
+            assert body["champion"] is None
+        finally:
+            self._stop(server, thread)
+
+    def test_api_performance_requires_auth(self, tmp_path: Path) -> None:
+        port, _token, thread, server = self._setup_server(tmp_path)
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request("GET", "/api/performance")
+            resp = conn.getresponse()
+            body = json.loads(resp.read())
+            assert resp.status == 403
+            assert "error" in body
+        finally:
+            self._stop(server, thread)
+
+    def test_api_performance_returns_snapshot_shape(self, tmp_path: Path) -> None:
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request(
+                "GET",
+                "/api/performance",
+                headers={"Cookie": f"{AUTH_COOKIE}={token}"},
+            )
+            resp = conn.getresponse()
+            body = json.loads(resp.read())
+            assert resp.status == 200
+
+            # PerformanceSnapshot keys (cf. performance_types.PerformanceSnapshot).
+            for key in (
+                "n_trades",
+                "n_wins",
+                "n_losses",
+                "win_rate",
+                "expectancy",
+                "avg_win",
+                "avg_loss",
+                "profit_factor",
+                "sharpe_ratio",
+                "sortino_ratio",
+                "calmar_ratio",
+                "max_drawdown",
+                "has_data",
+            ):
+                assert key in body
+
+            # Cold start : no closed positions ; ``has_data=False`` and
+            # all numeric fields sit at the zero default.
+            assert isinstance(body["has_data"], bool)
+            assert body["has_data"] is False
+            assert body["n_trades"] == 0
+            # Decimal -> string per _serialise contract.
+            assert isinstance(body["win_rate"], str)
+            assert isinstance(body["expectancy"], str)
         finally:
             self._stop(server, thread)
 
@@ -323,6 +506,781 @@ class TestHTTPIntegration:
         finally:
             self._stop(server, thread)
 
+    # ── POST /api/toggle-mode ────────────────────────────────────────────────
+
+    def _post_json(
+        self,
+        port: int,
+        path: str,
+        body: object,
+        *,
+        token: str | None = None,
+    ) -> tuple[int, dict[str, object]]:
+        """Tiny POST helper. Returns ``(status, json_body)``."""
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        if token is not None:
+            headers["Cookie"] = f"{AUTH_COOKIE}={token}"
+        encoded = json.dumps(body).encode("utf-8") if not isinstance(body, bytes) else body
+        conn.request("POST", path, body=encoded, headers=headers)
+        resp = conn.getresponse()
+        raw = resp.read()
+        return resp.status, json.loads(raw) if raw else {}
+
+    def _get(
+        self,
+        port: int,
+        path: str,
+        *,
+        token: str | None = None,
+    ) -> tuple[int, dict[str, object]]:
+        """Tiny GET helper. Returns ``(status, json_body)``."""
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        headers: dict[str, str] = {}
+        if token is not None:
+            headers["Cookie"] = f"{AUTH_COOKIE}={token}"
+        conn.request("GET", path, headers=headers)
+        resp = conn.getresponse()
+        raw = resp.read()
+        return resp.status, json.loads(raw) if raw else {}
+
+    def test_toggle_mode_requires_auth(self, tmp_path: Path) -> None:
+        port, _token, thread, server = self._setup_server(tmp_path)
+        try:
+            status, body = self._post_json(port, "/api/toggle-mode", {"mode": "real"}, token=None)
+            assert status == 403
+            assert "error" in body
+        finally:
+            self._stop(server, thread)
+
+    def test_toggle_mode_persists_and_returns_snapshot(self, tmp_path: Path) -> None:
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            # Cold start mode = MODE_PAPER (cf. AppContext.DEFAULT_MODE).
+            status, body = self._post_json(port, "/api/toggle-mode", {"mode": "real"}, token=token)
+            assert status == 200
+            # The response is a fresh ConfigSnapshot reflecting the new mode.
+            assert body["mode"] == "real"
+
+            # Round-trip via GET /api/config to confirm persistence.
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request("GET", "/api/config", headers={"Cookie": f"{AUTH_COOKIE}={token}"})
+            resp = conn.getresponse()
+            persisted = json.loads(resp.read())
+            assert persisted["mode"] == "real"
+
+            # Toggle back to paper to leave the test DB clean.
+            status_back, body_back = self._post_json(
+                port, "/api/toggle-mode", {"mode": "paper"}, token=token
+            )
+            assert status_back == 200
+            assert body_back["mode"] == "paper"
+        finally:
+            self._stop(server, thread)
+
+    def test_toggle_mode_rejects_invalid_mode(self, tmp_path: Path) -> None:
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            status, body = self._post_json(port, "/api/toggle-mode", {"mode": "moon"}, token=token)
+            assert status == 400
+            assert body["error"] == "invalid mode"
+        finally:
+            self._stop(server, thread)
+
+    def test_toggle_mode_rejects_missing_mode(self, tmp_path: Path) -> None:
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            status, body = self._post_json(port, "/api/toggle-mode", {}, token=token)
+            assert status == 400
+            assert body["error"] == "invalid mode"
+        finally:
+            self._stop(server, thread)
+
+    def test_toggle_mode_rejects_non_object_body(self, tmp_path: Path) -> None:
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            status, body = self._post_json(port, "/api/toggle-mode", ["real"], token=token)
+            assert status == 400
+            # Either "body must be a JSON object" (parser sees a list) is
+            # the expected message ; assert just the structure.
+            assert "error" in body
+        finally:
+            self._stop(server, thread)
+
+    def test_toggle_mode_rejects_invalid_json(self, tmp_path: Path) -> None:
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            status, body = self._post_json(port, "/api/toggle-mode", b"{not-json", token=token)
+            assert status == 400
+            assert body["error"] == "invalid JSON"
+        finally:
+            self._stop(server, thread)
+
+    def test_toggle_mode_rejects_empty_body(self, tmp_path: Path) -> None:
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            # Send a POST with Content-Length: 0.
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request(
+                "POST",
+                "/api/toggle-mode",
+                body=b"",
+                headers={
+                    "Cookie": f"{AUTH_COOKIE}={token}",
+                    "Content-Length": "0",
+                },
+            )
+            resp = conn.getresponse()
+            body = json.loads(resp.read())
+            assert resp.status == 400
+            assert body["error"] == "missing body"
+        finally:
+            self._stop(server, thread)
+
+    def test_toggle_mode_rejects_non_numeric_content_length(self, tmp_path: Path) -> None:
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            # http.client refuses to send a non-numeric Content-Length, so
+            # we hand-craft the request via a raw socket to exercise the
+            # ``except ValueError`` branch in ``_read_json_object``.
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(5)
+            sock.connect(("127.0.0.1", port))
+            request = (
+                "POST /api/toggle-mode HTTP/1.1\r\n"
+                "Host: 127.0.0.1\r\n"
+                f"Cookie: {AUTH_COOKIE}={token}\r\n"
+                "Content-Type: application/json\r\n"
+                "Content-Length: not-a-number\r\n"
+                "Connection: close\r\n"
+                "\r\n"
+            )
+            sock.sendall(request.encode("utf-8"))
+            chunks: list[bytes] = []
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            sock.close()
+            response = b"".join(chunks)
+            head, _, body_bytes = response.partition(b"\r\n\r\n")
+            assert b"400" in head.split(b"\r\n", 1)[0]
+            body = json.loads(body_bytes)
+            assert body["error"] == "invalid Content-Length"
+        finally:
+            self._stop(server, thread)
+
+    def test_toggle_mode_rejects_oversized_body(self, tmp_path: Path) -> None:
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            # Build a body just over the 4 KB cap.
+            payload = b'{"mode":"real","junk":"' + (b"x" * 5000) + b'"}'
+            status, body = self._post_json(port, "/api/toggle-mode", payload, token=token)
+            assert status == 413
+            assert body["error"] == "body too large"
+        finally:
+            self._stop(server, thread)
+
+    def test_unknown_post_route_returns_404(self, tmp_path: Path) -> None:
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            status, body = self._post_json(port, "/api/does-not-exist", {}, token=token)
+            assert status == 404
+            assert "error" in body
+        finally:
+            self._stop(server, thread)
+
+    def test_post_to_non_api_path_returns_404(self, tmp_path: Path) -> None:
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request(
+                "POST",
+                "/static/app.js",
+                body=b"{}",
+                headers={"Cookie": f"{AUTH_COOKIE}={token}"},
+            )
+            resp = conn.getresponse()
+            resp.read()
+            assert resp.status == 404
+        finally:
+            self._stop(server, thread)
+
+    # ── /api/credentials (iter #81) ──────────────────────────────────────────
+
+    def _delete(
+        self,
+        port: int,
+        path: str,
+        *,
+        token: str | None = None,
+    ) -> tuple[int, dict[str, object]]:
+        """Tiny DELETE helper. Returns ``(status, json_body)``."""
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        headers: dict[str, str] = {}
+        if token is not None:
+            headers["Cookie"] = f"{AUTH_COOKIE}={token}"
+        conn.request("DELETE", path, headers=headers)
+        resp = conn.getresponse()
+        raw = resp.read()
+        return resp.status, json.loads(raw) if raw else {}
+
+    def test_credentials_get_requires_auth(self, tmp_path: Path) -> None:
+        port, _token, thread, server = self._setup_server(tmp_path)
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request("GET", "/api/credentials")
+            resp = conn.getresponse()
+            body = json.loads(resp.read())
+            assert resp.status == 403
+            assert "error" in body
+        finally:
+            self._stop(server, thread)
+
+    def test_credentials_get_returns_status_shape(self, tmp_path: Path) -> None:
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request(
+                "GET",
+                "/api/credentials",
+                headers={"Cookie": f"{AUTH_COOKIE}={token}"},
+            )
+            resp = conn.getresponse()
+            body = json.loads(resp.read())
+            assert resp.status == 200
+            # BinanceCredentialsStatus shape.
+            assert "api_key_set" in body
+            assert "api_secret_set" in body
+            assert "api_key_suffix" in body
+            assert "passphrase_available" in body
+            assert isinstance(body["api_key_set"], bool)
+            assert isinstance(body["api_secret_set"], bool)
+            assert body["api_key_suffix"] is None or isinstance(body["api_key_suffix"], str)
+            assert isinstance(body["passphrase_available"], bool)
+        finally:
+            self._stop(server, thread)
+
+    def test_credentials_post_requires_auth(self, tmp_path: Path) -> None:
+        port, _token, thread, server = self._setup_server(tmp_path)
+        try:
+            status, body = self._post_json(
+                port,
+                "/api/credentials",
+                {"api_key": "A" * 64, "api_secret": "B" * 64},
+                token=None,
+            )
+            assert status == 403
+            assert "error" in body
+        finally:
+            self._stop(server, thread)
+
+    def test_credentials_delete_requires_auth(self, tmp_path: Path) -> None:
+        port, _token, thread, server = self._setup_server(tmp_path)
+        try:
+            status, body = self._delete(port, "/api/credentials", token=None)
+            assert status == 403
+            assert "error" in body
+        finally:
+            self._stop(server, thread)
+
+    def test_credentials_post_persists_when_passphrase_set(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The passphrase env var is read on each save_credentials call.
+        # Set a valid one for this test ; clean up via DELETE at the end.
+        monkeypatch.setenv("EMERAUDE_API_PASSPHRASE", "test-pp-xyz123")
+
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            api_key = "A" * 60 + "WXYZ"
+            api_secret = "B" * 64
+            status, body = self._post_json(
+                port,
+                "/api/credentials",
+                {"api_key": api_key, "api_secret": api_secret},
+                token=token,
+            )
+            assert status == 200
+            # Returned status reflects the new persistence state.
+            assert body["api_key_set"] is True
+            assert body["api_secret_set"] is True
+            assert body["api_key_suffix"] == "WXYZ"
+            assert body["passphrase_available"] is True
+
+            # Round-trip via GET to confirm the persisted status.
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request(
+                "GET",
+                "/api/credentials",
+                headers={"Cookie": f"{AUTH_COOKIE}={token}"},
+            )
+            resp = conn.getresponse()
+            persisted = json.loads(resp.read())
+            assert persisted["api_key_set"] is True
+            assert persisted["api_key_suffix"] == "WXYZ"
+
+            # Cleanup : DELETE so the test DB doesn't leak across tests.
+            del_status, del_body = self._delete(port, "/api/credentials", token=token)
+            assert del_status == 200
+            assert del_body["api_key_set"] is False
+            assert del_body["api_secret_set"] is False
+            assert del_body["api_key_suffix"] is None
+        finally:
+            self._stop(server, thread)
+
+    def test_credentials_post_503_when_passphrase_missing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("EMERAUDE_API_PASSPHRASE", raising=False)
+
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            status, body = self._post_json(
+                port,
+                "/api/credentials",
+                {"api_key": "A" * 64, "api_secret": "B" * 64},
+                token=token,
+            )
+            assert status == 503
+            # The error message is the service's own — surface it intact.
+            error = body["error"]
+            assert isinstance(error, str)
+            assert "EMERAUDE_API_PASSPHRASE" in error
+        finally:
+            self._stop(server, thread)
+
+    def test_credentials_post_400_on_bad_format(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("EMERAUDE_API_PASSPHRASE", "test-pp-xyz123")
+
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            # api_key too short — the validator rejects with a precise
+            # French message that we forward verbatim.
+            status, body = self._post_json(
+                port,
+                "/api/credentials",
+                {"api_key": "tooshort", "api_secret": "B" * 64},  # pragma: allowlist secret
+                token=token,
+            )
+            assert status == 400
+            error = body["error"]
+            assert isinstance(error, str)
+            assert "api_key" in error
+        finally:
+            self._stop(server, thread)
+
+    def test_credentials_post_400_on_missing_fields(self, tmp_path: Path) -> None:
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            # Body is a JSON object but the keys are missing.
+            status, body = self._post_json(
+                port,
+                "/api/credentials",
+                {"api_key": "A" * 64},
+                token=token,
+            )
+            assert status == 400
+            error = body["error"]
+            assert isinstance(error, str)
+            assert "api_key" in error
+            assert "api_secret" in error
+        finally:
+            self._stop(server, thread)
+
+    def test_credentials_post_400_on_non_string_fields(self, tmp_path: Path) -> None:
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            status, body = self._post_json(
+                port,
+                "/api/credentials",
+                {"api_key": 1234, "api_secret": None},
+                token=token,
+            )
+            assert status == 400
+            assert "error" in body
+        finally:
+            self._stop(server, thread)
+
+    def test_credentials_delete_idempotent(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("EMERAUDE_API_PASSPHRASE", raising=False)
+
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            # Two consecutive DELETEs without prior save : both succeed.
+            status1, body1 = self._delete(port, "/api/credentials", token=token)
+            status2, body2 = self._delete(port, "/api/credentials", token=token)
+            assert status1 == 200
+            assert status2 == 200
+            assert body1["api_key_set"] is False
+            assert body2["api_key_set"] is False
+        finally:
+            self._stop(server, thread)
+
+    def test_unknown_delete_route_returns_404(self, tmp_path: Path) -> None:
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            status, body = self._delete(port, "/api/does-not-exist", token=token)
+            assert status == 404
+            assert "error" in body
+        finally:
+            self._stop(server, thread)
+
+    def test_delete_to_non_api_path_returns_404(self, tmp_path: Path) -> None:
+        port, _token, thread, server = self._setup_server(tmp_path)
+        try:
+            # Non-/api/ paths use the plain-text 404 path (not the JSON
+            # one), so call http.client directly rather than the JSON
+            # helper.
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request("DELETE", "/static/app.js")
+            resp = conn.getresponse()
+            resp.read()
+            assert resp.status == 404
+        finally:
+            self._stop(server, thread)
+
+    # ── /api/emergency-stop + /api/emergency-reset (iter #82) ────────────────
+
+    def test_emergency_stop_requires_auth(self, tmp_path: Path) -> None:
+        port, _token, thread, server = self._setup_server(tmp_path)
+        try:
+            status, body = self._post_json(port, "/api/emergency-stop", {}, token=None)
+            assert status == 403
+            assert "error" in body
+        finally:
+            self._stop(server, thread)
+
+    def test_emergency_reset_requires_auth(self, tmp_path: Path) -> None:
+        port, _token, thread, server = self._setup_server(tmp_path)
+        try:
+            status, body = self._post_json(port, "/api/emergency-reset", {}, token=None)
+            assert status == 403
+            assert "error" in body
+        finally:
+            self._stop(server, thread)
+
+    def test_emergency_stop_freezes_breaker_and_returns_state(self, tmp_path: Path) -> None:
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            # No body is required — emergency stop is unambiguous.
+            status, body = self._post_json(port, "/api/emergency-stop", {}, token=token)
+            assert status == 200
+            assert body["state"] == "FROZEN"
+
+            # Round-trip via /api/dashboard to confirm the snapshot
+            # surfaces the state for the UI banner.
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request(
+                "GET",
+                "/api/dashboard",
+                headers={"Cookie": f"{AUTH_COOKIE}={token}"},
+            )
+            resp = conn.getresponse()
+            dashboard = json.loads(resp.read())
+            assert dashboard["circuit_breaker_state"] == "FROZEN"
+
+            # Reset for the next test (state is persisted in SQLite).
+            self._post_json(port, "/api/emergency-reset", {}, token=token)
+        finally:
+            self._stop(server, thread)
+
+    def test_emergency_reset_returns_to_healthy(self, tmp_path: Path) -> None:
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            # Freeze first so the reset has work to do.
+            stop_status, stop_body = self._post_json(port, "/api/emergency-stop", {}, token=token)
+            assert stop_status == 200
+            assert stop_body["state"] == "FROZEN"
+
+            reset_status, reset_body = self._post_json(
+                port, "/api/emergency-reset", {}, token=token
+            )
+            assert reset_status == 200
+            assert reset_body["state"] == "HEALTHY"
+
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request(
+                "GET",
+                "/api/dashboard",
+                headers={"Cookie": f"{AUTH_COOKIE}={token}"},
+            )
+            resp = conn.getresponse()
+            dashboard = json.loads(resp.read())
+            assert dashboard["circuit_breaker_state"] == "HEALTHY"
+        finally:
+            self._stop(server, thread)
+
+    def test_emergency_stop_idempotent(self, tmp_path: Path) -> None:
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            status1, body1 = self._post_json(port, "/api/emergency-stop", {}, token=token)
+            status2, body2 = self._post_json(port, "/api/emergency-stop", {}, token=token)
+            assert status1 == 200
+            assert status2 == 200
+            assert body1["state"] == "FROZEN"
+            assert body2["state"] == "FROZEN"
+
+            # Reset for cleanup.
+            self._post_json(port, "/api/emergency-reset", {}, token=token)
+        finally:
+            self._stop(server, thread)
+
+    def test_emergency_reset_idempotent_on_healthy(self, tmp_path: Path) -> None:
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            # Two resets in a row from a healthy state — still 200.
+            status1, body1 = self._post_json(port, "/api/emergency-reset", {}, token=token)
+            status2, body2 = self._post_json(port, "/api/emergency-reset", {}, token=token)
+            assert status1 == 200
+            assert status2 == 200
+            assert body1["state"] == "HEALTHY"
+            assert body2["state"] == "HEALTHY"
+        finally:
+            self._stop(server, thread)
+
+    def test_emergency_stop_ignores_request_body(self, tmp_path: Path) -> None:
+        # The endpoint takes no body parameters — sending one shouldn't
+        # break it (we just don't read the body in the handler).
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            status, body = self._post_json(
+                port,
+                "/api/emergency-stop",
+                {"unexpected": "field"},
+                token=token,
+            )
+            assert status == 200
+            assert body["state"] == "FROZEN"
+
+            # Cleanup.
+            self._post_json(port, "/api/emergency-reset", {}, token=token)
+        finally:
+            self._stop(server, thread)
+
+    # ── /api/run-cycle (iter #95) ────────────────────────────────────────────
+
+    def test_run_cycle_requires_auth(self, tmp_path: Path) -> None:
+        port, _token, thread, server = self._setup_server(tmp_path)
+        try:
+            status, body = self._post_json(port, "/api/run-cycle", {}, token=None)
+            assert status == 403
+            assert "error" in body
+        finally:
+            self._stop(server, thread)
+
+    def test_run_cycle_returns_summary_on_success(self, tmp_path: Path) -> None:
+        # Inject a fake AutoTrader on the AppContext so we don't hit
+        # Binance from a unit test. The route just unwraps the
+        # CycleReport into a JSON summary — we exercise the wiring,
+        # not the real cycle pipeline (which has its own coverage in
+        # ``test_auto_trader.py``).
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            from emeraude.agent.execution.circuit_breaker import (  # noqa: PLC0415
+                CircuitBreakerState,
+            )
+
+            # Simple object stand-ins (not dataclasses — dataclass
+            # default values can't be mutable instances). Only the
+            # attributes the handler reads are populated.
+            class _FakeDecision:
+                breaker_state = CircuitBreakerState.HEALTHY
+                should_trade = False
+                skip_reason: str | None = "ensemble_not_qualified"
+
+            class _FakeReport:
+                symbol = "BTCUSDT"
+                interval = "1h"
+                fetched_at = 1_700_000_000
+                decision = _FakeDecision()
+                tick_outcome = None
+                opened_position = None
+                data_quality_rejected = False
+                data_quality_rejection_reason = ""
+
+            class _FakeTrader:
+                def run_cycle(self) -> _FakeReport:
+                    return _FakeReport()
+
+            ctx = server.app_context  # type: ignore[attr-defined]
+            ctx._auto_trader = _FakeTrader()
+
+            status, body = self._post_json(port, "/api/run-cycle", {}, token=token)
+            assert status == 200
+            assert body["ok"] is True
+            summary = body["summary"]
+            assert isinstance(summary, dict)
+            assert summary["symbol"] == "BTCUSDT"
+            assert summary["interval"] == "1h"
+            assert summary["should_trade"] is False
+            assert summary["skip_reason"] == "ensemble_not_qualified"
+            assert summary["data_quality_rejected"] is False
+        finally:
+            self._stop(server, thread)
+
+    def test_run_cycle_502_on_upstream_fetch_failure(self, tmp_path: Path) -> None:
+        # If the AutoTrader's fetcher raises a network error, the route
+        # MUST surface 502 Bad Gateway with the upstream message —
+        # never 500 (anti-rule A8 : honest error class).
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+
+            class _BrokenTrader:
+                def run_cycle(self) -> object:
+                    raise OSError("network unreachable")
+
+            ctx = server.app_context  # type: ignore[attr-defined]
+            ctx._auto_trader = _BrokenTrader()
+
+            status, body = self._post_json(port, "/api/run-cycle", {}, token=token)
+            assert status == 502
+            assert body["ok"] is False
+            error = body["error"]
+            assert isinstance(error, str)
+            assert "network unreachable" in error
+        finally:
+            self._stop(server, thread)
+
+    def test_run_cycle_500_on_unexpected_exception(self, tmp_path: Path) -> None:
+        # Non-network exceptions (e.g. KeyError from a mis-wired
+        # orchestrator) surface as 500 with a typed message — still
+        # never silently swallowed.
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+
+            class _BuggyTrader:
+                def run_cycle(self) -> object:
+                    raise RuntimeError("orchestrator misconfigured")
+
+            ctx = server.app_context  # type: ignore[attr-defined]
+            ctx._auto_trader = _BuggyTrader()
+
+            status, body = self._post_json(port, "/api/run-cycle", {}, token=token)
+            assert status == 500
+            assert body["ok"] is False
+            error = body["error"]
+            assert isinstance(error, str)
+            assert "RuntimeError" in error
+            assert "orchestrator misconfigured" in error
+        finally:
+            self._stop(server, thread)
+
+    # ─── Scheduler endpoints (iter #97) ─────────────────────────────────
+
+    def test_get_scheduler_requires_auth(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("EMERAUDE_STORAGE_DIR", str(tmp_path))
+        port, _token, thread, server = self._setup_server(tmp_path)
+        try:
+            status, _body = self._get(port, "/api/scheduler", token=None)
+            assert status == 403
+        finally:
+            self._stop(server, thread)
+
+    def test_get_scheduler_returns_default_snapshot(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("EMERAUDE_STORAGE_DIR", str(tmp_path))
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            status, body = self._get(port, "/api/scheduler", token=token)
+            assert status == 200
+            assert body["enabled"] is False
+            assert body["interval_seconds"] == 3600
+            assert body["min_interval_seconds"] == 60
+            assert body["max_interval_seconds"] == 86400
+        finally:
+            self._stop(server, thread)
+
+    def test_post_scheduler_enable_persists(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("EMERAUDE_STORAGE_DIR", str(tmp_path))
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            status, body = self._post_json(port, "/api/scheduler", {"enabled": True}, token=token)
+            assert status == 200
+            assert body["enabled"] is True
+            # Re-fetching MUST reflect the persistence.
+            status_get, body_get = self._get(port, "/api/scheduler", token=token)
+            assert status_get == 200
+            assert body_get["enabled"] is True
+        finally:
+            self._stop(server, thread)
+
+    def test_post_scheduler_interval_persists(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("EMERAUDE_STORAGE_DIR", str(tmp_path))
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            status, body = self._post_json(
+                port,
+                "/api/scheduler",
+                {"interval_seconds": 1800},
+                token=token,
+            )
+            assert status == 200
+            assert body["interval_seconds"] == 1800
+        finally:
+            self._stop(server, thread)
+
+    def test_post_scheduler_invalid_interval_400(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("EMERAUDE_STORAGE_DIR", str(tmp_path))
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            status, body = self._post_json(
+                port,
+                "/api/scheduler",
+                {"interval_seconds": 5},  # below MIN
+                token=token,
+            )
+            assert status == 400
+            error = body["error"]
+            assert isinstance(error, str)
+            assert "interval_seconds" in error
+        finally:
+            self._stop(server, thread)
+
+    def test_post_scheduler_invalid_enabled_type_400(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("EMERAUDE_STORAGE_DIR", str(tmp_path))
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            status, body = self._post_json(
+                port,
+                "/api/scheduler",
+                {"enabled": "yes"},  # must be bool
+                token=token,
+            )
+            assert status == 400
+            error = body["error"]
+            assert isinstance(error, str)
+            assert "enabled" in error
+        finally:
+            self._stop(server, thread)
+
+    def test_post_scheduler_requires_auth(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("EMERAUDE_STORAGE_DIR", str(tmp_path))
+        port, _token, thread, server = self._setup_server(tmp_path)
+        try:
+            status, _body = self._post_json(port, "/api/scheduler", {"enabled": True}, token=None)
+            assert status == 403
+        finally:
+            self._stop(server, thread)
+
 
 # ─── AppContext basic smoke ─────────────────────────────────────────────────
 
@@ -334,8 +1292,33 @@ class TestAppContext:
         assert ctx.dashboard_data_source is not None
         assert ctx.journal_data_source is not None
         assert ctx.config_data_source is not None
+        assert ctx.learning_data_source is not None
+        assert ctx.performance_data_source is not None
         assert ctx.binance_credentials_service is not None
         assert ctx.wallet is not None
+
+    def test_auto_trader_is_lazy(self) -> None:
+        # Iter #95 : AutoTrader is built on first access only, to keep
+        # the data-source path light.
+        ctx = AppContext()
+        # The internal attribute starts as None.
+        assert ctx._auto_trader is None
+        # First property access constructs the instance.
+        trader = ctx.auto_trader
+        assert trader is not None
+        # Subsequent access returns the same instance.
+        assert ctx.auto_trader is trader
+
+    def test_cycle_scheduler_is_lazy(self) -> None:
+        # Iter #97 : CycleScheduler is built on first access. Tests
+        # that don't exercise the scheduler path don't spawn a thread.
+        ctx = AppContext()
+        assert ctx._cycle_scheduler is None
+        scheduler = ctx.cycle_scheduler
+        assert scheduler is not None
+        assert ctx.cycle_scheduler is scheduler
+        # Default state : not running, not enabled.
+        assert scheduler.is_running is False
 
 
 # ─── web_app helpers ─────────────────────────────────────────────────────────

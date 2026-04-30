@@ -36,139 +36,256 @@ Les bots qui meurent en silence partagent souvent la même cause racine :
 
 ## 3. Garde-fous par source
 
-### D1 — Look-ahead bias (le plus dangereux)
+### D1 — Look-ahead bias (le plus dangereux) — ✅ test "shift invariance" livré (iter #87)
 
 **Règle absolue** : pour calculer une décision à l'instant T, on n'a
 **aucun accès** aux données de timestamp ≥ T.
 
-**Mise en œuvre** :
+**Mise en œuvre actuelle (iter #87)** :
 
-1. **API typée** : toute fonction qui prend une série temporelle reçoit
-   en paramètre un `as_of: datetime`. Tout point ≥ `as_of` est filtré
-   **dans la fonction**, pas en amont.
+1. **API implicite** : nos indicateurs (`sma`, `ema`, `rsi`, `macd`,
+   `bollinger_bands`, `atr`, `stochastic`) prennent une `list[Decimal]`
+   ou `list[Kline]` et retournent un scalaire à la **fin** de la liste.
+   Le contrat "n'utilise que les bars passés" est porté par la
+   structure des fonctions (pas d'argument `as_of` explicite).
 
-   ```python
-   def compute_indicators(series: List[Bar], as_of: datetime) -> Dict:
-       valid = [b for b in series if b.close_time < as_of]
-       # ... aucun accès à des bars ≥ as_of
-   ```
+   Le doc historique mentionne une API typée `as_of: datetime` ; nous
+   avons préféré l'API liste-tronquée parce qu'elle est plus simple
+   et que tous les indicateurs sont déjà conformes au contrat
+   structurellement.
 
-2. **Test "shift invariance"** : dans la suite pytest, on vérifie que
-   décaler la série de N bars dans le futur ne change **rien** au signal
-   calculé sur la fenêtre passée. Si ça change → fuite détectée.
+2. **Test "shift invariance"** ✅ livré :
+   `tests/unit/test_lookahead_invariance.py` (iter #87) vérifie sur
+   les 7 indicateurs publics 3 propriétés via 2 helpers
+   (`_assert_no_lookahead_scalar` + `_assert_no_lookahead_klines`) :
+   - **Déterminisme** : deux appels identiques retournent la même
+     valeur byte-pour-byte.
+   - **Non-mutation** : la liste passée n'est pas touchée par la
+     fonction (input integrity).
+   - **Indépendance future** : le résultat sur `values[:t]` reste
+     stable même après un appel intermédiaire sur la série complète
+     `values` (catches tout cache global / état partagé).
 
-3. **Cas spécifique** : les **stop-loss / take-profit** ne doivent jamais
-   être touchés par le close du bar courant. On utilise High/Low du bar
-   suivant le signal.
+   Plus 3 sanity-checks qui construisent des "indicateurs buggés"
+   exprès (mutation, non-déterminisme, future-dépendance) et
+   vérifient que les helpers les attrapent.
 
-4. **Backtest harness checker** : `core/backtest.py` exécute un
-   `_assert_no_lookahead()` au début de chaque run qui :
-   - prend une série, masque les 30 derniers bars
-   - calcule le signal final
-   - démasque, recalcule
-   - assert : décisions identiques → ✅
+3. **Cas spécifique stop-loss / take-profit** : les modules de
+   simulation de fills (`agent/learning/adversarial.py`) prennent
+   explicitement un `execution_bar` qui correspond au **bar suivant**
+   le signal, pas au bar du signal lui-même. Conformité par
+   construction (cf. `apply_adversarial_fill` doc).
 
-**Critère mesurable** : `pytest tests/test_no_lookahead.py` vert sur
-**100 % des modules** qui consomment des séries temporelles.
+4. **Backtest harness checker** : différé jusqu'à l'iter qui livrera
+   l'engine de backtest. La logique du harness sera réutilisable du
+   helper `_assert_no_lookahead_scalar` une fois adaptée.
+
+**Critère mesurable** : ✅ `pytest tests/unit/test_lookahead_invariance.py`
+vert sur les 7 indicateurs publics du module
+`agent/perception/indicators.py`. Modules régime / corrélation /
+tradability restent à couvrir en iter ultérieure (signatures plus
+complexes, à intégrer en élargissant les fixtures du test).
 
 ---
 
-### D2 — Survivorship bias
+### D2 — Survivorship bias — ✅ module livré (iter #89)
 
 **Règle** : pour un backtest qui démarre le 2024-01-01, l'univers de
 coins est **celui qui existait à cette date**, pas celui d'aujourd'hui.
 
-**Mise en œuvre** :
+**Mise en œuvre** (livrée iter #89) :
 
-1. **Snapshot d'univers** : table `coin_universe_snapshots(date, symbols)`
-   avec une entrée par mois minimum.
-2. **API backtest** : `run_backtest(start, end, universe=universe_at(start))`.
-3. **Refus du backtest** si l'univers passé n'est pas disponible (pas de
-   reconstruction post-hoc).
+1. **Snapshot d'univers** ✅ : `infra/coin_universe_snapshot.py`
+   livre :class:`CoinEntry` (symbol + market_cap_rank),
+   :class:`CoinUniverseSnapshot` (snapshot_date_ms + entries +
+   captured_at_ms + content_hash SHA-256), ainsi que les fonctions
+   :func:`save_universe_snapshot` (atomique, JSONL) et
+   :func:`load_universe_snapshot` (parse + verify hash).
+   La capture mensuelle à minimum reste une décision opérationnelle
+   à câbler dans l'iter ultérieure quand le data_ingestion live
+   sera prêt.
+2. **API anti-bias** ✅ : :func:`universe_at(snapshot_date_ms,
+   snapshots)` retourne le snapshot le plus récent ≤ date — exactement
+   ce que doc 11 §D2 demande pour bloquer la reconstruction post-hoc.
+   Pure function, ordre d'input indifférent.
+3. **Refus du backtest** : :func:`universe_at` retourne ``None``
+   quand aucun snapshot ne qualifie. Le caller MUST traiter ce ``None``
+   comme un hard error (refus du backtest), conformément au doc.
+   Le branchement orchestrator suit dans l'iter qui livrera l'engine.
 
-**Critère mesurable** : tout backtest produit un header listant les N
-coins de l'univers + leur date d'ajout.
+Le format de fichier réutilise les exceptions
+:class:`SnapshotFormatError` / :class:`SnapshotIntegrityError` de
+:mod:`infra.data_snapshot` (DRY ; même vocabulaire pour les snapshots
+OHLCV et univers).
+
+**Critère mesurable** : ✅ 30 tests pytest verts couvrant compute_hash
++ save/load round-trip + tampering + format errors + universe_at
+query (empty, no qualifying, exact match, latest wins, skips future).
+Le branchement live (orchestrator forme un header listant N coins
++ leur date) reste pour iter ultérieur.
 
 ---
 
-### D3 — Bougies corrompues
+### D3 — Bougies corrompues — ✅ module livré (iter #86)
 
-**Détection** : `core/data_quality.py` (à créer) applique 5 tests à
-chaque bougie reçue :
+**Détection** : `infra/data_quality.py` (livré iter #86) applique 5 tests
+à chaque bougie reçue via :func:`check_bar_quality` :
 
-| Test | Condition de rejet |
-|---|---|
-| Volume nul + range non nul | suspicieux, flag `flat_volume` |
-| High < Low | corruption garantie, **rejet dur** |
-| Close hors [Low, High] | corruption garantie, **rejet dur** |
-| Range > 50× ATR_30 | spike anormal, flag `outlier_range` |
-| Δt avec bar précédent ≠ timeframe attendu | série désalignée, flag `time_gap` |
+| Test | Condition de rejet | Flag enum |
+|---|---|---|
+| Volume nul + range non nul | suspicieux, warning | `FLAT_VOLUME` |
+| High < Low | corruption garantie, **rejet dur** | `INVALID_HIGH_LOW` |
+| Close hors [Low, High] | corruption garantie, **rejet dur** | `CLOSE_OUT_OF_RANGE` |
+| Range > 50× ATR_N | spike anormal, warning | `OUTLIER_RANGE` |
+| Δt avec bar précédent ≠ timeframe attendu | série désalignée, warning | `TIME_GAP` |
 
 **Politique** : flags warning → continuer mais logger ; rejet dur →
-abandonner le cycle, retry suivant.
+abandonner le cycle, retry suivant. Encodé dans
+:attr:`BarQualityReport.should_reject` (HARD reject ssi un flag du
+sous-ensemble ``{INVALID_HIGH_LOW, CLOSE_OUT_OF_RANGE}``).
 
-**Critère mesurable** : audit log contient ≥ 1 événement
-`bar_quality_warning` par mois (preuve que la détection tourne et
-n'est pas zombie).
-
----
-
-### D4 — Bougies manquantes
-
-**Politique** : aucune interpolation silencieuse.
-
-**Mise en œuvre** :
-
-1. À la réception d'une série de N bars, on vérifie que `len(series)`
-   correspond à `(end - start) / timeframe`.
-2. Si manquantes :
-   - **< 5 % de la série** : interpolation linéaire **avec flag**
-     `data_quality: interpolated_X_bars` joint au signal résultant.
-   - **≥ 5 % de la série** : **rejet du cycle**, attente du suivant.
-3. Le flag est propagé dans `audit_log` et empêche tout vote ensemble
-   strong.
-
-**Critère mesurable** : 0 cycle sans `data_quality` field rempli en
-audit (même valeur "ok" doit être présente).
+**Critère mesurable** : ✅ module livré + 40 tests pytest verts.
+Branchement dans le data_ingestion path de l'orchestrator reste pour
+un iter ultérieur (R2 — une variable à la fois).
 
 ---
 
-### D5 — Timezone mismatch
+### D4 — Bougies manquantes — ✅ module livré (iter #86)
+
+**Politique** : aucune interpolation silencieuse. Encodée dans
+:func:`infra.data_quality.check_history_completeness` (livré iter #86).
+
+**Mise en œuvre** (livrée) :
+
+1. ``check_history_completeness(n_received, n_expected, tolerance)``
+   compare le cardinal reçu vs attendu et calcule
+   ``missing_pct = (expected - received) / expected``.
+2. Politique :
+   - **< 5 % de la série** : ``should_interpolate=True``, flag
+     ``missing_X_bars`` propagé pour audit. Caller responsable de
+     l'interpolation linéaire (la fonction d'interpolation viendra
+     en iter ultérieure).
+   - **≥ 5 % de la série** : ``should_reject=True``, le caller doit
+     skipper le cycle.
+3. Edge case ``n_expected == 0`` : trivialement complet (pas de
+   division par zéro). Edge case ``n_received > n_expected``
+   (off-by-one fetch) : ``missing_pct`` clampé à 0, pas de reject.
+
+**Critère mesurable** : ✅ module livré + tests pytest verts (incl.
+threshold 5 % strict, clamp >n_expected, validation arguments).
+Branchement live au data_ingestion path reste pour iter ultérieure.
+
+---
+
+### D5 — Timezone mismatch — ✅ livré (iter #85)
 
 **Règle** : tout timestamp dans le code, la DB, les logs, les
 notifications est en **UTC**. Conversion en locale uniquement à
 l'affichage UI final.
 
-**Mise en œuvre** :
+**Mise en œuvre** (livrée iter #85) :
 
-1. SQLite : tous les `executed_at`, `closed_at` stockés en
-   `datetime.utcnow().isoformat() + "Z"`.
-2. Linter de code (à ajouter) : ban de `datetime.now()` sans
-   `timezone.utc`, ban de `datetime.fromtimestamp()` sans `, tz=UTC`.
-3. Tests pytest : un test global `test_no_naive_datetime.py` qui scanne
-   le code source pour les patterns interdits.
+1. SQLite : tous les `executed_at`, `closed_at` stockés en epoch
+   seconds UTC (`int(time.time())`) — voir
+   `agent/execution/position_tracker.py` et `infra/audit.py`.
+   Note : la rédaction historique du doc parle de
+   `datetime.utcnow().isoformat() + "Z"` ; la stack actuelle a
+   pivoté vers epoch int qui est trivialement timezone-aware
+   (pas de fuseau possible) et plus économe à indexer.
+2. **Linter de code** : `ruff DTZ` activé dans
+   `pyproject.toml` (cf. ligne `"DTZ"` dans `[tool.ruff.lint] select`).
+   Bloque au lint-time `datetime.now()` / `utcnow()` /
+   `fromtimestamp()` sans argument `tz=`.
+3. **Test pytest scanner** : `tests/unit/test_no_naive_datetime.py`
+   parse en AST tous les fichiers sous `src/emeraude/` et lève
+   AssertionError sur tout pattern interdit, **sans échappatoire
+   `# noqa`** (defense in depth vs ruff). Couvre `datetime.now()`,
+   `datetime.utcnow()`, `datetime.fromtimestamp()`. Patterns plus
+   subtils (`fromisoformat` sur string naive, `combine` avec time
+   sans tzinfo) restent à couvrir en iter ultérieure si besoin.
 
-**Critère mesurable** : test pytest vert.
+**Critère mesurable** : ✅ test pytest vert. Iter #85 a confirmé
+les 2 seuls usages actuels (`journal_types.py:185` +
+`tradability.py:226`) — tous deux passent `tz=UTC`.
 
 ---
 
-### D6 — Data revision (Binance corrige a posteriori)
+### D6 — Data revision (Binance corrige a posteriori) — ✅ module livré (iter #88)
 
 **Réalité** : très rare en spot mais possible (correction de bougie
 suite à un rollback exchange).
 
 **Politique** : pour les décisions de trading **live**, on prend la
 donnée à T comme référence définitive. Pour les **backtests
-reproductibles**, on snapshote la donnée :
+reproductibles**, on snapshote la donnée.
 
-1. `core/data_snapshot.py` (à créer) : à chaque téléchargement OHLCV,
-   on sauvegarde dans `data/snapshots/<symbol>_<date>_<hash>.jsonl`.
-2. Re-run de backtest = re-charge le snapshot, pas re-fetch Binance.
-3. Hash SHA-256 du snapshot loggé dans le rapport de backtest pour
-   prouver que deux runs ont utilisé la **même donnée bit-à-bit**.
+**Mise en œuvre** (livrée iter #88) :
 
-**Critère mesurable** : 2 runs successifs du même backtest → résultats
-identiques au cent près.
+1. `infra/data_snapshot.py` ✅ livré :
+   - :class:`KlineSnapshot` dataclass immutable (symbol, interval,
+     period bounds, klines, captured_at_ms, content_hash).
+   - :func:`make_snapshot` constructor qui calcule le hash.
+   - :func:`save_snapshot(path)` : écriture atomique JSONL (tmp +
+     rename) — header JSON + une ligne Binance-positional par kline.
+   - :func:`load_snapshot(path)` : parse + recompute hash + verify ;
+     :class:`SnapshotIntegrityError` si mismatch.
+   - :class:`SnapshotFormatError` distincte pour les problèmes
+     structurels (JSON invalide, champ manquant, type incorrect,
+     n_klines incohérent, version inconnue).
+2. **Hash canonique** : pipe-séparé sur les fields kline avec
+   ``str(Decimal)`` pour préserver l'exactitude. Indépendant du
+   formatting JSON sur disque — deux fichiers avec layout différent
+   mais content identique produisent le même hash.
+3. Le branchement live (re-charge du snapshot pour re-run de
+   backtest, hash loggé dans le rapport) reste pour l'iter qui
+   livrera l'engine de backtest. R2 — une variable à la fois.
+
+**Critère mesurable** : ✅ 23 tests pytest verts couvrant round-trip
+(precision Decimal préservée, atomic write, empty klines), détection
+de tampering (kline modifié -> SnapshotIntegrityError, kline ajouté/
+retiré -> SnapshotFormatError), erreurs de format (JSON invalide,
+field manquant, type incorrect, version mismatch), fichier inexistant.
+
+---
+
+## 3.5 Composition cycle-level — service ``data_ingestion_guard`` (iter #90)
+
+Les modules infra D3 + D4 (iter #86) sont des **fonctions pures** au
+niveau bar / série. Iter #90 livre le service-level
+:mod:`emeraude.services.data_ingestion_guard` qui les compose dans
+le workflow d'un cycle :
+
+* :func:`validate_and_audit_klines(klines, *, symbol, interval,
+  expected_count, atr_value, expected_dt_ms)` :
+  1. Run :func:`check_history_completeness` (D4).
+  2. Run :func:`check_bar_quality` per kline (D3, 5 checks).
+  3. Aggregate les flags par-bar dans un ``flag_counts`` map.
+  4. Emit **exactement un** audit event ``DATA_INGESTION_COMPLETED``
+     (status ``ok`` ou ``rejected``) avec le payload complet
+     (symbol, interval, n_received, n_expected, missing_pct,
+     bar_quality, status, rejection_reason).
+  5. Retourne un :class:`IngestionReport` avec ``should_reject`` que
+     le caller MUST honorer (skip cycle si True).
+
+* Hard-reject conditions (cascadent) :
+  - empty fetch alors qu'on attendait des bars
+  - completeness ``should_reject`` (>= 5 % bars manquantes)
+  - n'importe quel bar avec un flag du sous-ensemble HARD-reject
+    (``INVALID_HIGH_LOW`` / ``CLOSE_OUT_OF_RANGE``)
+
+* L'invariant doc 11 §5 "0 cycle sans data_quality field rempli" est
+  satisfait par construction : un seul audit row par appel, toujours
+  émis.
+
+**Branchement orchestrator** : reste pour iter ultérieure dédiée
+(R2 — la signature ``CycleReport`` doit évoluer pour propager
+``should_reject`` proprement, et les tests existants d'``auto_trader``
+doivent être ajustés).
+
+**Critère mesurable** : ✅ 17 tests pytest verts couvrant chaque
+chemin (empty fetch ok / reject, clean series, hard rejects, warnings
+only, audit payload shape, flag counts aggregation, helper
+``summarize_flags``).
 
 ---
 

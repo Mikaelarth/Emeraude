@@ -65,6 +65,11 @@ class DashboardSnapshot:
         n_closed_trades: cardinal de l'historique fermé.
         mode: :data:`MODE_PAPER`, :data:`MODE_REAL` ou
             :data:`MODE_UNCONFIGURED`.
+        circuit_breaker_state: état courant du Circuit Breaker
+            (``HEALTHY`` / ``WARNING`` / ``TRIGGERED`` / ``FROZEN``).
+            Iter #82 : surfacé pour afficher le banner d'arrêt
+            d'urgence sur le Dashboard. Le user voit l'état du bot
+            sans avoir à naviguer. Anti-règle A1 : pas d'état caché.
     """
 
     capital_quote: Decimal | None
@@ -72,6 +77,7 @@ class DashboardSnapshot:
     cumulative_pnl: Decimal
     n_closed_trades: int
     mode: str
+    circuit_breaker_state: str
 
 
 # ─── Labels (formatted strings) ────────────────────────────────────────────

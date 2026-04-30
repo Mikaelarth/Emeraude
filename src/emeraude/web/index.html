@@ -8,6 +8,8 @@
 
     <!--
     Iter #78 — Vue 3 + Vuetify Dashboard.
+    Iter #79 — Multi-page (Dashboard / Journal / Config) avec
+    ``v-window`` ; le ``v-bottom-navigation`` pilote la tab active.
     Cf. ADR-0004 : remplacement de la couche Kivy par une WebView qui
     consomme un serveur HTTP Python local. Pas de build step (Vite,
     npm) — on charge Vue + Vuetify depuis cdn.jsdelivr.net via les
@@ -50,6 +52,33 @@
             line-height: 1.1;
             letter-spacing: -0.01em;
         }
+
+        /* Journal row : the time column is fixed-width so the event
+           type aligns visually across rows of varying length. */
+        .journal-time {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 13px;
+            min-width: 72px;
+            color: rgba(237, 240, 238, 0.7);
+        }
+        .journal-summary {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 12px;
+            color: rgba(237, 240, 238, 0.55);
+            word-break: break-all;
+        }
+
+        /* Config rows : key/value table with the value right-aligned and
+           wrapping naturally for long paths. */
+        .config-key {
+            color: rgba(237, 240, 238, 0.7);
+        }
+        .config-value {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 13px;
+            text-align: right;
+            word-break: break-all;
+        }
     </style>
 </head>
 <body>
@@ -57,10 +86,10 @@
         <v-app theme="dark">
             <!-- ─── Top App Bar ────────────────────────────────────────── -->
             <v-app-bar density="comfortable" color="background">
-                <v-app-bar-title class="font-weight-bold">Emeraude</v-app-bar-title>
+                <v-app-bar-title class="font-weight-bold">{{ pageTitle }}</v-app-bar-title>
                 <template v-slot:append>
                     <v-chip
-                        v-if="snapshot"
+                        v-if="dashboardSnapshot"
                         :color="modeChipColor"
                         variant="flat"
                         size="small"
@@ -74,81 +103,1153 @@
 
             <!-- ─── Main scrollable content ──────────────────────────────── -->
             <v-main>
-                <!-- Loading state -->
-                <v-container v-if="!snapshot && !error" class="d-flex justify-center align-center" style="min-height: 60vh;">
-                    <v-progress-circular indeterminate color="primary" size="64"></v-progress-circular>
-                </v-container>
+                <v-window v-model="activeTab" :touch="false">
 
-                <!-- Error state -->
-                <v-container v-else-if="error" class="pa-4">
-                    <v-alert type="error" variant="tonal" prominent>
-                        <v-alert-title>Connexion au coeur Python impossible</v-alert-title>
-                        <div class="mt-2">{{ error }}</div>
-                    </v-alert>
-                </v-container>
+                    <!-- ═══ Dashboard ═════════════════════════════════════ -->
+                    <v-window-item value="dashboard">
+                        <v-container v-if="!dashboardSnapshot && !dashboardError" class="d-flex justify-center align-center" style="min-height: 60vh;">
+                            <v-progress-circular indeterminate color="primary" size="64"></v-progress-circular>
+                        </v-container>
 
-                <!-- Loaded -->
-                <v-container v-else class="pa-4" style="max-width: 720px;">
-                    <!-- Hero : Capital -->
-                    <v-card class="pa-6 text-center mb-4" elevation="0" rounded="lg" color="surface">
-                        <div class="text-overline text-medium-emphasis">CAPITAL</div>
-                        <div class="hero-metric mt-2">{{ formattedCapital }}</div>
-                    </v-card>
+                        <v-container v-else-if="dashboardError" class="pa-4">
+                            <v-alert type="error" variant="tonal" prominent>
+                                <v-alert-title>Connexion au coeur Python impossible</v-alert-title>
+                                <div class="mt-2">{{ dashboardError }}</div>
+                            </v-alert>
+                        </v-container>
 
-                    <!-- Hero : P&L cumulé -->
-                    <v-card class="pa-6 text-center mb-4" elevation="0" rounded="lg" color="surface">
-                        <div class="text-overline text-medium-emphasis">P&amp;L CUMULÉ</div>
-                        <div :class="['pnl-metric', 'mt-2', pnlColorClass]">{{ formattedPnL }}</div>
-                    </v-card>
+                        <v-container v-else class="pa-4" style="max-width: 720px;">
+                            <v-card class="pa-6 text-center mb-4" elevation="0" rounded="lg" color="surface">
+                                <div class="text-overline text-medium-emphasis">CAPITAL</div>
+                                <div class="hero-metric mt-2">{{ formattedCapital }}</div>
+                            </v-card>
 
-                    <!-- Position actuelle -->
-                    <v-card class="mb-4" elevation="0" rounded="lg" color="surface">
-                        <v-card-title class="d-flex align-center">
-                            <v-icon class="mr-2" color="medium-emphasis">mdi-finance</v-icon>
-                            Position actuelle
-                        </v-card-title>
-                        <v-card-text v-if="!hasOpenPosition" class="text-center pa-6">
-                            <v-icon size="48" color="medium-emphasis">mdi-circle-outline</v-icon>
-                            <div class="text-h6 mt-3">Aucune position ouverte</div>
-                            <div class="text-body-2 text-medium-emphasis mt-2 mx-auto" style="max-width: 360px;">
-                                Le bot scanne le marché en continu et ouvrira une position quand un signal sera validé.
-                            </div>
-                        </v-card-text>
-                        <v-card-text v-else>
-                            <!-- Iter #79 : détails de la position ouverte. -->
-                            <v-list-item
-                                title="Symbole"
-                                :subtitle="snapshot.open_position?.strategy"
-                            ></v-list-item>
-                        </v-card-text>
-                    </v-card>
+                            <v-card class="pa-6 text-center mb-4" elevation="0" rounded="lg" color="surface">
+                                <div class="text-overline text-medium-emphasis">P&amp;L CUMULÉ</div>
+                                <div :class="['pnl-metric', 'mt-2', pnlColorClass]">{{ formattedPnL }}</div>
+                            </v-card>
 
-                    <!-- Statut du bot -->
-                    <v-card class="mb-4" elevation="0" rounded="lg" color="surface">
-                        <v-card-title class="d-flex align-center">
-                            <v-icon class="mr-2" color="medium-emphasis">mdi-pulse</v-icon>
-                            Statut du bot
-                        </v-card-title>
-                        <v-list bg-color="transparent" density="comfortable">
+                            <v-card class="mb-4" elevation="0" rounded="lg" color="surface">
+                                <v-card-title class="d-flex align-center">
+                                    <v-icon class="mr-2" color="medium-emphasis">mdi-finance</v-icon>
+                                    Position actuelle
+                                </v-card-title>
+                                <v-card-text v-if="!hasOpenPosition" class="text-center pa-6">
+                                    <v-icon size="48" color="medium-emphasis">mdi-circle-outline</v-icon>
+                                    <div class="text-h6 mt-3">Aucune position ouverte</div>
+                                    <div class="text-body-2 text-medium-emphasis mt-2 mx-auto" style="max-width: 360px;">
+                                        Le bot scanne le marché en continu et ouvrira une position quand un signal sera validé.
+                                    </div>
+                                </v-card-text>
+                                <v-card-text v-else>
+                                    <v-list-item
+                                        title="Symbole"
+                                        :subtitle="dashboardSnapshot.open_position?.strategy"
+                                    ></v-list-item>
+                                </v-card-text>
+                            </v-card>
+
+                            <v-card class="mb-4" elevation="0" rounded="lg" color="surface">
+                                <v-card-title class="d-flex align-center">
+                                    <v-icon class="mr-2" color="medium-emphasis">mdi-pulse</v-icon>
+                                    Statut du bot
+                                </v-card-title>
+                                <v-list bg-color="transparent" density="comfortable">
+                                    <v-list-item>
+                                        <v-list-item-title>Mode</v-list-item-title>
+                                        <template v-slot:append>
+                                            <v-chip :color="modeChipColor" variant="flat" size="small">
+                                                {{ modeLabel }}
+                                            </v-chip>
+                                        </template>
+                                    </v-list-item>
+                                    <v-divider></v-divider>
+                                    <v-list-item>
+                                        <v-list-item-title>État Circuit Breaker</v-list-item-title>
+                                        <template v-slot:append>
+                                            <v-chip :color="breakerChipColor" variant="tonal" size="small">
+                                                <v-icon start :icon="breakerChipIcon"></v-icon>
+                                                {{ breakerLabel }}
+                                            </v-chip>
+                                        </template>
+                                    </v-list-item>
+                                    <v-divider></v-divider>
+                                    <v-list-item>
+                                        <v-list-item-title>Trades fermés</v-list-item-title>
+                                        <template v-slot:append>
+                                            <span class="text-body-1">{{ dashboardSnapshot.n_closed_trades }}</span>
+                                        </template>
+                                    </v-list-item>
+                                </v-list>
+                            </v-card>
+
+                            <!-- Sécurité — Arrêt d'urgence + reset (iter #82) -->
+                            <v-card class="mb-4" elevation="0" rounded="lg" color="surface">
+                                <v-card-title class="d-flex align-center">
+                                    <v-icon class="mr-2" color="medium-emphasis">mdi-shield-alert-outline</v-icon>
+                                    Sécurité
+                                </v-card-title>
+
+                                <v-card-text v-if="isBreakerHealthy" class="pt-0">
+                                    <p class="text-body-2 text-medium-emphasis">
+                                        L'arrêt d'urgence gèle immédiatement le bot :
+                                        aucune nouvelle position ne sera ouverte tant que
+                                        vous ne réinitialisez pas le breaker.
+                                    </p>
+                                </v-card-text>
+
+                                <v-alert
+                                    v-else
+                                    density="compact"
+                                    type="error"
+                                    variant="tonal"
+                                    icon="mdi-alert-octagon-outline"
+                                    class="mx-4 mb-2"
+                                >
+                                    <v-alert-title class="text-body-2 font-weight-bold">
+                                        Bot arrêté ({{ breakerLabel }})
+                                    </v-alert-title>
+                                    <div class="mt-1 text-caption">
+                                        Aucune nouvelle position ne sera ouverte. Tapez
+                                        <strong>Reprendre l'activité</strong> pour rétablir le
+                                        breaker — le mode courant ({{ modeLabel }}) ne change
+                                        pas, l'A5 protège encore l'éventuel toggle Réel.
+                                    </div>
+                                </v-alert>
+
+                                <v-card-actions class="px-4 pb-4 pt-0 d-flex flex-column" style="align-items: stretch;">
+                                    <v-btn
+                                        v-if="isBreakerHealthy"
+                                        block
+                                        variant="flat"
+                                        color="error"
+                                        prepend-icon="mdi-stop-circle-outline"
+                                        :disabled="emergencyInProgress"
+                                        @click="openEmergencyStopDialog"
+                                    >
+                                        Arrêt d'urgence
+                                    </v-btn>
+                                    <v-btn
+                                        v-else
+                                        block
+                                        variant="flat"
+                                        color="primary"
+                                        prepend-icon="mdi-play-circle-outline"
+                                        :disabled="emergencyInProgress"
+                                        @click="openEmergencyResetDialog"
+                                    >
+                                        Reprendre l'activité
+                                    </v-btn>
+                                </v-card-actions>
+                            </v-card>
+
+                            <!-- Cycle manuel — déclencheur AutoTrader (iter #95) -->
+                            <v-card class="mb-4" elevation="0" rounded="lg" color="surface">
+                                <v-card-title class="d-flex align-center">
+                                    <v-icon class="mr-2" color="medium-emphasis">mdi-play-circle-outline</v-icon>
+                                    Cycle manuel
+                                </v-card-title>
+
+                                <v-card-text class="pt-0">
+                                    <p class="text-body-2 text-medium-emphasis">
+                                        Déclenche un cycle complet (perception, décision,
+                                        exécution). Utile en mode Paper pour tester le
+                                        pipeline et voir une décision arriver dans le
+                                        Journal sans attendre le prochain tick.
+                                    </p>
+                                </v-card-text>
+
+                                <v-alert
+                                    v-if="cycleError"
+                                    density="compact"
+                                    type="error"
+                                    variant="tonal"
+                                    icon="mdi-alert-circle-outline"
+                                    class="mx-4 mb-2"
+                                >
+                                    <v-alert-title class="text-body-2 font-weight-bold">
+                                        Cycle interrompu
+                                    </v-alert-title>
+                                    <div class="mt-1 text-caption">{{ cycleError }}</div>
+                                </v-alert>
+
+                                <v-alert
+                                    v-else-if="lastCycleSummary"
+                                    density="compact"
+                                    :type="lastCycleSummary.should_trade ? 'success' : 'info'"
+                                    variant="tonal"
+                                    :icon="lastCycleSummary.should_trade ? 'mdi-check-circle-outline' : 'mdi-information-outline'"
+                                    class="mx-4 mb-2"
+                                >
+                                    <v-alert-title class="text-body-2 font-weight-bold">
+                                        {{ lastCycleLabel }}
+                                    </v-alert-title>
+                                    <div class="mt-1 text-caption">{{ lastCycleDetail }}</div>
+                                </v-alert>
+
+                                <v-card-actions class="px-4 pb-4 pt-0">
+                                    <v-btn
+                                        block
+                                        variant="flat"
+                                        color="primary"
+                                        prepend-icon="mdi-play-circle-outline"
+                                        :loading="cycleInProgress"
+                                        :disabled="cycleInProgress"
+                                        @click="runCycle"
+                                    >
+                                        Lancer un cycle
+                                    </v-btn>
+                                </v-card-actions>
+                            </v-card>
+                        </v-container>
+                    </v-window-item>
+
+                    <!-- ═══ Journal ═══════════════════════════════════════ -->
+                    <v-window-item value="journal">
+                        <v-container v-if="!journalSnapshot && !journalError" class="d-flex justify-center align-center" style="min-height: 60vh;">
+                            <v-progress-circular indeterminate color="primary" size="64"></v-progress-circular>
+                        </v-container>
+
+                        <v-container v-else-if="journalError" class="pa-4">
+                            <v-alert type="error" variant="tonal" prominent>
+                                <v-alert-title>Lecture du journal impossible</v-alert-title>
+                                <div class="mt-2">{{ journalError }}</div>
+                            </v-alert>
+                        </v-container>
+
+                        <v-container v-else-if="journalSnapshot.total_returned === 0" class="pa-4" style="max-width: 720px;">
+                            <v-card class="pa-6 text-center" elevation="0" rounded="lg" color="surface">
+                                <v-icon size="48" color="medium-emphasis">mdi-format-list-bulleted</v-icon>
+                                <div class="text-h6 mt-3">Aucune décision enregistrée</div>
+                                <div class="text-body-2 text-medium-emphasis mt-2 mx-auto" style="max-width: 360px;">
+                                    Le journal listera ici chaque entrée, sortie ou skip du bot avec sa raison.
+                                </div>
+                            </v-card>
+                        </v-container>
+
+                        <v-container v-else class="pa-4" style="max-width: 720px;">
+                            <v-card elevation="0" rounded="lg" color="surface">
+                                <v-card-title class="d-flex align-center justify-space-between">
+                                    <span class="d-flex align-center">
+                                        <v-icon class="mr-2" color="medium-emphasis">mdi-format-list-bulleted</v-icon>
+                                        Décisions du bot
+                                    </span>
+                                    <v-chip size="small" variant="tonal">
+                                        {{ journalCountLabel }}
+                                    </v-chip>
+                                </v-card-title>
+                                <v-list bg-color="transparent" density="comfortable" lines="two">
+                                    <template v-for="(row, idx) in journalSnapshot.rows" :key="row.event_id">
+                                        <v-divider v-if="idx > 0"></v-divider>
+                                        <v-list-item>
+                                            <template v-slot:prepend>
+                                                <span class="journal-time">{{ row.time_label }}</span>
+                                            </template>
+                                            <v-list-item-title class="text-body-2">
+                                                {{ row.event_type }}
+                                            </v-list-item-title>
+                                            <v-list-item-subtitle v-if="row.summary" class="journal-summary">
+                                                {{ row.summary }}
+                                            </v-list-item-subtitle>
+                                        </v-list-item>
+                                    </template>
+                                </v-list>
+                            </v-card>
+                        </v-container>
+                    </v-window-item>
+
+                    <!-- ═══ Apprentissage (iter #83) ═════════════════════ -->
+                    <v-window-item value="learning">
+                        <v-container v-if="!learningSnapshot && !learningError" class="d-flex justify-center align-center" style="min-height: 60vh;">
+                            <v-progress-circular indeterminate color="primary" size="64"></v-progress-circular>
+                        </v-container>
+
+                        <v-container v-else-if="learningError" class="pa-4">
+                            <v-alert type="error" variant="tonal" prominent>
+                                <v-alert-title>Lecture de l'apprentissage impossible</v-alert-title>
+                                <div class="mt-2">{{ learningError }}</div>
+                            </v-alert>
+                        </v-container>
+
+                        <v-container v-else class="pa-4" style="max-width: 720px;">
+                            <!-- Champion actuel -->
+                            <v-card class="mb-4" elevation="0" rounded="lg" color="surface">
+                                <v-card-title class="d-flex align-center">
+                                    <v-icon class="mr-2" color="medium-emphasis">mdi-trophy-outline</v-icon>
+                                    Champion actuel
+                                </v-card-title>
+
+                                <v-card-text v-if="!learningSnapshot.champion" class="text-center pa-6">
+                                    <v-icon size="48" color="medium-emphasis">mdi-trophy-broken</v-icon>
+                                    <div class="text-h6 mt-3">Aucun champion promu</div>
+                                    <div class="text-body-2 text-medium-emphasis mt-2 mx-auto" style="max-width: 360px;">
+                                        Le bot promeut un champion une fois qu'un walk-forward
+                                        positif est mesuré. Avant ça, il observe sans engager.
+                                    </div>
+                                </v-card-text>
+
+                                <template v-else>
+                                    <v-list bg-color="transparent" density="comfortable">
+                                        <v-list-item>
+                                            <v-list-item-title class="config-key">État</v-list-item-title>
+                                            <template v-slot:append>
+                                                <v-chip :color="championChipColor" variant="tonal" size="small">
+                                                    {{ championStateLabel }}
+                                                </v-chip>
+                                            </template>
+                                        </v-list-item>
+                                        <v-divider></v-divider>
+                                        <v-list-item>
+                                            <v-list-item-title class="config-key">Identifiant</v-list-item-title>
+                                            <v-list-item-subtitle class="config-value mt-1">
+                                                {{ learningSnapshot.champion.champion_id }}
+                                            </v-list-item-subtitle>
+                                        </v-list-item>
+                                        <v-divider></v-divider>
+                                        <v-list-item>
+                                            <v-list-item-title class="config-key">Sharpe walk-forward</v-list-item-title>
+                                            <template v-slot:append>
+                                                <span class="config-value">{{ formattedSharpeWalkForward }}</span>
+                                            </template>
+                                        </v-list-item>
+                                        <v-divider></v-divider>
+                                        <v-list-item>
+                                            <v-list-item-title class="config-key">Sharpe live</v-list-item-title>
+                                            <template v-slot:append>
+                                                <span class="config-value">{{ formattedSharpeLive }}</span>
+                                            </template>
+                                        </v-list-item>
+                                        <v-divider></v-divider>
+                                        <v-list-item>
+                                            <v-list-item-title class="config-key">Promu le</v-list-item-title>
+                                            <template v-slot:append>
+                                                <span class="config-value">{{ formattedPromotedAt }}</span>
+                                            </template>
+                                        </v-list-item>
+                                    </v-list>
+                                    <v-expansion-panels v-if="hasChampionParameters" variant="accordion" class="px-2 pb-2">
+                                        <v-expansion-panel>
+                                            <v-expansion-panel-title class="text-body-2">
+                                                Paramètres ({{ championParameterCount }})
+                                            </v-expansion-panel-title>
+                                            <v-expansion-panel-text>
+                                                <v-list bg-color="transparent" density="compact">
+                                                    <v-list-item
+                                                        v-for="(value, key) in learningSnapshot.champion.parameters"
+                                                        :key="key"
+                                                    >
+                                                        <v-list-item-title class="config-key">{{ key }}</v-list-item-title>
+                                                        <template v-slot:append>
+                                                            <span class="config-value">{{ formatParamValue(value) }}</span>
+                                                        </template>
+                                                    </v-list-item>
+                                                </v-list>
+                                            </v-expansion-panel-text>
+                                        </v-expansion-panel>
+                                    </v-expansion-panels>
+                                </template>
+                            </v-card>
+
+                            <!-- Stratégies (Beta posteriors) -->
+                            <v-card class="mb-4" elevation="0" rounded="lg" color="surface">
+                                <v-card-title class="d-flex align-center">
+                                    <v-icon class="mr-2" color="medium-emphasis">mdi-chart-bar</v-icon>
+                                    Stratégies
+                                </v-card-title>
+                                <v-list bg-color="transparent" density="comfortable">
+                                    <template v-for="(s, idx) in learningSnapshot.strategies" :key="s.name">
+                                        <v-divider v-if="idx > 0"></v-divider>
+                                        <v-list-item>
+                                            <v-list-item-title class="text-body-1">
+                                                {{ formatStrategyName(s.name) }}
+                                            </v-list-item-title>
+                                            <v-list-item-subtitle class="text-caption text-medium-emphasis mt-1">
+                                                {{ formatStrategyTradesLabel(s.n_trades) }}
+                                                <span v-if="s.n_trades === 0"> — données insuffisantes</span>
+                                            </v-list-item-subtitle>
+                                            <template v-slot:append>
+                                                <v-chip
+                                                    :color="strategyChipColor(s)"
+                                                    variant="tonal"
+                                                    size="small"
+                                                >
+                                                    {{ formatWinRate(s.win_rate) }}
+                                                </v-chip>
+                                            </template>
+                                        </v-list-item>
+                                    </template>
+                                </v-list>
+                            </v-card>
+
+                            <v-alert
+                                density="compact"
+                                type="info"
+                                variant="tonal"
+                                icon="mdi-flask-outline"
+                            >
+                                Les graphiques d'évolution + le détecteur de régime arrivent
+                                dans une iter ultérieure. La couche bandit + lifecycle est
+                                déjà active : les chiffres ci-dessus sont la lecture
+                                directe de la base SQLite.
+                            </v-alert>
+                        </v-container>
+                    </v-window-item>
+
+                    <!-- ═══ Performance (iter #84) ═══════════════════════ -->
+                    <v-window-item value="performance">
+                        <v-container v-if="!performanceSnapshot && !performanceError" class="d-flex justify-center align-center" style="min-height: 60vh;">
+                            <v-progress-circular indeterminate color="primary" size="64"></v-progress-circular>
+                        </v-container>
+
+                        <v-container v-else-if="performanceError" class="pa-4">
+                            <v-alert type="error" variant="tonal" prominent>
+                                <v-alert-title>Lecture des performances impossible</v-alert-title>
+                                <div class="mt-2">{{ performanceError }}</div>
+                            </v-alert>
+                        </v-container>
+
+                        <v-container v-else-if="!performanceSnapshot.has_data" class="pa-4" style="max-width: 720px;">
+                            <v-card class="pa-6 text-center" elevation="0" rounded="lg" color="surface">
+                                <v-icon size="48" color="medium-emphasis">mdi-chart-line</v-icon>
+                                <div class="text-h6 mt-3">Aucun trade fermé</div>
+                                <div class="text-body-2 text-medium-emphasis mt-2 mx-auto" style="max-width: 360px;">
+                                    Le rapport de performance s'active dès le premier trade
+                                    fermé du bot. Les 12 métriques R12 (Sharpe, Sortino,
+                                    Calmar, profit factor, etc.) seront calculées automatiquement.
+                                </div>
+                            </v-card>
+                        </v-container>
+
+                        <v-container v-else class="pa-4" style="max-width: 720px;">
+                            <!-- Hero : expectancy (la métrique unique la plus importante) -->
+                            <v-card class="pa-6 text-center mb-4" elevation="0" rounded="lg" color="surface">
+                                <div class="text-overline text-medium-emphasis">EXPECTANCY R / TRADE</div>
+                                <div :class="['pnl-metric', 'mt-2', expectancyColorClass]">
+                                    {{ formattedExpectancy }}
+                                </div>
+                                <div class="text-caption text-medium-emphasis mt-1">
+                                    {{ formattedTradesLabel }}
+                                </div>
+                            </v-card>
+
+                            <!-- Win / Loss split -->
+                            <v-card class="mb-4" elevation="0" rounded="lg" color="surface">
+                                <v-card-title class="d-flex align-center">
+                                    <v-icon class="mr-2" color="medium-emphasis">mdi-scale-balance</v-icon>
+                                    Distribution
+                                </v-card-title>
+                                <v-list bg-color="transparent" density="comfortable">
+                                    <v-list-item>
+                                        <v-list-item-title class="config-key">Win rate</v-list-item-title>
+                                        <template v-slot:append>
+                                            <v-chip :color="winRateChipColor" variant="tonal" size="small">
+                                                {{ formattedWinRate }}
+                                            </v-chip>
+                                        </template>
+                                    </v-list-item>
+                                    <v-divider></v-divider>
+                                    <v-list-item>
+                                        <v-list-item-title class="config-key">Trades gagnants / perdants</v-list-item-title>
+                                        <template v-slot:append>
+                                            <span class="config-value">
+                                                {{ performanceSnapshot.n_wins }}/{{ performanceSnapshot.n_losses }}
+                                            </span>
+                                        </template>
+                                    </v-list-item>
+                                    <v-divider></v-divider>
+                                    <v-list-item>
+                                        <v-list-item-title class="config-key">R moyen sur gain</v-list-item-title>
+                                        <template v-slot:append>
+                                            <span class="config-value text-success">
+                                                {{ formattedAvgWin }}
+                                            </span>
+                                        </template>
+                                    </v-list-item>
+                                    <v-divider></v-divider>
+                                    <v-list-item>
+                                        <v-list-item-title class="config-key">R moyen sur perte</v-list-item-title>
+                                        <template v-slot:append>
+                                            <span class="config-value text-error">
+                                                -{{ formattedAvgLoss }}
+                                            </span>
+                                        </template>
+                                    </v-list-item>
+                                </v-list>
+                            </v-card>
+
+                            <!-- Risk-adjusted metrics -->
+                            <v-card class="mb-4" elevation="0" rounded="lg" color="surface">
+                                <v-card-title class="d-flex align-center">
+                                    <v-icon class="mr-2" color="medium-emphasis">mdi-finance</v-icon>
+                                    Ajusté du risque
+                                </v-card-title>
+                                <v-list bg-color="transparent" density="comfortable">
+                                    <v-list-item>
+                                        <v-list-item-title class="config-key">Sharpe</v-list-item-title>
+                                        <v-list-item-subtitle class="text-caption text-medium-emphasis mt-1">
+                                            mean(R) / std(R) per-trade
+                                        </v-list-item-subtitle>
+                                        <template v-slot:append>
+                                            <span class="config-value">{{ formattedSharpe }}</span>
+                                        </template>
+                                    </v-list-item>
+                                    <v-divider></v-divider>
+                                    <v-list-item>
+                                        <v-list-item-title class="config-key">Sortino</v-list-item-title>
+                                        <v-list-item-subtitle class="text-caption text-medium-emphasis mt-1">
+                                            mean(R) / downside_std(R)
+                                        </v-list-item-subtitle>
+                                        <template v-slot:append>
+                                            <span class="config-value">{{ formattedSortino }}</span>
+                                        </template>
+                                    </v-list-item>
+                                    <v-divider></v-divider>
+                                    <v-list-item>
+                                        <v-list-item-title class="config-key">Calmar</v-list-item-title>
+                                        <v-list-item-subtitle class="text-caption text-medium-emphasis mt-1">
+                                            sum(R) / max_drawdown
+                                        </v-list-item-subtitle>
+                                        <template v-slot:append>
+                                            <span class="config-value">{{ formattedCalmar }}</span>
+                                        </template>
+                                    </v-list-item>
+                                    <v-divider></v-divider>
+                                    <v-list-item>
+                                        <v-list-item-title class="config-key">Profit Factor</v-list-item-title>
+                                        <v-list-item-subtitle class="text-caption text-medium-emphasis mt-1">
+                                            sum(wins) / |sum(losses)|
+                                        </v-list-item-subtitle>
+                                        <template v-slot:append>
+                                            <span class="config-value">{{ formattedProfitFactor }}</span>
+                                        </template>
+                                    </v-list-item>
+                                    <v-divider></v-divider>
+                                    <v-list-item>
+                                        <v-list-item-title class="config-key">Max Drawdown</v-list-item-title>
+                                        <v-list-item-subtitle class="text-caption text-medium-emphasis mt-1">
+                                            pire peak-to-trough sur la courbe R
+                                        </v-list-item-subtitle>
+                                        <template v-slot:append>
+                                            <span class="config-value text-error">
+                                                -{{ formattedMaxDrawdown }}
+                                            </span>
+                                        </template>
+                                    </v-list-item>
+                                </v-list>
+                            </v-card>
+
+                            <v-alert
+                                density="compact"
+                                type="info"
+                                variant="tonal"
+                                icon="mdi-flask-outline"
+                            >
+                                Ce rapport agrège les <strong>trades réellement fermés</strong>
+                                par le bot (doc 10 R12). Le critère P1.5 « Backtest historique »
+                                reste à venir : il nécessite un simulateur kline → position que
+                                le code ne fournit pas encore (anti-règle A1).
+                            </v-alert>
+                        </v-container>
+                    </v-window-item>
+
+                    <!-- ═══ Config ════════════════════════════════════════ -->
+                    <v-window-item value="config">
+                        <v-container v-if="!configSnapshot && !configError" class="d-flex justify-center align-center" style="min-height: 60vh;">
+                            <v-progress-circular indeterminate color="primary" size="64"></v-progress-circular>
+                        </v-container>
+
+                        <v-container v-else-if="configError" class="pa-4">
+                            <v-alert type="error" variant="tonal" prominent>
+                                <v-alert-title>Lecture de la configuration impossible</v-alert-title>
+                                <div class="mt-2">{{ configError }}</div>
+                            </v-alert>
+                        </v-container>
+
+                        <v-container v-else class="pa-4" style="max-width: 720px;">
+                            <v-card class="mb-4" elevation="0" rounded="lg" color="surface">
+                                <v-card-title class="d-flex align-center">
+                                    <v-icon class="mr-2" color="medium-emphasis">mdi-cog</v-icon>
+                                    Mode et capital
+                                </v-card-title>
+                                <v-list bg-color="transparent" density="comfortable">
+                                    <v-list-item>
+                                        <v-list-item-title class="config-key">Mode actuel</v-list-item-title>
+                                        <template v-slot:append>
+                                            <v-chip :color="modeChipColor" variant="flat" size="small">
+                                                <v-icon start :icon="modeChipIcon"></v-icon>
+                                                {{ configModeLabel }}
+                                            </v-chip>
+                                        </template>
+                                    </v-list-item>
+                                    <v-divider></v-divider>
+                                    <v-list-item>
+                                        <v-list-item-title class="config-key">Capital de référence</v-list-item-title>
+                                        <template v-slot:append>
+                                            <span class="config-value">{{ formattedStartingCapital }}</span>
+                                        </template>
+                                    </v-list-item>
+                                </v-list>
+
+                                <v-card-actions class="px-4 pb-4 pt-2 d-flex flex-column gap-2" style="align-items: stretch;">
+                                    <v-btn
+                                        v-if="!isPaperMode"
+                                        block
+                                        variant="tonal"
+                                        color="warning"
+                                        prepend-icon="mdi-file-document-edit"
+                                        :disabled="toggleInProgress"
+                                        @click="openPaperDialog"
+                                    >
+                                        Repasser en mode Paper
+                                    </v-btn>
+                                    <v-btn
+                                        v-if="!isRealMode"
+                                        block
+                                        variant="flat"
+                                        color="primary"
+                                        prepend-icon="mdi-flash"
+                                        class="mt-2"
+                                        :disabled="toggleInProgress"
+                                        @click="openRealDialog"
+                                    >
+                                        Activer le mode Réel
+                                    </v-btn>
+                                </v-card-actions>
+                            </v-card>
+
+                            <v-card class="mb-4" elevation="0" rounded="lg" color="surface">
+                                <v-card-title class="d-flex align-center">
+                                    <v-icon class="mr-2" color="medium-emphasis">mdi-information</v-icon>
+                                    Système
+                                </v-card-title>
+                                <v-list bg-color="transparent" density="comfortable">
+                                    <v-list-item>
+                                        <v-list-item-title class="config-key">Version</v-list-item-title>
+                                        <template v-slot:append>
+                                            <span class="config-value">v{{ configSnapshot.app_version }}</span>
+                                        </template>
+                                    </v-list-item>
+                                    <v-divider></v-divider>
+                                    <v-list-item>
+                                        <v-list-item-title class="config-key">Événements audit</v-list-item-title>
+                                        <template v-slot:append>
+                                            <span class="config-value">{{ formattedAuditCount }}</span>
+                                        </template>
+                                    </v-list-item>
+                                    <v-divider></v-divider>
+                                    <v-list-item>
+                                        <v-list-item-title class="config-key">Base de données</v-list-item-title>
+                                        <v-list-item-subtitle class="config-value mt-1">
+                                            {{ configSnapshot.db_path }}
+                                        </v-list-item-subtitle>
+                                    </v-list-item>
+                                </v-list>
+                            </v-card>
+
+                            <!-- Scheduler — cycle automatique opt-in (iter #97) -->
+                            <v-card class="mb-4" elevation="0" rounded="lg" color="surface">
+                                <v-card-title class="d-flex align-center">
+                                    <v-icon class="mr-2" color="medium-emphasis">mdi-clock-outline</v-icon>
+                                    Cycle automatique
+                                </v-card-title>
+
+                                <v-card-text v-if="!schedulerSnapshot && !schedulerError" class="text-center pa-6">
+                                    <v-progress-circular indeterminate color="primary" size="32"></v-progress-circular>
+                                </v-card-text>
+
+                                <v-card-text v-else-if="schedulerError" class="pa-4">
+                                    <v-alert type="error" variant="tonal" density="compact">
+                                        {{ schedulerError }}
+                                    </v-alert>
+                                </v-card-text>
+
+                                <template v-else>
+                                    <v-card-text class="pt-0 pb-2">
+                                        <p class="text-body-2 text-medium-emphasis">
+                                            Quand activé, le bot lance automatiquement
+                                            un cycle complet (perception, décision,
+                                            exécution) toutes les
+                                            {{ schedulerIntervalLabel }}. Désactivé par
+                                            défaut — tant que vous n'activez pas le
+                                            cycle automatique, vous gardez le
+                                            contrôle manuel via le bouton
+                                            "Lancer un cycle".
+                                        </p>
+                                    </v-card-text>
+
+                                    <v-list bg-color="transparent" density="comfortable">
+                                        <v-list-item>
+                                            <v-list-item-title class="config-key">Cadence</v-list-item-title>
+                                            <template v-slot:append>
+                                                <span class="config-value">{{ schedulerIntervalLabel }}</span>
+                                            </template>
+                                        </v-list-item>
+                                        <v-divider></v-divider>
+                                        <v-list-item>
+                                            <v-list-item-title class="config-key">Thread serveur</v-list-item-title>
+                                            <template v-slot:append>
+                                                <v-chip :color="schedulerThreadChipColor" variant="tonal" size="small">
+                                                    {{ schedulerThreadLabel }}
+                                                </v-chip>
+                                            </template>
+                                        </v-list-item>
+                                    </v-list>
+
+                                    <v-alert
+                                        v-if="schedulerSaveError"
+                                        density="compact"
+                                        type="error"
+                                        variant="tonal"
+                                        icon="mdi-alert-circle-outline"
+                                        class="mx-4 mb-2"
+                                    >
+                                        {{ schedulerSaveError }}
+                                    </v-alert>
+
+                                    <v-card-actions class="px-4 pb-4 pt-0">
+                                        <v-btn
+                                            v-if="!schedulerSnapshot.enabled"
+                                            block
+                                            variant="flat"
+                                            color="primary"
+                                            prepend-icon="mdi-play-circle-outline"
+                                            :loading="schedulerInProgress"
+                                            :disabled="schedulerInProgress"
+                                            @click="enableScheduler"
+                                        >
+                                            Activer le cycle automatique
+                                        </v-btn>
+                                        <v-btn
+                                            v-else
+                                            block
+                                            variant="tonal"
+                                            color="warning"
+                                            prepend-icon="mdi-pause-circle-outline"
+                                            :loading="schedulerInProgress"
+                                            :disabled="schedulerInProgress"
+                                            @click="disableScheduler"
+                                        >
+                                            Désactiver le cycle automatique
+                                        </v-btn>
+                                    </v-card-actions>
+                                </template>
+                            </v-card>
+
+                            <v-card class="mb-4" elevation="0" rounded="lg" color="surface">
+                                <v-card-title class="d-flex align-center">
+                                    <v-icon class="mr-2" color="medium-emphasis">mdi-key-variant</v-icon>
+                                    Connexion Binance
+                                </v-card-title>
+
+                                <!-- Loading credentials status -->
+                                <v-card-text v-if="!credentialsStatus && !credentialsError" class="text-center pa-6">
+                                    <v-progress-circular indeterminate color="primary" size="32"></v-progress-circular>
+                                </v-card-text>
+
+                                <!-- Error reading status -->
+                                <v-card-text v-else-if="credentialsError" class="pa-4">
+                                    <v-alert type="error" variant="tonal" density="compact">
+                                        {{ credentialsError }}
+                                    </v-alert>
+                                </v-card-text>
+
+                                <template v-else>
+                                    <!-- Passphrase warning -->
+                                    <v-card-text v-if="!credentialsStatus.passphrase_available" class="px-4 pt-2 pb-0">
+                                        <v-alert
+                                            type="warning"
+                                            variant="tonal"
+                                            density="compact"
+                                            icon="mdi-shield-alert-outline"
+                                        >
+                                            <v-alert-title class="text-body-2 font-weight-bold">
+                                                Variable EMERAUDE_API_PASSPHRASE absente
+                                            </v-alert-title>
+                                            <div class="mt-1 text-caption">
+                                                Cette variable d'environnement est requise pour
+                                                chiffrer vos clés API. Définissez-la avant de
+                                                relancer l'app — la migration vers Android
+                                                KeyStore (E7) la rendra obsolète.
+                                            </div>
+                                        </v-alert>
+                                    </v-card-text>
+
+                                    <!-- Stored credentials status -->
+                                    <v-list
+                                        v-if="credentialsStatus.api_key_set || credentialsStatus.api_secret_set"
+                                        bg-color="transparent"
+                                        density="comfortable"
+                                    >
+                                        <v-list-item>
+                                            <v-list-item-title class="config-key">Clé API</v-list-item-title>
+                                            <template v-slot:append>
+                                                <span class="config-value">{{ apiKeyDisplay }}</span>
+                                            </template>
+                                        </v-list-item>
+                                        <v-divider></v-divider>
+                                        <v-list-item>
+                                            <v-list-item-title class="config-key">Secret API</v-list-item-title>
+                                            <template v-slot:append>
+                                                <v-chip
+                                                    :color="credentialsStatus.api_secret_set ? 'success' : 'medium-emphasis'"
+                                                    variant="tonal"
+                                                    size="small"
+                                                >
+                                                    {{ credentialsStatus.api_secret_set ? 'Défini' : 'Non défini' }}
+                                                </v-chip>
+                                            </template>
+                                        </v-list-item>
+                                    </v-list>
+
+                                    <v-card-text v-else class="text-center pa-6">
+                                        <v-icon size="48" color="medium-emphasis">mdi-key-outline</v-icon>
+                                        <div class="text-h6 mt-3">Aucune clé enregistrée</div>
+                                        <div class="text-body-2 text-medium-emphasis mt-2 mx-auto" style="max-width: 360px;">
+                                            Saisissez vos clés API Binance ci-dessous. Elles
+                                            sont chiffrées (PBKDF2) avant stockage et ne sont
+                                            jamais affichées en clair.
+                                        </div>
+                                    </v-card-text>
+
+                                    <!-- Form to save credentials -->
+                                    <v-card-text v-if="!credentialsStatus.api_key_set" class="px-4 pt-0 pb-2">
+                                        <v-text-field
+                                            v-model="apiKeyInput"
+                                            label="Clé API"
+                                            :type="showApiKey ? 'text' : 'password'"
+                                            variant="outlined"
+                                            density="compact"
+                                            autocomplete="off"
+                                            spellcheck="false"
+                                            class="mb-2"
+                                            :append-inner-icon="showApiKey ? 'mdi-eye-off' : 'mdi-eye'"
+                                            @click:append-inner="showApiKey = !showApiKey"
+                                        ></v-text-field>
+                                        <v-text-field
+                                            v-model="apiSecretInput"
+                                            label="Secret API"
+                                            :type="showApiSecret ? 'text' : 'password'"
+                                            variant="outlined"
+                                            density="compact"
+                                            autocomplete="off"
+                                            spellcheck="false"
+                                            :append-inner-icon="showApiSecret ? 'mdi-eye-off' : 'mdi-eye'"
+                                            @click:append-inner="showApiSecret = !showApiSecret"
+                                        ></v-text-field>
+                                        <v-alert
+                                            v-if="credentialsSaveError"
+                                            type="error"
+                                            variant="tonal"
+                                            density="compact"
+                                            class="mt-2"
+                                        >
+                                            {{ credentialsSaveError }}
+                                        </v-alert>
+                                    </v-card-text>
+
+                                    <v-card-actions class="px-4 pb-4 pt-0 d-flex flex-column" style="align-items: stretch;">
+                                        <v-btn
+                                            v-if="!credentialsStatus.api_key_set"
+                                            block
+                                            variant="flat"
+                                            color="primary"
+                                            prepend-icon="mdi-content-save-outline"
+                                            :disabled="!canSaveCredentials"
+                                            :loading="credentialsSaveInProgress"
+                                            @click="saveCredentials"
+                                        >
+                                            Enregistrer les clés
+                                        </v-btn>
+                                        <v-btn
+                                            v-if="credentialsStatus.api_key_set"
+                                            block
+                                            variant="text"
+                                            color="error"
+                                            prepend-icon="mdi-trash-can-outline"
+                                            :disabled="credentialsSaveInProgress"
+                                            @click="openClearCredentialsDialog"
+                                        >
+                                            Supprimer les clés
+                                        </v-btn>
+                                    </v-card-actions>
+                                </template>
+                            </v-card>
+                        </v-container>
+                    </v-window-item>
+
+                </v-window>
+            </v-main>
+
+            <!-- ═══ Dialog : passage Paper -> Réel (anti-règle A5) ═══════════ -->
+            <v-dialog
+                v-model="showRealDialog"
+                max-width="460"
+                persistent
+                scrollable
+            >
+                <v-card rounded="lg" color="surface">
+                    <v-card-title class="d-flex align-center text-warning">
+                        <v-icon start>mdi-flash-alert</v-icon>
+                        Activation du mode Réel
+                    </v-card-title>
+                    <v-card-text>
+                        <p class="mb-3">
+                            Vous êtes sur le point de basculer le bot en
+                            <strong>argent réel</strong>. Toute décision du bot
+                            engagera votre solde Binance.
+                        </p>
+                        <v-list bg-color="transparent" density="compact" class="mb-2">
                             <v-list-item>
-                                <v-list-item-title>Mode</v-list-item-title>
+                                <v-list-item-title class="config-key">Capital de référence</v-list-item-title>
+                                <template v-slot:append>
+                                    <span class="config-value">{{ formattedStartingCapital }}</span>
+                                </template>
+                            </v-list-item>
+                            <v-list-item>
+                                <v-list-item-title class="config-key">Mode actuel</v-list-item-title>
                                 <template v-slot:append>
                                     <v-chip :color="modeChipColor" variant="flat" size="small">
-                                        {{ modeLabel }}
+                                        {{ configModeLabel }}
                                     </v-chip>
                                 </template>
                             </v-list-item>
-                            <v-divider></v-divider>
-                            <v-list-item>
-                                <v-list-item-title>Trades fermés</v-list-item-title>
-                                <template v-slot:append>
-                                    <span class="text-body-1">{{ snapshot.n_closed_trades }}</span>
-                                </template>
-                            </v-list-item>
                         </v-list>
-                    </v-card>
-                </v-container>
-            </v-main>
+                        <v-alert
+                            density="compact"
+                            type="warning"
+                            variant="tonal"
+                            class="mt-2"
+                        >
+                            Le bouton <strong>Confirmer</strong> sera actif après
+                            5 secondes. Tap pour confirmer ; tap Annuler pour
+                            avorter.
+                        </v-alert>
+                        <v-alert
+                            v-if="toggleError"
+                            density="compact"
+                            type="error"
+                            variant="tonal"
+                            class="mt-2"
+                        >
+                            {{ toggleError }}
+                        </v-alert>
+                    </v-card-text>
+                    <v-card-actions class="px-4 pb-4">
+                        <v-spacer></v-spacer>
+                        <v-btn variant="text" :disabled="toggleInProgress" @click="closeRealDialog">
+                            Annuler
+                        </v-btn>
+                        <v-btn
+                            color="primary"
+                            variant="flat"
+                            :disabled="realConfirmDisabled"
+                            :loading="toggleInProgress"
+                            @click="confirmReal"
+                        >
+                            {{ realConfirmLabel }}
+                        </v-btn>
+                    </v-card-actions>
+                </v-card>
+            </v-dialog>
+
+            <!-- ═══ Dialog : retour Réel -> Paper (sécurité acquise) ════════ -->
+            <v-dialog
+                v-model="showPaperDialog"
+                max-width="420"
+                persistent
+            >
+                <v-card rounded="lg" color="surface">
+                    <v-card-title class="d-flex align-center">
+                        <v-icon class="mr-2" color="medium-emphasis">mdi-file-document-edit</v-icon>
+                        Retour en mode Paper
+                    </v-card-title>
+                    <v-card-text>
+                        <p>
+                            Le bot va arrêter de trader en argent réel et
+                            reprendre en simulation Paper. Aucune position
+                            ouverte n'est touchée.
+                        </p>
+                        <v-alert
+                            v-if="toggleError"
+                            density="compact"
+                            type="error"
+                            variant="tonal"
+                            class="mt-2"
+                        >
+                            {{ toggleError }}
+                        </v-alert>
+                    </v-card-text>
+                    <v-card-actions class="px-4 pb-4">
+                        <v-spacer></v-spacer>
+                        <v-btn variant="text" :disabled="toggleInProgress" @click="closePaperDialog">
+                            Annuler
+                        </v-btn>
+                        <v-btn
+                            color="warning"
+                            variant="flat"
+                            :loading="toggleInProgress"
+                            @click="confirmPaper"
+                        >
+                            Confirmer
+                        </v-btn>
+                    </v-card-actions>
+                </v-card>
+            </v-dialog>
+
+            <!-- ═══ Dialog : suppression clés API Binance ════════════════════ -->
+            <v-dialog
+                v-model="showClearCredentialsDialog"
+                max-width="420"
+                persistent
+            >
+                <v-card rounded="lg" color="surface">
+                    <v-card-title class="d-flex align-center text-error">
+                        <v-icon class="mr-2">mdi-trash-can-outline</v-icon>
+                        Supprimer les clés API
+                    </v-card-title>
+                    <v-card-text>
+                        <p>
+                            Les clés API Binance enregistrées vont être
+                            supprimées. Vous devrez les saisir à nouveau pour
+                            que le bot puisse trader. Aucune position ouverte
+                            n'est touchée.
+                        </p>
+                        <v-alert
+                            v-if="credentialsSaveError"
+                            density="compact"
+                            type="error"
+                            variant="tonal"
+                            class="mt-2"
+                        >
+                            {{ credentialsSaveError }}
+                        </v-alert>
+                    </v-card-text>
+                    <v-card-actions class="px-4 pb-4">
+                        <v-spacer></v-spacer>
+                        <v-btn variant="text" :disabled="credentialsSaveInProgress" @click="closeClearCredentialsDialog">
+                            Annuler
+                        </v-btn>
+                        <v-btn
+                            color="error"
+                            variant="flat"
+                            :loading="credentialsSaveInProgress"
+                            @click="clearCredentials"
+                        >
+                            Supprimer
+                        </v-btn>
+                    </v-card-actions>
+                </v-card>
+            </v-dialog>
+
+            <!-- ═══ Dialog : confirmation arrêt d'urgence ════════════════════ -->
+            <v-dialog
+                v-model="showEmergencyStopDialog"
+                max-width="440"
+                persistent
+            >
+                <v-card rounded="lg" color="surface">
+                    <v-card-title class="d-flex align-center text-error">
+                        <v-icon class="mr-2">mdi-stop-circle-outline</v-icon>
+                        Arrêt d'urgence
+                    </v-card-title>
+                    <v-card-text>
+                        <p>
+                            Le Circuit Breaker va passer en
+                            <strong>FROZEN</strong> : aucune nouvelle position
+                            ne sera ouverte par le bot tant que vous n'aurez
+                            pas tapé <strong>Reprendre l'activité</strong>.
+                        </p>
+                        <p class="text-body-2 text-medium-emphasis mt-2">
+                            Les positions actuellement ouvertes ne sont pas
+                            touchées par cette action. Le mode ({{ modeLabel }})
+                            reste tel quel.
+                        </p>
+                        <v-alert
+                            v-if="emergencyError"
+                            density="compact"
+                            type="error"
+                            variant="tonal"
+                            class="mt-2"
+                        >
+                            {{ emergencyError }}
+                        </v-alert>
+                    </v-card-text>
+                    <v-card-actions class="px-4 pb-4">
+                        <v-spacer></v-spacer>
+                        <v-btn variant="text" :disabled="emergencyInProgress" @click="closeEmergencyStopDialog">
+                            Annuler
+                        </v-btn>
+                        <v-btn
+                            color="error"
+                            variant="flat"
+                            :loading="emergencyInProgress"
+                            @click="confirmEmergencyStop"
+                        >
+                            Confirmer l'arrêt
+                        </v-btn>
+                    </v-card-actions>
+                </v-card>
+            </v-dialog>
+
+            <!-- ═══ Dialog : reprise après arrêt d'urgence ══════════════════ -->
+            <v-dialog
+                v-model="showEmergencyResetDialog"
+                max-width="440"
+                persistent
+            >
+                <v-card rounded="lg" color="surface">
+                    <v-card-title class="d-flex align-center">
+                        <v-icon class="mr-2" color="primary">mdi-play-circle-outline</v-icon>
+                        Reprendre l'activité
+                    </v-card-title>
+                    <v-card-text>
+                        <p>
+                            Le Circuit Breaker va revenir en
+                            <strong>HEALTHY</strong>. Le bot pourra à nouveau
+                            ouvrir des positions selon le mode courant
+                            ({{ modeLabel }}).
+                        </p>
+                        <p class="text-body-2 text-medium-emphasis mt-2">
+                            Cette action ne réactive pas le mode Réel toute
+                            seule : tout passage Paper → Réel reste protégé
+                            par le double-tap A5 (5 s).
+                        </p>
+                        <v-alert
+                            v-if="emergencyError"
+                            density="compact"
+                            type="error"
+                            variant="tonal"
+                            class="mt-2"
+                        >
+                            {{ emergencyError }}
+                        </v-alert>
+                    </v-card-text>
+                    <v-card-actions class="px-4 pb-4">
+                        <v-spacer></v-spacer>
+                        <v-btn variant="text" :disabled="emergencyInProgress" @click="closeEmergencyResetDialog">
+                            Annuler
+                        </v-btn>
+                        <v-btn
+                            color="primary"
+                            variant="flat"
+                            :loading="emergencyInProgress"
+                            @click="confirmEmergencyReset"
+                        >
+                            Confirmer
+                        </v-btn>
+                    </v-card-actions>
+                </v-card>
+            </v-dialog>
+
+            <!-- ═══ Snackbar : feedback toggle réussi ═══════════════════════ -->
+            <v-snackbar
+                v-model="showToast"
+                :timeout="3000"
+                color="success"
+                location="top"
+            >
+                {{ toastMessage }}
+            </v-snackbar>
 
             <!-- ─── Bottom Navigation ────────────────────────────────────── -->
             <v-bottom-navigation v-model="activeTab" color="primary" grow>
@@ -156,11 +1257,19 @@
                     <v-icon>mdi-view-dashboard</v-icon>
                     <div>Tableau</div>
                 </v-btn>
-                <v-btn value="journal" disabled>
+                <v-btn value="journal">
                     <v-icon>mdi-format-list-bulleted</v-icon>
                     <div>Journal</div>
                 </v-btn>
-                <v-btn value="config" disabled>
+                <v-btn value="learning">
+                    <v-icon>mdi-brain</v-icon>
+                    <div>IA</div>
+                </v-btn>
+                <v-btn value="performance">
+                    <v-icon>mdi-chart-line</v-icon>
+                    <div>Perf</div>
+                </v-btn>
+                <v-btn value="config">
                     <v-icon>mdi-cog</v-icon>
                     <div>Config</div>
                 </v-btn>
@@ -170,7 +1279,7 @@
 
     <script>
         // ─── Vue 3 + Vuetify 3 setup (no build step) ──────────────────────
-        const { createApp, ref, computed, onMounted, onBeforeUnmount } = Vue;
+        const { createApp, ref, computed, onMounted, onBeforeUnmount, watch } = Vue;
         const { createVuetify } = Vuetify;
 
         // ─── Theme : dark + emerald primary (matches our brand) ─────────
@@ -198,9 +1307,7 @@
 
         // ─── Helpers : format Decimal-as-string from Python core ─────────
         function formatAmount(decimal_str, suffix = ' USDT') {
-            // Python sends Decimal as string to preserve precision.
             if (decimal_str === null || decimal_str === undefined) return '—';
-            // Trim trailing zeros after a decimal point but keep at least 2.
             const num = parseFloat(decimal_str);
             if (Number.isNaN(num)) return '—';
             return num.toFixed(2) + suffix;
@@ -219,78 +1326,857 @@
         const MODE_REAL = 'real';
         const MODE_UNCONFIGURED = 'unconfigured';
 
+        function modeLabelFor(mode) {
+            if (mode === MODE_PAPER) return 'Paper';
+            if (mode === MODE_REAL) return 'Réel';
+            if (mode === MODE_UNCONFIGURED) return 'Non configuré';
+            return '—';
+        }
+
         // ─── Root component ──────────────────────────────────────────────
         const App = {
             setup() {
-                const snapshot = ref(null);
-                const error = ref(null);
+                // Per-tab snapshots + errors. Each tab fetches lazily on
+                // activation ; the dashboard additionally polls every 5s
+                // because it surfaces real-time capital + position state.
+                const dashboardSnapshot = ref(null);
+                const dashboardError = ref(null);
+                const journalSnapshot = ref(null);
+                const journalError = ref(null);
+                const configSnapshot = ref(null);
+                const configError = ref(null);
+                const learningSnapshot = ref(null);
+                const learningError = ref(null);
+                const performanceSnapshot = ref(null);
+                const performanceError = ref(null);
+
                 const activeTab = ref('dashboard');
-                let timer = null;
+                let dashboardTimer = null;
+
+                // ─── Mode toggle state (anti-règle A5) ──────────────────
+                // ``showRealDialog`` / ``showPaperDialog`` drive the two
+                // ``v-dialog`` modals. ``realCountdown`` decrements from 5
+                // to 0 on Real activation : the Confirm button stays
+                // disabled while the value is > 0, so the user must wait
+                // 5 s before the second tap (= confirmation) becomes
+                // possible. This implements the doc 02 / A5 contract :
+                // "double-tap avec délai 5 s + montant en jeu visible".
+                const showRealDialog = ref(false);
+                const showPaperDialog = ref(false);
+                const realCountdown = ref(0);
+                const toggleInProgress = ref(false);
+                const toggleError = ref(null);
+                const showToast = ref(false);
+                const toastMessage = ref('');
+                let countdownTimer = null;
+
+                // ─── Credentials state (iter #81) ───────────────────────
+                // ``credentialsStatus`` mirrors :class:`BinanceCredentialsStatus`
+                // (api_key_set / api_secret_set / api_key_suffix /
+                // passphrase_available). Loaded on Config tab activation
+                // alongside ``configSnapshot``. The form inputs are
+                // ephemeral : we never round-trip the saved value back
+                // to the UI, so the v-text-field empties as soon as the
+                // POST succeeds.
+                const credentialsStatus = ref(null);
+                const credentialsError = ref(null);
+                const apiKeyInput = ref('');
+                const apiSecretInput = ref('');
+                const showApiKey = ref(false);
+                const showApiSecret = ref(false);
+                const credentialsSaveInProgress = ref(false);
+                const credentialsSaveError = ref(null);
+                const showClearCredentialsDialog = ref(false);
+
+                // ─── Emergency stop state (iter #82) ───────────────────
+                // The breaker state lives inside the dashboard snapshot
+                // (refreshed every 5 s), so we don't need a separate ref.
+                // These refs only drive the confirmation dialogs.
+                const showEmergencyStopDialog = ref(false);
+                const showEmergencyResetDialog = ref(false);
+                const emergencyInProgress = ref(false);
+                const emergencyError = ref(null);
+
+                // ─── Manual cycle state (iter #95) ──────────────────────
+                // ``cycleInProgress`` drives the button spinner ;
+                // ``lastCycleSummary`` keeps the most recent successful
+                // payload so the user sees a confirmation alert ;
+                // ``cycleError`` surfaces 502 (upstream) / 500
+                // (unexpected) errors in the same card.
+                const cycleInProgress = ref(false);
+                const cycleError = ref(null);
+                const lastCycleSummary = ref(null);
+
+                // ─── Scheduler state (iter #97) ─────────────────────────
+                // ``schedulerSnapshot`` carries the {enabled, interval_seconds,
+                // is_running, min, max} payload. ``schedulerInProgress``
+                // drives the button spinner during a toggle. The
+                // backend snapshot is the source of truth ; we never
+                // optimistically toggle locally.
+                const schedulerSnapshot = ref(null);
+                const schedulerError = ref(null);
+                const schedulerInProgress = ref(false);
+                const schedulerSaveError = ref(null);
+
+                async function fetchJSON(path) {
+                    const res = await fetch(path, { credentials: 'include' });
+                    if (!res.ok) {
+                        throw new Error(`HTTP ${res.status} ${res.statusText}`);
+                    }
+                    return res.json();
+                }
+
+                async function postJSON(path, body) {
+                    const res = await fetch(path, {
+                        method: 'POST',
+                        credentials: 'include',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(body),
+                    });
+                    if (!res.ok) {
+                        let detail = `HTTP ${res.status}`;
+                        try {
+                            const err = await res.json();
+                            if (err && err.error) detail = err.error;
+                        } catch (_) { /* keep generic */ }
+                        throw new Error(detail);
+                    }
+                    return res.json();
+                }
+
+                async function deleteJSON(path) {
+                    const res = await fetch(path, {
+                        method: 'DELETE',
+                        credentials: 'include',
+                    });
+                    if (!res.ok) {
+                        let detail = `HTTP ${res.status}`;
+                        try {
+                            const err = await res.json();
+                            if (err && err.error) detail = err.error;
+                        } catch (_) { /* keep generic */ }
+                        throw new Error(detail);
+                    }
+                    return res.json();
+                }
 
                 async function fetchDashboard() {
                     try {
-                        const res = await fetch('/api/dashboard', { credentials: 'include' });
-                        if (!res.ok) {
-                            throw new Error(`HTTP ${res.status} ${res.statusText}`);
-                        }
-                        snapshot.value = await res.json();
-                        error.value = null;
+                        dashboardSnapshot.value = await fetchJSON('/api/dashboard');
+                        dashboardError.value = null;
                     } catch (err) {
-                        error.value = String(err);
+                        dashboardError.value = String(err);
                     }
+                }
+
+                async function fetchJournal() {
+                    try {
+                        journalSnapshot.value = await fetchJSON('/api/journal');
+                        journalError.value = null;
+                    } catch (err) {
+                        journalError.value = String(err);
+                    }
+                }
+
+                async function fetchConfig() {
+                    try {
+                        configSnapshot.value = await fetchJSON('/api/config');
+                        configError.value = null;
+                    } catch (err) {
+                        configError.value = String(err);
+                    }
+                }
+
+                async function fetchLearning() {
+                    try {
+                        learningSnapshot.value = await fetchJSON('/api/learning');
+                        learningError.value = null;
+                    } catch (err) {
+                        learningError.value = String(err);
+                    }
+                }
+
+                async function fetchPerformance() {
+                    try {
+                        performanceSnapshot.value = await fetchJSON('/api/performance');
+                        performanceError.value = null;
+                    } catch (err) {
+                        performanceError.value = String(err);
+                    }
+                }
+
+                async function fetchCredentials() {
+                    try {
+                        credentialsStatus.value = await fetchJSON('/api/credentials');
+                        credentialsError.value = null;
+                    } catch (err) {
+                        credentialsError.value = String(err);
+                    }
+                }
+
+                async function fetchScheduler() {
+                    try {
+                        schedulerSnapshot.value = await fetchJSON('/api/scheduler');
+                        schedulerError.value = null;
+                    } catch (err) {
+                        schedulerError.value = String(err);
+                    }
+                }
+
+                // ─── Scheduler handlers (iter #97) ──────────────────────
+                async function applySchedulerEnabled(enabled, successMessage) {
+                    schedulerInProgress.value = true;
+                    schedulerSaveError.value = null;
+                    try {
+                        schedulerSnapshot.value = await postJSON(
+                            '/api/scheduler',
+                            { enabled },
+                        );
+                        showSuccessToast(successMessage);
+                    } catch (err) {
+                        schedulerSaveError.value = String(err.message || err);
+                    } finally {
+                        schedulerInProgress.value = false;
+                    }
+                }
+
+                async function enableScheduler() {
+                    await applySchedulerEnabled(true, 'Cycle automatique activé.');
+                }
+
+                async function disableScheduler() {
+                    await applySchedulerEnabled(false, 'Cycle automatique désactivé.');
+                }
+
+                // ─── Credentials handlers (iter #81) ────────────────────
+                function openClearCredentialsDialog() {
+                    credentialsSaveError.value = null;
+                    showClearCredentialsDialog.value = true;
+                }
+
+                function closeClearCredentialsDialog() {
+                    showClearCredentialsDialog.value = false;
+                    credentialsSaveError.value = null;
+                }
+
+                async function saveCredentials() {
+                    credentialsSaveInProgress.value = true;
+                    credentialsSaveError.value = null;
+                    try {
+                        credentialsStatus.value = await postJSON('/api/credentials', {
+                            api_key: apiKeyInput.value.trim(),
+                            api_secret: apiSecretInput.value.trim(),
+                        });
+                        // Wipe the form so the plaintext doesn't linger in
+                        // the v-text-field state once persistence succeeded.
+                        apiKeyInput.value = '';
+                        apiSecretInput.value = '';
+                        showApiKey.value = false;
+                        showApiSecret.value = false;
+                        showSuccessToast('Clés API enregistrées.');
+                    } catch (err) {
+                        credentialsSaveError.value = String(err.message || err);
+                    } finally {
+                        credentialsSaveInProgress.value = false;
+                    }
+                }
+
+                async function clearCredentials() {
+                    credentialsSaveInProgress.value = true;
+                    credentialsSaveError.value = null;
+                    try {
+                        credentialsStatus.value = await deleteJSON('/api/credentials');
+                        showSuccessToast('Clés API supprimées.');
+                        closeClearCredentialsDialog();
+                    } catch (err) {
+                        credentialsSaveError.value = String(err.message || err);
+                    } finally {
+                        credentialsSaveInProgress.value = false;
+                    }
+                }
+
+                // ─── Emergency stop / reset handlers (iter #82) ─────────
+                function openEmergencyStopDialog() {
+                    emergencyError.value = null;
+                    showEmergencyStopDialog.value = true;
+                }
+
+                function closeEmergencyStopDialog() {
+                    showEmergencyStopDialog.value = false;
+                    emergencyError.value = null;
+                }
+
+                function openEmergencyResetDialog() {
+                    emergencyError.value = null;
+                    showEmergencyResetDialog.value = true;
+                }
+
+                function closeEmergencyResetDialog() {
+                    showEmergencyResetDialog.value = false;
+                    emergencyError.value = null;
+                }
+
+                async function applyEmergencyAction(path, successMessage, onSuccess) {
+                    emergencyInProgress.value = true;
+                    emergencyError.value = null;
+                    try {
+                        // The endpoint returns ``{state: "..."}`` ; we don't
+                        // have to capture it because the next dashboard
+                        // poll (every 5 s) will pick up the change. To
+                        // make the UI responsive we also kick a refetch
+                        // immediately.
+                        await postJSON(path, {});
+                        await fetchDashboard();
+                        showSuccessToast(successMessage);
+                        onSuccess();
+                    } catch (err) {
+                        emergencyError.value = String(err.message || err);
+                    } finally {
+                        emergencyInProgress.value = false;
+                    }
+                }
+
+                async function confirmEmergencyStop() {
+                    await applyEmergencyAction(
+                        '/api/emergency-stop',
+                        'Arrêt d\'urgence activé.',
+                        closeEmergencyStopDialog,
+                    );
+                }
+
+                async function confirmEmergencyReset() {
+                    await applyEmergencyAction(
+                        '/api/emergency-reset',
+                        'Activité reprise.',
+                        closeEmergencyResetDialog,
+                    );
+                }
+
+                // ─── Manual cycle handler (iter #95) ────────────────────
+                // POSTs ``/api/run-cycle`` and stashes the response so the
+                // dashboard card can render the summary inline. We also
+                // refetch the dashboard immediately (without waiting for
+                // the next 5 s tick) so an opened position surfaces right
+                // away on the same screen.
+                async function runCycle() {
+                    cycleInProgress.value = true;
+                    cycleError.value = null;
+                    try {
+                        const summary = await postJSON('/api/run-cycle', {});
+                        lastCycleSummary.value = summary;
+                        await fetchDashboard();
+                        if (summary.should_trade) {
+                            showSuccessToast('Cycle exécuté — décision de trade.');
+                        } else {
+                            showSuccessToast('Cycle exécuté — pas de trade.');
+                        }
+                    } catch (err) {
+                        cycleError.value = String(err.message || err);
+                    } finally {
+                        cycleInProgress.value = false;
+                    }
+                }
+
+                // ─── Toggle handlers (anti-règle A5) ────────────────────
+                function startCountdown() {
+                    realCountdown.value = 5;
+                    if (countdownTimer) clearInterval(countdownTimer);
+                    countdownTimer = setInterval(() => {
+                        realCountdown.value -= 1;
+                        if (realCountdown.value <= 0) {
+                            realCountdown.value = 0;
+                            clearInterval(countdownTimer);
+                            countdownTimer = null;
+                        }
+                    }, 1000);
+                }
+
+                function stopCountdown() {
+                    if (countdownTimer) {
+                        clearInterval(countdownTimer);
+                        countdownTimer = null;
+                    }
+                    realCountdown.value = 0;
+                }
+
+                function openRealDialog() {
+                    toggleError.value = null;
+                    showRealDialog.value = true;
+                    startCountdown();
+                }
+
+                function closeRealDialog() {
+                    showRealDialog.value = false;
+                    toggleError.value = null;
+                    stopCountdown();
+                }
+
+                function openPaperDialog() {
+                    toggleError.value = null;
+                    showPaperDialog.value = true;
+                }
+
+                function closePaperDialog() {
+                    showPaperDialog.value = false;
+                    toggleError.value = null;
+                }
+
+                function showSuccessToast(message) {
+                    toastMessage.value = message;
+                    showToast.value = true;
+                }
+
+                async function applyMode(mode, successMessage, onSuccess) {
+                    toggleInProgress.value = true;
+                    toggleError.value = null;
+                    try {
+                        configSnapshot.value = await postJSON('/api/toggle-mode', { mode });
+                        // Refresh the dashboard so the mode chip in the
+                        // app bar reflects the change immediately rather
+                        // than waiting up to 5 s for the next poll.
+                        fetchDashboard();
+                        showSuccessToast(successMessage);
+                        onSuccess();
+                    } catch (err) {
+                        toggleError.value = String(err.message || err);
+                    } finally {
+                        toggleInProgress.value = false;
+                    }
+                }
+
+                async function confirmReal() {
+                    await applyMode(MODE_REAL, 'Mode Réel activé.', closeRealDialog);
+                }
+
+                async function confirmPaper() {
+                    await applyMode(MODE_PAPER, 'Mode Paper activé.', closePaperDialog);
                 }
 
                 onMounted(() => {
                     fetchDashboard();
-                    // Refresh every 5s — same cadence as the old Kivy
-                    // Clock.schedule_interval pump (iter #65).
-                    timer = setInterval(fetchDashboard, 5000);
+                    // Refresh dashboard every 5s — same cadence as the old Kivy
+                    // Clock.schedule_interval pump (iter #65). Journal/Config
+                    // are fetched on tab activation (less data churn).
+                    dashboardTimer = setInterval(fetchDashboard, 5000);
                 });
 
                 onBeforeUnmount(() => {
-                    if (timer) clearInterval(timer);
+                    if (dashboardTimer) clearInterval(dashboardTimer);
+                    if (countdownTimer) clearInterval(countdownTimer);
+                });
+
+                // Refetch the relevant tab when the user switches.
+                watch(activeTab, (tab) => {
+                    if (tab === 'journal') {
+                        fetchJournal();
+                    } else if (tab === 'config') {
+                        // Config tab pulls the snapshot, credentials status
+                        // and scheduler state. All three are independent
+                        // fetches so they run in parallel without sequencing.
+                        fetchConfig();
+                        fetchCredentials();
+                        fetchScheduler();
+                    } else if (tab === 'learning') {
+                        fetchLearning();
+                    } else if (tab === 'performance') {
+                        fetchPerformance();
+                    }
                 });
 
                 // ─── Computed view-model ────────────────────────────────
+                const pageTitle = computed(() => {
+                    if (activeTab.value === 'journal') return 'Journal';
+                    if (activeTab.value === 'learning') return 'Apprentissage';
+                    if (activeTab.value === 'performance') return 'Performance';
+                    if (activeTab.value === 'config') return 'Configuration';
+                    return 'Emeraude';
+                });
+
+                // Dashboard
                 const formattedCapital = computed(() =>
-                    formatAmount(snapshot.value?.capital_quote)
+                    formatAmount(dashboardSnapshot.value?.capital_quote)
                 );
                 const formattedPnL = computed(() =>
-                    formatSignedAmount(snapshot.value?.cumulative_pnl)
+                    formatSignedAmount(dashboardSnapshot.value?.cumulative_pnl)
                 );
                 const pnlColorClass = computed(() => {
-                    const v = parseFloat(snapshot.value?.cumulative_pnl ?? '0');
+                    const v = parseFloat(dashboardSnapshot.value?.cumulative_pnl ?? '0');
                     if (v > 0) return 'text-success';
                     if (v < 0) return 'text-error';
                     return 'text-medium-emphasis';
                 });
                 const hasOpenPosition = computed(
-                    () => Boolean(snapshot.value?.open_position)
+                    () => Boolean(dashboardSnapshot.value?.open_position)
                 );
-                const modeLabel = computed(() => {
-                    const m = snapshot.value?.mode;
-                    if (m === MODE_PAPER) return 'Paper';
-                    if (m === MODE_REAL) return 'Réel';
-                    if (m === MODE_UNCONFIGURED) return 'Non configuré';
-                    return '—';
+
+                // Manual cycle (iter #95)
+                // The summary alert renders two lines : a one-line label
+                // (trade vs skip vs data-quality reject) and a longer
+                // detail line that reuses the symbol / interval / reason
+                // string from the backend payload.
+                const lastCycleLabel = computed(() => {
+                    const s = lastCycleSummary.value;
+                    if (!s) return '';
+                    if (s.data_quality_rejected) return 'Cycle rejeté (qualité données)';
+                    if (s.should_trade) return 'Cycle exécuté — trade';
+                    return 'Cycle exécuté — skip';
                 });
+                const lastCycleDetail = computed(() => {
+                    const s = lastCycleSummary.value;
+                    if (!s) return '';
+                    const symbol = s.symbol ?? '?';
+                    const interval = s.interval ?? '?';
+                    const reason = s.skip_reason ?? s.data_quality_reason;
+                    if (reason) {
+                        return `${symbol} ${interval} — ${reason}`;
+                    }
+                    return `${symbol} ${interval}`;
+                });
+
+                // Scheduler (iter #97) — render the interval as a
+                // human-friendly label. We support seconds < 60 just
+                // in case (test config), minutes for the typical
+                // cadence, hours for long sleeps.
+                const schedulerIntervalLabel = computed(() => {
+                    const s = schedulerSnapshot.value;
+                    if (!s) return '—';
+                    const seconds = Number(s.interval_seconds ?? 0);
+                    if (seconds < 60) return `${seconds} s`;
+                    if (seconds < 3600) {
+                        const minutes = Math.round(seconds / 60);
+                        return minutes <= 1 ? '1 minute' : `${minutes} minutes`;
+                    }
+                    const hours = seconds / 3600;
+                    if (Number.isInteger(hours)) {
+                        return hours <= 1 ? '1 heure' : `${hours} heures`;
+                    }
+                    return `${hours.toFixed(1)} h`;
+                });
+                const schedulerThreadLabel = computed(() => {
+                    const s = schedulerSnapshot.value;
+                    if (!s) return '—';
+                    return s.is_running ? 'Actif' : 'Arrêté';
+                });
+                const schedulerThreadChipColor = computed(() => {
+                    const s = schedulerSnapshot.value;
+                    if (!s) return 'medium-emphasis';
+                    return s.is_running ? 'success' : 'medium-emphasis';
+                });
+
+                // Mode chip — sourced from the dashboard snapshot (live),
+                // falls back to the config snapshot if dashboard not loaded.
+                const liveMode = computed(() =>
+                    dashboardSnapshot.value?.mode ?? configSnapshot.value?.mode
+                );
+                const modeLabel = computed(() => modeLabelFor(liveMode.value));
                 const modeChipColor = computed(() => {
-                    const m = snapshot.value?.mode;
+                    const m = liveMode.value;
                     if (m === MODE_PAPER) return 'warning';
                     if (m === MODE_REAL) return 'primary';
                     return 'medium-emphasis';
                 });
                 const modeChipIcon = computed(() => {
-                    const m = snapshot.value?.mode;
+                    const m = liveMode.value;
                     if (m === MODE_PAPER) return 'mdi-file-document-edit';
                     if (m === MODE_REAL) return 'mdi-flash';
                     return 'mdi-help-circle';
                 });
 
+                // Journal
+                const journalCountLabel = computed(() => {
+                    const n = journalSnapshot.value?.total_returned ?? 0;
+                    if (n <= 1) return `${n} événement`;
+                    return `${n} événements`;
+                });
+
+                // Config
+                const configModeLabel = computed(() =>
+                    modeLabelFor(configSnapshot.value?.mode)
+                );
+                const formattedStartingCapital = computed(() =>
+                    formatAmount(configSnapshot.value?.starting_capital)
+                );
+                const formattedAuditCount = computed(() => {
+                    const n = configSnapshot.value?.total_audit_events ?? 0;
+                    if (n <= 1) return `${n} événement`;
+                    return `${n} événements`;
+                });
+
+                // Toggle (anti-règle A5)
+                const isPaperMode = computed(
+                    () => configSnapshot.value?.mode === MODE_PAPER
+                );
+                const isRealMode = computed(
+                    () => configSnapshot.value?.mode === MODE_REAL
+                );
+                const realConfirmDisabled = computed(
+                    () => realCountdown.value > 0 || toggleInProgress.value
+                );
+                const realConfirmLabel = computed(() =>
+                    realCountdown.value > 0
+                        ? `Confirmer (${realCountdown.value})`
+                        : 'Confirmer'
+                );
+
+                // Circuit Breaker (iter #82)
+                // The state is one of HEALTHY / WARNING / TRIGGERED / FROZEN.
+                // ``isBreakerHealthy`` drives the Sécurité card branching :
+                // when true → "Arrêt d'urgence" CTA ; when false → red
+                // alert + "Reprendre l'activité" CTA.
+                const breakerState = computed(
+                    () => dashboardSnapshot.value?.circuit_breaker_state ?? 'HEALTHY'
+                );
+                const isBreakerHealthy = computed(
+                    () => breakerState.value === 'HEALTHY'
+                );
+                const breakerLabel = computed(() => {
+                    const s = breakerState.value;
+                    if (s === 'HEALTHY') return 'Sain';
+                    if (s === 'WARNING') return 'Vigilance';
+                    if (s === 'TRIGGERED') return 'Déclenché';
+                    if (s === 'FROZEN') return 'Gelé';
+                    return s;
+                });
+                const breakerChipColor = computed(() => {
+                    const s = breakerState.value;
+                    if (s === 'HEALTHY') return 'success';
+                    if (s === 'WARNING') return 'warning';
+                    return 'error';
+                });
+                const breakerChipIcon = computed(() => {
+                    const s = breakerState.value;
+                    if (s === 'HEALTHY') return 'mdi-shield-check-outline';
+                    if (s === 'WARNING') return 'mdi-shield-alert-outline';
+                    if (s === 'TRIGGERED') return 'mdi-alert-octagon-outline';
+                    if (s === 'FROZEN') return 'mdi-snowflake';
+                    return 'mdi-shield-outline';
+                });
+
+                // Learning / Apprentissage (iter #83)
+                // The champion + strategy stats come from /api/learning
+                // ; we expose a few formatters so the template stays
+                // free of inline string-munging.
+                const championStateLabel = computed(() => {
+                    const s = learningSnapshot.value?.champion?.state;
+                    if (s === 'ACTIVE') return 'Actif';
+                    if (s === 'SUSPECT') return 'Suspect';
+                    if (s === 'EXPIRED') return 'Expiré';
+                    if (s === 'IN_VALIDATION') return 'En validation';
+                    return s ?? '—';
+                });
+                const championChipColor = computed(() => {
+                    const s = learningSnapshot.value?.champion?.state;
+                    if (s === 'ACTIVE') return 'success';
+                    if (s === 'SUSPECT') return 'warning';
+                    if (s === 'EXPIRED') return 'error';
+                    if (s === 'IN_VALIDATION') return 'info';
+                    return 'medium-emphasis';
+                });
+                const formattedSharpeWalkForward = computed(() => {
+                    const v = learningSnapshot.value?.champion?.sharpe_walk_forward;
+                    if (v === null || v === undefined) return '—';
+                    const num = parseFloat(v);
+                    return Number.isNaN(num) ? '—' : num.toFixed(2);
+                });
+                const formattedSharpeLive = computed(() => {
+                    const v = learningSnapshot.value?.champion?.sharpe_live;
+                    if (v === null || v === undefined) return '—';
+                    const num = parseFloat(v);
+                    return Number.isNaN(num) ? '—' : num.toFixed(2);
+                });
+                const formattedPromotedAt = computed(() => {
+                    const ts = learningSnapshot.value?.champion?.promoted_at;
+                    if (!ts) return '—';
+                    // Native locale formatting — the WebView provides
+                    // Intl.DateTimeFormat ; falls back to ISO if not.
+                    try {
+                        return new Date(ts * 1000).toLocaleString('fr-FR');
+                    } catch (_) {
+                        return new Date(ts * 1000).toISOString();
+                    }
+                });
+                const championParameterCount = computed(() => {
+                    const params = learningSnapshot.value?.champion?.parameters;
+                    return params ? Object.keys(params).length : 0;
+                });
+                const hasChampionParameters = computed(
+                    () => championParameterCount.value > 0
+                );
+
+                function formatStrategyName(name) {
+                    if (name === 'trend_follower') return 'Trend Follower';
+                    if (name === 'mean_reversion') return 'Mean Reversion';
+                    if (name === 'breakout_hunter') return 'Breakout Hunter';
+                    return name;
+                }
+                function formatStrategyTradesLabel(n) {
+                    if (n <= 1) return `${n} trade observé`;
+                    return `${n} trades observés`;
+                }
+                function formatWinRate(decimal_str) {
+                    if (decimal_str === null || decimal_str === undefined) return '—';
+                    const num = parseFloat(decimal_str);
+                    if (Number.isNaN(num)) return '—';
+                    return `${(num * 100).toFixed(1)} %`;
+                }
+                function strategyChipColor(s) {
+                    // Below the uniform prior we should not signal "loss"
+                    // — n_trades=0 means "data insuffisante", which we
+                    // surface as the neutral medium-emphasis colour.
+                    if (s.n_trades === 0) return 'medium-emphasis';
+                    const wr = parseFloat(s.win_rate);
+                    if (Number.isNaN(wr)) return 'medium-emphasis';
+                    if (wr >= 0.55) return 'success';
+                    if (wr >= 0.45) return 'warning';
+                    return 'error';
+                }
+                function formatParamValue(value) {
+                    if (value === null || value === undefined) return '—';
+                    if (typeof value === 'object') return JSON.stringify(value);
+                    return String(value);
+                }
+
+                // Performance / R12 (iter #84)
+                // ``formatRatio`` formats a Decimal-as-string ratio with
+                // Infinity-aware fallback. Profit Factor / Calmar can be
+                // ``Infinity`` when there is no loss / no drawdown.
+                function formatRatio(decimal_str, digits = 2) {
+                    if (decimal_str === null || decimal_str === undefined) return '—';
+                    if (decimal_str === 'Infinity' || decimal_str === 'inf') return '∞';
+                    const num = parseFloat(decimal_str);
+                    if (Number.isNaN(num)) return '—';
+                    return num.toFixed(digits);
+                }
+                function formatRMagnitude(decimal_str) {
+                    // R-multiples : 2 decimals + "R" suffix.
+                    if (decimal_str === null || decimal_str === undefined) return '—';
+                    const num = parseFloat(decimal_str);
+                    if (Number.isNaN(num)) return '—';
+                    return `${num.toFixed(2)} R`;
+                }
+                function formatRSigned(decimal_str) {
+                    // R-multiple expectancy : 2 decimals + sign + R suffix.
+                    if (decimal_str === null || decimal_str === undefined) return '—';
+                    const num = parseFloat(decimal_str);
+                    if (Number.isNaN(num)) return '—';
+                    const sign = num > 0 ? '+' : '';
+                    return `${sign}${num.toFixed(2)} R`;
+                }
+                const formattedExpectancy = computed(() =>
+                    formatRSigned(performanceSnapshot.value?.expectancy)
+                );
+                const expectancyColorClass = computed(() => {
+                    const v = parseFloat(performanceSnapshot.value?.expectancy ?? '0');
+                    if (v > 0) return 'text-success';
+                    if (v < 0) return 'text-error';
+                    return 'text-medium-emphasis';
+                });
+                const formattedTradesLabel = computed(() => {
+                    const n = performanceSnapshot.value?.n_trades ?? 0;
+                    if (n <= 1) return `${n} trade fermé observé`;
+                    return `${n} trades fermés observés`;
+                });
+                const formattedWinRate = computed(() => {
+                    const v = performanceSnapshot.value?.win_rate;
+                    if (v === null || v === undefined) return '—';
+                    const num = parseFloat(v);
+                    if (Number.isNaN(num)) return '—';
+                    return `${(num * 100).toFixed(1)} %`;
+                });
+                const winRateChipColor = computed(() => {
+                    const v = parseFloat(performanceSnapshot.value?.win_rate ?? '0');
+                    if (Number.isNaN(v)) return 'medium-emphasis';
+                    if (v >= 0.55) return 'success';
+                    if (v >= 0.45) return 'warning';
+                    return 'error';
+                });
+                const formattedAvgWin = computed(() =>
+                    formatRMagnitude(performanceSnapshot.value?.avg_win)
+                );
+                const formattedAvgLoss = computed(() =>
+                    formatRMagnitude(performanceSnapshot.value?.avg_loss)
+                );
+                const formattedSharpe = computed(() =>
+                    formatRatio(performanceSnapshot.value?.sharpe_ratio)
+                );
+                const formattedSortino = computed(() =>
+                    formatRatio(performanceSnapshot.value?.sortino_ratio)
+                );
+                const formattedCalmar = computed(() =>
+                    formatRatio(performanceSnapshot.value?.calmar_ratio)
+                );
+                const formattedProfitFactor = computed(() =>
+                    formatRatio(performanceSnapshot.value?.profit_factor)
+                );
+                const formattedMaxDrawdown = computed(() =>
+                    formatRMagnitude(performanceSnapshot.value?.max_drawdown)
+                );
+
+                // Credentials (iter #81)
+                const apiKeyDisplay = computed(() => {
+                    const status = credentialsStatus.value;
+                    if (!status || !status.api_key_set) return 'Non définie';
+                    const suffix = status.api_key_suffix;
+                    return suffix ? `**** **** ${suffix}` : 'Définie (illisible)';
+                });
+                const canSaveCredentials = computed(() => {
+                    if (!credentialsStatus.value) return false;
+                    if (!credentialsStatus.value.passphrase_available) return false;
+                    if (credentialsSaveInProgress.value) return false;
+                    // Mirror the server-side validator (16-128 alphanumeric)
+                    // so the button stays disabled until the format is
+                    // even plausible — saves a network round trip on
+                    // obvious typos.
+                    const ALPHANUM = /^[A-Za-z0-9]+$/;
+                    const k = apiKeyInput.value.trim();
+                    const s = apiSecretInput.value.trim();
+                    return (
+                        k.length >= 16 && k.length <= 128 && ALPHANUM.test(k) &&
+                        s.length >= 16 && s.length <= 128 && ALPHANUM.test(s)
+                    );
+                });
+
                 return {
-                    snapshot,
-                    error,
+                    // state
+                    dashboardSnapshot,
+                    dashboardError,
+                    journalSnapshot,
+                    journalError,
+                    configSnapshot,
+                    configError,
+                    learningSnapshot,
+                    learningError,
+                    performanceSnapshot,
+                    performanceError,
                     activeTab,
+                    showRealDialog,
+                    showPaperDialog,
+                    toggleInProgress,
+                    toggleError,
+                    showToast,
+                    toastMessage,
+                    credentialsStatus,
+                    credentialsError,
+                    apiKeyInput,
+                    apiSecretInput,
+                    showApiKey,
+                    showApiSecret,
+                    credentialsSaveInProgress,
+                    credentialsSaveError,
+                    showClearCredentialsDialog,
+                    showEmergencyStopDialog,
+                    showEmergencyResetDialog,
+                    emergencyInProgress,
+                    emergencyError,
+                    cycleInProgress,
+                    cycleError,
+                    lastCycleSummary,
+                    schedulerSnapshot,
+                    schedulerError,
+                    schedulerInProgress,
+                    schedulerSaveError,
+                    // computed view-model
+                    pageTitle,
                     formattedCapital,
                     formattedPnL,
                     pnlColorClass,
@@ -298,6 +2184,70 @@
                     modeLabel,
                     modeChipColor,
                     modeChipIcon,
+                    journalCountLabel,
+                    configModeLabel,
+                    formattedStartingCapital,
+                    formattedAuditCount,
+                    isPaperMode,
+                    isRealMode,
+                    realConfirmDisabled,
+                    realConfirmLabel,
+                    apiKeyDisplay,
+                    canSaveCredentials,
+                    breakerState,
+                    isBreakerHealthy,
+                    breakerLabel,
+                    breakerChipColor,
+                    breakerChipIcon,
+                    championStateLabel,
+                    championChipColor,
+                    formattedSharpeWalkForward,
+                    formattedSharpeLive,
+                    formattedPromotedAt,
+                    championParameterCount,
+                    hasChampionParameters,
+                    formatStrategyName,
+                    formatStrategyTradesLabel,
+                    formatWinRate,
+                    strategyChipColor,
+                    formatParamValue,
+                    formattedExpectancy,
+                    expectancyColorClass,
+                    formattedTradesLabel,
+                    formattedWinRate,
+                    winRateChipColor,
+                    formattedAvgWin,
+                    formattedAvgLoss,
+                    formattedSharpe,
+                    formattedSortino,
+                    formattedCalmar,
+                    formattedProfitFactor,
+                    formattedMaxDrawdown,
+                    lastCycleLabel,
+                    lastCycleDetail,
+                    schedulerIntervalLabel,
+                    schedulerThreadLabel,
+                    schedulerThreadChipColor,
+                    // handlers
+                    openRealDialog,
+                    closeRealDialog,
+                    openPaperDialog,
+                    closePaperDialog,
+                    confirmReal,
+                    confirmPaper,
+                    saveCredentials,
+                    clearCredentials,
+                    openClearCredentialsDialog,
+                    closeClearCredentialsDialog,
+                    openEmergencyStopDialog,
+                    closeEmergencyStopDialog,
+                    openEmergencyResetDialog,
+                    closeEmergencyResetDialog,
+                    confirmEmergencyStop,
+                    confirmEmergencyReset,
+                    runCycle,
+                    enableScheduler,
+                    disableScheduler,
                 };
             },
         };

@@ -56,6 +56,7 @@ def _snapshot(
     cumulative_pnl: Decimal = Decimal("0"),
     n_closed_trades: int = 0,
     mode: str = MODE_PAPER,
+    circuit_breaker_state: str = "HEALTHY",
 ) -> DashboardSnapshot:
     """Build a snapshot with sensible defaults."""
     return DashboardSnapshot(
@@ -64,6 +65,7 @@ def _snapshot(
         cumulative_pnl=cumulative_pnl,
         n_closed_trades=n_closed_trades,
         mode=mode,
+        circuit_breaker_state=circuit_breaker_state,
     )
 
 
