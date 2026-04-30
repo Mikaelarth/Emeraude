@@ -267,7 +267,7 @@ wheels = [
 
 [[package]]
 name = "emeraude"
-version = "0.0.96"
+version = "0.0.97"
 source = { editable = "." }
 dependencies = [
     { name = "certifi" },

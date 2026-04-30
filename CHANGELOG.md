@@ -6,6 +6,93 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.97] - 2026-04-30
+
+### Added — iter #93 : backtest fill simulator (1er morceau backtest engine)
+
+Premier building block de l'engine de backtest qui fermera P1.5
+(doc 06 "Backtest UI produit un rapport lisible"). Module
+:mod:`emeraude.agent.learning.backtest_simulator` qui simule un
+**round-trip complet** sur des klines historiques : entry fill +
+SL/TP scan + exit avec calcul du R-multiple et du PnL.
+
+L'engine end-to-end (run loop sur toutes les bars + signal
+generation via orchestrator + agrégation) viendra dans iters #94+.
+
+### Added
+
+- ``src/emeraude/agent/learning/backtest_simulator.py`` (nouveau,
+  ~370 LOC) :
+  - :class:`SimulatedExitReason` StrEnum : ``STOP`` / ``TARGET`` /
+    ``BOTH_STOP_WINS`` / ``EXPIRED``.
+  - :class:`SimulatedTrade` dataclass immutable (side, entry/exit
+    bar indices, AdversarialFill entry+exit, exit_reason,
+    realized_pnl, r_realized).
+  - :func:`simulate_position(...)` entry point :
+    1. Entry fill via :func:`apply_adversarial_fill` au bar
+       ``signal_bar_index + latency_bars``.
+    2. Scan bars suivants pour le **premier** SL/TP hit. LONG : SL
+       quand ``bar.low <= stop`` ; TP quand ``bar.high >= target``.
+       SHORT : symétrique.
+    3. **Both same bar** : ``BOTH_STOP_WINS`` (doc 10 R2 pessimisme).
+    4. EXPIRED après ``max_hold`` : market exit au close du dernier
+       bar via :func:`apply_adversarial_fill`.
+    5. PnL via :func:`compute_realized_pnl`, R-multiple via
+       ``(exit - entry) / risk_per_unit``.
+  - Validation des inputs : quantity > 0, max_hold >= 0, signal_price
+    > 0, SL/TP positions cohérentes vs signal selon le side.
+  - Helpers internes ``_hits_stop_*``, ``_hits_target_*``,
+    ``_build_known_price_fill``, ``_r_multiple``,
+    ``_validate_levels``.
+
+- ``tests/unit/test_backtest_simulator.py`` (nouveau) — **+17 tests** :
+  - ``TestLongTargetHit`` (1) : LONG TP exit, R > 0, fees deducted.
+  - ``TestLongStopHit`` (1) : LONG SL exit, R < 0.
+  - ``TestLongBothSameBar`` (1) : both flags, BOTH_STOP_WINS,
+    exit_price = stop.
+  - ``TestLongExpired`` (1) : flat series, EXPIRED at last scanned
+    bar.
+  - ``TestShortMirror`` (2) : SHORT target hit + SHORT stop hit
+    (mirror logic).
+  - ``TestInsufficientKlines`` (2) : signal at last bar -> None ;
+    max_hold=0 -> EXPIRED at entry bar (degenerate well-defined).
+  - ``TestValidation`` (5) : zero quantity, negative max_hold,
+    LONG stop above signal, LONG target below signal, SHORT stop
+    below signal, zero signal_price.
+  - ``TestRMultiple`` (2) : R ≈ 0.5-1.0 sur TP hit (pessimisme entry
+    réduit le R en dessous de 1) ; R ≈ -1.0--2.0 sur SL hit.
+  - ``TestSimulatedTradeShape`` (1) : frozen=True smoke.
+
+### Changed
+
+- ``pyproject.toml`` + ``buildozer.spec`` : ``0.0.96`` -> ``0.0.97``.
+
+### Notes
+
+- **Suite stable** (test count à confirmer après run, +17 vs v0.0.96),
+  coverage 99.35 %+, ruff + ruff format + mypy strict + bandit +
+  pip-audit OK.
+- **Mesure objectif iter #93** :
+  - Avant : 0 fonction qui simule l'évolution d'une position sur des
+    klines historiques. ``apply_adversarial_fill`` existe pour les
+    fills mais pas le SL/TP scan.
+  - Après : **1 module backtest_simulator + 17 tests + 4 exit reasons
+    couverts** -> ✅ atteint.
+- **Limitations documentées** :
+  - SL/TP exits assument fill at trigger price (no slippage). La
+    pessimistic slippage sur ces exits est différée.
+  - Gap risk : si bar.open est déjà au-delà du stop/target, fill
+    quand même at stop/target. OK pour spot crypto où gaps > 1 %
+    sont rares.
+  - Quantity sizing : caller responsibility (Kelly fractional
+    intégration en iter #94+).
+- **R2 — une variable à la fois** : changements limités au nouveau
+  module + ses tests. Pas de modification de l'orchestrator ni de
+  composition end-to-end (lands en iter #94).
+- **CI Android APK** : v0.0.94 buildée avec succès en background sur
+  l'iter #91 commit (workflow_dispatch). APK artifact dispo dans
+  GitHub Actions run ``25173919154``.
+
 ## [0.0.96] - 2026-04-30
 
 ### Added — iter #92 : 5/5 checks D3 actifs live (TIME_GAP + OUTLIER_RANGE)
