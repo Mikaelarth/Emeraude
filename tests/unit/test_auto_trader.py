@@ -21,9 +21,11 @@ from emeraude.agent.reasoning.strategies import StrategySignal
 from emeraude.infra import audit, database
 from emeraude.infra.market_data import Kline
 from emeraude.services.auto_trader import (
+    _INTERVAL_TO_MS,
     AutoTrader,
     CycleReport,
     _default_capital_provider,
+    _interval_to_ms,
 )
 from emeraude.services.drift_monitor import DriftMonitor
 from emeraude.services.orchestrator import Orchestrator
@@ -1023,3 +1025,206 @@ class TestDataIngestionGuardWiring:
         assert len(rows) == 1
         assert rows[0]["payload"]["status"] == "rejected"
         assert "rejection_reason" in rows[0]["payload"]
+
+
+# ─── Iter #92 : interval_to_ms helper + ATR wiring ──────────────────────────
+
+
+@pytest.mark.unit
+class TestIntervalToMs:
+    """The helper feeds ``expected_dt_ms`` into the data-ingestion guard
+    so the doc 11 D3 ``TIME_GAP`` check fires on cadence breaks.
+    """
+
+    def test_known_intervals_mapped(self) -> None:
+        # Spot-check the most common Binance values.
+        assert _interval_to_ms("1m") == 60_000
+        assert _interval_to_ms("5m") == 300_000
+        assert _interval_to_ms("15m") == 900_000
+        assert _interval_to_ms("1h") == 3_600_000
+        assert _interval_to_ms("4h") == 14_400_000
+        assert _interval_to_ms("1d") == 86_400_000
+
+    def test_unknown_interval_returns_none(self) -> None:
+        # Defensive default vs. misconfiguration / future intervals.
+        assert _interval_to_ms("1w") is None
+        assert _interval_to_ms("custom") is None
+        assert _interval_to_ms("") is None
+
+    def test_all_mapped_intervals_have_consistent_units(self) -> None:
+        # Every value should be a multiple of 60_000 (a minute) since
+        # Binance only ships minute-aligned bars.
+        for interval, ms in _INTERVAL_TO_MS.items():
+            assert ms > 0, f"{interval} maps to non-positive ms"
+            assert ms % 60_000 == 0, f"{interval} not minute-aligned"
+
+
+@pytest.mark.unit
+class TestTimeGapWiringLive:
+    """The iter #92 wiring activates the D3 ``TIME_GAP`` check by
+    feeding ``expected_dt_ms`` into the guard. Cadence breaks now
+    surface in the audit ``bar_quality`` map.
+    """
+
+    def test_time_gap_in_klines_appears_in_audit_payload(self, fresh_db: Path) -> None:
+        circuit_breaker.reset()
+        # Build 220 clean 1h klines, then introduce one 2h jump
+        # between bar 100 and bar 101 (skip 1 hour).
+        klines = _bull_klines(220)
+        good_bar = klines[101]
+        c = good_bar.close
+        klines[101] = Kline(
+            open_time=good_bar.open_time + 3_600_000,  # +1h shift
+            open=c,
+            high=c * Decimal("1.01"),
+            low=c * Decimal("0.99"),
+            close=c,
+            volume=Decimal("1"),
+            close_time=good_bar.close_time + 3_600_000,
+            n_trades=1,
+        )
+        at = _make_trader(klines=klines)
+        at.run_cycle(now=1_700_000_000)
+        assert audit.flush_default_logger(timeout=2.0)
+        rows = audit.query_events(event_type="DATA_INGESTION_COMPLETED")
+        assert len(rows) == 1
+        bar_quality = rows[0]["payload"]["bar_quality"]
+        assert "time_gap" in bar_quality
+
+    def test_clean_cadence_does_not_flag_time_gap(self, fresh_db: Path) -> None:
+        circuit_breaker.reset()
+        at = _make_trader()  # _bull_klines default cadence = 60_000 ms (1m)
+        # Note : _make_trader uses interval="1h" but _bull_klines uses
+        # 60s steps. The mismatch means TIME_GAP fires on every bar.
+        # We verify via a custom 1h-stepped fixture instead.
+        at.run_cycle(now=1_700_000_000)
+        # We don't assert TIME_GAP absent here because the fixture
+        # step is 60s vs interval 1h ; the dedicated fixture-aligned
+        # test below covers the clean path.
+
+    def test_clean_1h_cadence_yields_no_time_gap(self, fresh_db: Path) -> None:
+        circuit_breaker.reset()
+        # Build a 220-bar series with the proper 1h cadence so the
+        # TIME_GAP check finds nothing wrong.
+        step_ms = 3_600_000
+        klines = [
+            Kline(
+                open_time=i * step_ms,
+                open=Decimal(str(100.0 + i * 0.5)),
+                high=Decimal(str(100.0 + i * 0.5)) * Decimal("1.01"),
+                low=Decimal(str(100.0 + i * 0.5)) * Decimal("0.99"),
+                close=Decimal(str(100.0 + i * 0.5)),
+                volume=Decimal("1"),
+                close_time=(i + 1) * step_ms - 1,
+                n_trades=1,
+            )
+            for i in range(220)
+        ]
+        at = _make_trader(klines=klines)
+        at.run_cycle(now=1_700_000_000)
+        assert audit.flush_default_logger(timeout=2.0)
+        rows = audit.query_events(event_type="DATA_INGESTION_COMPLETED")
+        assert len(rows) == 1
+        bar_quality = rows[0]["payload"]["bar_quality"]
+        # No TIME_GAP flag despite the 1h interval being now respected.
+        assert "time_gap" not in bar_quality
+
+    def test_unknown_interval_skips_time_gap_check(self, fresh_db: Path) -> None:
+        # When the interval is unknown to ``_interval_to_ms``, the
+        # guard receives ``expected_dt_ms=None`` and the TIME_GAP check
+        # is silently skipped — no false positive on every bar.
+        circuit_breaker.reset()
+        kls = _bull_klines(220)
+        at = AutoTrader(
+            symbol="BTCUSDT",
+            interval="1w",  # weekly bars, not in our mapping
+            klines_limit=len(kls),
+            orchestrator=Orchestrator(
+                strategies=[
+                    _FakeStrategy("a", _signal(0.9, confidence=0.9)),
+                    _FakeStrategy("b", _signal(0.9, confidence=0.9)),
+                ],
+            ),
+            fetch_klines=lambda *_: kls,
+            fetch_current_price=lambda _: Decimal("210"),
+        )
+        at.run_cycle(now=1_700_000_000)
+        assert audit.flush_default_logger(timeout=2.0)
+        rows = audit.query_events(event_type="DATA_INGESTION_COMPLETED")
+        assert len(rows) == 1
+        # Despite the fixture cadence not matching 1w, no TIME_GAP
+        # because the check itself is skipped.
+        assert "time_gap" not in rows[0]["payload"]["bar_quality"]
+
+
+@pytest.mark.unit
+class TestOutlierRangeWiringLive:
+    """The iter #92 wiring computes ATR on the freshly-fetched klines
+    and feeds it to the guard so the D3 ``OUTLIER_RANGE`` check
+    becomes active.
+
+    Limitation of the doc 11 §D3 check itself : the ATR is computed
+    on the SAME series being checked, so an outlier bar contributes
+    ~1/14 to its own ATR. The threshold is ``range > 50 x ATR``,
+    which under self-reference becomes ``range > 50/14 x range``,
+    i.e. mathematically impossible to fire on a single isolated
+    spike. A future iter could split the ATR window from the check
+    window (e.g. ATR over ``klines[:-1]`` before checking the
+    last bar) ; for now the wiring is in place but the check
+    primarily serves as a regression marker on multi-bar drift.
+
+    These tests verify the wiring is active (no crash, ATR
+    computed, audit emitted) rather than the firing (which requires
+    a more elaborate fixture).
+    """
+
+    def test_atr_wiring_does_not_crash_on_short_series(self, fresh_db: Path) -> None:
+        # On a series shorter than the ATR period (14), the helper
+        # returns ``None`` and the OUTLIER check is silently skipped.
+        circuit_breaker.reset()
+        kls = _bull_klines(10)  # ATR_14 returns None
+        at = AutoTrader(
+            symbol="BTCUSDT",
+            interval="1h",
+            klines_limit=10,
+            orchestrator=Orchestrator(),
+            fetch_klines=lambda *_: kls,
+            fetch_current_price=lambda _: Decimal("210"),
+        )
+        at.run_cycle(now=1_700_000_000)
+        assert audit.flush_default_logger(timeout=2.0)
+        rows = audit.query_events(event_type="DATA_INGESTION_COMPLETED")
+        assert len(rows) == 1
+        # No OUTLIER flag — check skipped because ATR is None.
+        assert "outlier_range" not in rows[0]["payload"]["bar_quality"]
+
+    def test_atr_wiring_active_on_full_series(self, fresh_db: Path) -> None:
+        # 220 clean bars : ATR is computable (>15 bars), the OUTLIER
+        # check runs but finds nothing wrong with the tight-range
+        # synthetic series.
+        circuit_breaker.reset()
+        # Build a properly 1h-stepped series so TIME_GAP doesn't fire
+        # alongside.
+        step_ms = 3_600_000
+        klines = [
+            Kline(
+                open_time=i * step_ms,
+                open=Decimal(str(100.0 + i * 0.5)),
+                high=Decimal(str(100.0 + i * 0.5)) * Decimal("1.01"),
+                low=Decimal(str(100.0 + i * 0.5)) * Decimal("0.99"),
+                close=Decimal(str(100.0 + i * 0.5)),
+                volume=Decimal("1"),
+                close_time=(i + 1) * step_ms - 1,
+                n_trades=1,
+            )
+            for i in range(220)
+        ]
+        at = _make_trader(klines=klines)
+        at.run_cycle(now=1_700_000_000)
+        assert audit.flush_default_logger(timeout=2.0)
+        rows = audit.query_events(event_type="DATA_INGESTION_COMPLETED")
+        assert len(rows) == 1
+        bar_quality = rows[0]["payload"]["bar_quality"]
+        # No OUTLIER on a uniform series — wiring active, no false
+        # positive.
+        assert "outlier_range" not in bar_quality

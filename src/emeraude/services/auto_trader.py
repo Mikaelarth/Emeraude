@@ -60,6 +60,7 @@ from emeraude.agent.execution.breaker_monitor import (
     BreakerMonitor,
 )
 from emeraude.agent.execution.position_tracker import Position, PositionTracker
+from emeraude.agent.perception.indicators import atr as _compute_atr
 from emeraude.agent.perception.tradability import compute_tradability
 from emeraude.agent.reasoning.risk_manager import Side
 from emeraude.infra import audit, market_data
@@ -94,6 +95,47 @@ _DEFAULT_KLINES_LIMIT: Final[int] = 250
 _DEFAULT_COLD_START_CAPITAL: Final[Decimal] = Decimal("20")
 
 _AUDIT_EVENT: Final[str] = "AUTO_TRADER_CYCLE"
+
+
+#: Mapping Binance interval string -> milliseconds. Used by the iter
+#: #92 wiring to feed ``expected_dt_ms`` into the data-ingestion guard
+#: so the doc 11 D3 ``TIME_GAP`` check can fire on cadence breaks.
+#: Returning ``None`` for an unknown interval (e.g. a future
+#: weekly bar or a custom string) intentionally skips the check
+#: rather than raising — defensive default vs. misconfiguration.
+_INTERVAL_TO_MS: Final[dict[str, int]] = {
+    "1m": 60_000,
+    "3m": 180_000,
+    "5m": 300_000,
+    "15m": 900_000,
+    "30m": 1_800_000,
+    "1h": 3_600_000,
+    "2h": 7_200_000,
+    "4h": 14_400_000,
+    "6h": 21_600_000,
+    "8h": 28_800_000,
+    "12h": 43_200_000,
+    "1d": 86_400_000,
+}
+
+
+def _interval_to_ms(interval: str) -> int | None:
+    """Return the millisecond width of a Binance kline interval string.
+
+    Returns ``None`` for unknown / custom intervals so the caller can
+    skip the time-gap check rather than fabricate a wrong delta.
+    """
+    return _INTERVAL_TO_MS.get(interval)
+
+
+#: Period used when the iter #92 wiring computes the ATR_N reference
+#: feeding the D3 ``OUTLIER_RANGE`` check. The doc 11 row literally
+#: says "Range > 50x ATR_30" but our :func:`indicators.atr` exposes
+#: a 14-period default ; we keep 14 to match the rest of the
+#: codebase (RSI / MACD / Stochastic also use 14) — the multiplier
+#: 50 in :func:`check_bar_quality` is the actual outlier threshold,
+#: not the period.
+_INGESTION_ATR_PERIOD: Final[int] = 14
 
 
 # ─── Public types ───────────────────────────────────────────────────────────
@@ -375,7 +417,8 @@ class AutoTrader:
         current_price = self._fetch_current_price(self._symbol)
         klines = self._fetch_klines(self._symbol, self._interval, self._klines_limit)
 
-        # Step 0 : doc 11 D3+D4 ingestion guard (iter #91 wiring).
+        # Step 0 : doc 11 D3+D4 ingestion guard (iter #91 wiring,
+        # iter #92 fully active).
         # Validates the freshly-fetched series and emits the
         # ``DATA_INGESTION_COMPLETED`` audit event mandated by
         # doc 11 §5. On rejection, we still tick the tracker
@@ -383,14 +426,22 @@ class AutoTrader:
         # trustworthy for SL/TP) but force the decision pipeline to
         # skip by passing an empty klines list — the existing
         # ``SKIP_EMPTY_KLINES`` short-circuit in the orchestrator
-        # is the natural skip path. The cycle audit row at end-of-
-        # cycle is unaffected ; the ingestion audit row is
-        # additional, distinct, and required by doc 11.
+        # is the natural skip path.
+        #
+        # Iter #92 : we now compute the ATR reference and the
+        # interval-ms delta so the ``OUTLIER_RANGE`` and
+        # ``TIME_GAP`` checks fire (5/5 D3 checks active live).
+        # Both are skipped silently by the guard when their input
+        # is ``None`` (cold-start ATR not yet computable, or
+        # unknown interval string), so passing them is always safe.
+        atr_value = _compute_atr(klines, period=_INGESTION_ATR_PERIOD) if klines else None
         ingestion_report = validate_and_audit_klines(
             klines,
             symbol=self._symbol,
             interval=self._interval,
             expected_count=self._klines_limit,
+            atr_value=atr_value,
+            expected_dt_ms=_interval_to_ms(self._interval),
         )
         if ingestion_report.should_reject:
             klines = []

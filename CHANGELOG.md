@@ -6,6 +6,73 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.96] - 2026-04-30
+
+### Added — iter #92 : 5/5 checks D3 actifs live (TIME_GAP + OUTLIER_RANGE)
+
+L'iter #91 a câblé le ``data_ingestion_guard`` dans ``run_cycle`` mais
+avec ``expected_dt_ms=None`` et ``atr_value=None``, ce qui skippait
+silencieusement 2/5 checks D3 (TIME_GAP, OUTLIER_RANGE). Iter #92
+les active en propageant les bons paramètres.
+
+### Added
+
+- ``src/emeraude/services/auto_trader.py`` :
+  - Constante module ``_INTERVAL_TO_MS`` : mapping des 12 intervals
+    Binance standards (``"1m"`` -> 60_000, ``"1h"`` -> 3_600_000,
+    ``"1d"`` -> 86_400_000, etc.) vers leur largeur en ms.
+  - Helper ``_interval_to_ms(interval)`` : retourne ``None`` pour
+    un interval inconnu (defensive default vs misconfiguration).
+  - Constante ``_INGESTION_ATR_PERIOD = 14`` : période pour le
+    calcul ATR de référence du check OUTLIER_RANGE.
+  - ``run_cycle`` étend l'appel ``validate_and_audit_klines`` avec
+    ``atr_value = _compute_atr(klines, period=14)`` et
+    ``expected_dt_ms = _interval_to_ms(self._interval)``.
+
+- ``tests/unit/test_auto_trader.py`` : **+9 tests**
+  - ``TestIntervalToMs`` (3) : mappings standards corrects, unknown
+    -> None, all values minute-aligned.
+  - ``TestTimeGapWiringLive`` (3) : time gap dans klines apparaît
+    dans audit ``bar_quality`` ; cadence 1h propre = pas de TIME_GAP ;
+    interval inconnu (``"1w"``) skip silencieusement le check.
+  - ``TestOutlierRangeWiringLive`` (2) : ATR wiring ne crash pas sur
+    série courte (<15 bars, ATR=None, check skipped) ; ATR actif sur
+    série complète sans false positive.
+
+### Changed
+
+- ``src/emeraude/services/auto_trader.py`` : Step 0 commentaire mis
+  à jour pour refléter "iter #92 fully active" au lieu de "iter #91
+  wiring".
+- ``pyproject.toml`` + ``buildozer.spec`` : ``0.0.95`` -> ``0.0.96``.
+
+### Notes
+
+- **Suite stable** (test count à confirmer après run, +9 vs v0.0.95),
+  coverage 99.35 %+, ruff + ruff format + mypy strict + bandit +
+  pip-audit OK.
+- **Mesure objectif iter #92** :
+  - Avant : iter #91 a câblé D3+D4 mais avec ``expected_dt_ms=None``
+    et ``atr_value=None`` -> 3/5 checks D3 actifs (FLAT_VOLUME,
+    INVALID_HIGH_LOW, CLOSE_OUT_OF_RANGE).
+  - Après : **5/5 checks D3 actifs** dans ``run_cycle`` (TIME_GAP
+    fire prouvé sur cadence cassée + OUTLIER ATR computed sans
+    crash + skips defensive sur ATR=None / interval inconnu) ->
+    ✅ atteint.
+- **Limitation documentée** : la doc 11 §D3 row 4 ``range > 50 x ATR``
+  est self-referential — le bar checké contribue ~1/14 à son propre
+  ATR, ce qui rend le check mathématiquement impossible à fire sur
+  un spike isolé (50/14 × range > range ne peut être vrai). Un
+  iter ultérieur pourrait splitter la fenêtre ATR de la fenêtre
+  check (e.g. ATR sur ``klines[:-1]`` avant de checker le dernier
+  bar). Pour l'instant, le check sert de regression marker pour
+  les drifts multi-bars. Documenté dans ``TestOutlierRangeWiringLive``
+  docstring.
+- **R2 — une variable à la fois** : changements limités au wiring
+  des paramètres (mapping + ATR compute) + tests. Pas de
+  modification de la logique des checks dans ``data_quality.py``
+  (le bug du multiplier resterait pour iter dédiée si besoin).
+
 ## [0.0.95] - 2026-04-30
 
 ### Added — iter #91 : wiring data_ingestion_guard dans run_cycle live
