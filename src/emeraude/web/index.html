@@ -165,12 +165,82 @@
                                     </v-list-item>
                                     <v-divider></v-divider>
                                     <v-list-item>
+                                        <v-list-item-title>État Circuit Breaker</v-list-item-title>
+                                        <template v-slot:append>
+                                            <v-chip :color="breakerChipColor" variant="tonal" size="small">
+                                                <v-icon start :icon="breakerChipIcon"></v-icon>
+                                                {{ breakerLabel }}
+                                            </v-chip>
+                                        </template>
+                                    </v-list-item>
+                                    <v-divider></v-divider>
+                                    <v-list-item>
                                         <v-list-item-title>Trades fermés</v-list-item-title>
                                         <template v-slot:append>
                                             <span class="text-body-1">{{ dashboardSnapshot.n_closed_trades }}</span>
                                         </template>
                                     </v-list-item>
                                 </v-list>
+                            </v-card>
+
+                            <!-- Sécurité — Arrêt d'urgence + reset (iter #82) -->
+                            <v-card class="mb-4" elevation="0" rounded="lg" color="surface">
+                                <v-card-title class="d-flex align-center">
+                                    <v-icon class="mr-2" color="medium-emphasis">mdi-shield-alert-outline</v-icon>
+                                    Sécurité
+                                </v-card-title>
+
+                                <v-card-text v-if="isBreakerHealthy" class="pt-0">
+                                    <p class="text-body-2 text-medium-emphasis">
+                                        L'arrêt d'urgence gèle immédiatement le bot :
+                                        aucune nouvelle position ne sera ouverte tant que
+                                        vous ne réinitialisez pas le breaker.
+                                    </p>
+                                </v-card-text>
+
+                                <v-alert
+                                    v-else
+                                    density="compact"
+                                    type="error"
+                                    variant="tonal"
+                                    icon="mdi-alert-octagon-outline"
+                                    class="mx-4 mb-2"
+                                >
+                                    <v-alert-title class="text-body-2 font-weight-bold">
+                                        Bot arrêté ({{ breakerLabel }})
+                                    </v-alert-title>
+                                    <div class="mt-1 text-caption">
+                                        Aucune nouvelle position ne sera ouverte. Tapez
+                                        <strong>Reprendre l'activité</strong> pour rétablir le
+                                        breaker — le mode courant ({{ modeLabel }}) ne change
+                                        pas, l'A5 protège encore l'éventuel toggle Réel.
+                                    </div>
+                                </v-alert>
+
+                                <v-card-actions class="px-4 pb-4 pt-0 d-flex flex-column" style="align-items: stretch;">
+                                    <v-btn
+                                        v-if="isBreakerHealthy"
+                                        block
+                                        variant="flat"
+                                        color="error"
+                                        prepend-icon="mdi-stop-circle-outline"
+                                        :disabled="emergencyInProgress"
+                                        @click="openEmergencyStopDialog"
+                                    >
+                                        Arrêt d'urgence
+                                    </v-btn>
+                                    <v-btn
+                                        v-else
+                                        block
+                                        variant="flat"
+                                        color="primary"
+                                        prepend-icon="mdi-play-circle-outline"
+                                        :disabled="emergencyInProgress"
+                                        @click="openEmergencyResetDialog"
+                                    >
+                                        Reprendre l'activité
+                                    </v-btn>
+                                </v-card-actions>
                             </v-card>
                         </v-container>
                     </v-window-item>
@@ -629,6 +699,106 @@
                 </v-card>
             </v-dialog>
 
+            <!-- ═══ Dialog : confirmation arrêt d'urgence ════════════════════ -->
+            <v-dialog
+                v-model="showEmergencyStopDialog"
+                max-width="440"
+                persistent
+            >
+                <v-card rounded="lg" color="surface">
+                    <v-card-title class="d-flex align-center text-error">
+                        <v-icon class="mr-2">mdi-stop-circle-outline</v-icon>
+                        Arrêt d'urgence
+                    </v-card-title>
+                    <v-card-text>
+                        <p>
+                            Le Circuit Breaker va passer en
+                            <strong>FROZEN</strong> : aucune nouvelle position
+                            ne sera ouverte par le bot tant que vous n'aurez
+                            pas tapé <strong>Reprendre l'activité</strong>.
+                        </p>
+                        <p class="text-body-2 text-medium-emphasis mt-2">
+                            Les positions actuellement ouvertes ne sont pas
+                            touchées par cette action. Le mode ({{ modeLabel }})
+                            reste tel quel.
+                        </p>
+                        <v-alert
+                            v-if="emergencyError"
+                            density="compact"
+                            type="error"
+                            variant="tonal"
+                            class="mt-2"
+                        >
+                            {{ emergencyError }}
+                        </v-alert>
+                    </v-card-text>
+                    <v-card-actions class="px-4 pb-4">
+                        <v-spacer></v-spacer>
+                        <v-btn variant="text" :disabled="emergencyInProgress" @click="closeEmergencyStopDialog">
+                            Annuler
+                        </v-btn>
+                        <v-btn
+                            color="error"
+                            variant="flat"
+                            :loading="emergencyInProgress"
+                            @click="confirmEmergencyStop"
+                        >
+                            Confirmer l'arrêt
+                        </v-btn>
+                    </v-card-actions>
+                </v-card>
+            </v-dialog>
+
+            <!-- ═══ Dialog : reprise après arrêt d'urgence ══════════════════ -->
+            <v-dialog
+                v-model="showEmergencyResetDialog"
+                max-width="440"
+                persistent
+            >
+                <v-card rounded="lg" color="surface">
+                    <v-card-title class="d-flex align-center">
+                        <v-icon class="mr-2" color="primary">mdi-play-circle-outline</v-icon>
+                        Reprendre l'activité
+                    </v-card-title>
+                    <v-card-text>
+                        <p>
+                            Le Circuit Breaker va revenir en
+                            <strong>HEALTHY</strong>. Le bot pourra à nouveau
+                            ouvrir des positions selon le mode courant
+                            ({{ modeLabel }}).
+                        </p>
+                        <p class="text-body-2 text-medium-emphasis mt-2">
+                            Cette action ne réactive pas le mode Réel toute
+                            seule : tout passage Paper → Réel reste protégé
+                            par le double-tap A5 (5 s).
+                        </p>
+                        <v-alert
+                            v-if="emergencyError"
+                            density="compact"
+                            type="error"
+                            variant="tonal"
+                            class="mt-2"
+                        >
+                            {{ emergencyError }}
+                        </v-alert>
+                    </v-card-text>
+                    <v-card-actions class="px-4 pb-4">
+                        <v-spacer></v-spacer>
+                        <v-btn variant="text" :disabled="emergencyInProgress" @click="closeEmergencyResetDialog">
+                            Annuler
+                        </v-btn>
+                        <v-btn
+                            color="primary"
+                            variant="flat"
+                            :loading="emergencyInProgress"
+                            @click="confirmEmergencyReset"
+                        >
+                            Confirmer
+                        </v-btn>
+                    </v-card-actions>
+                </v-card>
+            </v-dialog>
+
             <!-- ═══ Snackbar : feedback toggle réussi ═══════════════════════ -->
             <v-snackbar
                 v-model="showToast"
@@ -764,6 +934,15 @@
                 const credentialsSaveError = ref(null);
                 const showClearCredentialsDialog = ref(false);
 
+                // ─── Emergency stop state (iter #82) ───────────────────
+                // The breaker state lives inside the dashboard snapshot
+                // (refreshed every 5 s), so we don't need a separate ref.
+                // These refs only drive the confirmation dialogs.
+                const showEmergencyStopDialog = ref(false);
+                const showEmergencyResetDialog = ref(false);
+                const emergencyInProgress = ref(false);
+                const emergencyError = ref(null);
+
                 async function fetchJSON(path) {
                     const res = await fetch(path, { credentials: 'include' });
                     if (!res.ok) {
@@ -887,6 +1066,63 @@
                     } finally {
                         credentialsSaveInProgress.value = false;
                     }
+                }
+
+                // ─── Emergency stop / reset handlers (iter #82) ─────────
+                function openEmergencyStopDialog() {
+                    emergencyError.value = null;
+                    showEmergencyStopDialog.value = true;
+                }
+
+                function closeEmergencyStopDialog() {
+                    showEmergencyStopDialog.value = false;
+                    emergencyError.value = null;
+                }
+
+                function openEmergencyResetDialog() {
+                    emergencyError.value = null;
+                    showEmergencyResetDialog.value = true;
+                }
+
+                function closeEmergencyResetDialog() {
+                    showEmergencyResetDialog.value = false;
+                    emergencyError.value = null;
+                }
+
+                async function applyEmergencyAction(path, successMessage, onSuccess) {
+                    emergencyInProgress.value = true;
+                    emergencyError.value = null;
+                    try {
+                        // The endpoint returns ``{state: "..."}`` ; we don't
+                        // have to capture it because the next dashboard
+                        // poll (every 5 s) will pick up the change. To
+                        // make the UI responsive we also kick a refetch
+                        // immediately.
+                        await postJSON(path, {});
+                        await fetchDashboard();
+                        showSuccessToast(successMessage);
+                        onSuccess();
+                    } catch (err) {
+                        emergencyError.value = String(err.message || err);
+                    } finally {
+                        emergencyInProgress.value = false;
+                    }
+                }
+
+                async function confirmEmergencyStop() {
+                    await applyEmergencyAction(
+                        '/api/emergency-stop',
+                        'Arrêt d\'urgence activé.',
+                        closeEmergencyStopDialog,
+                    );
+                }
+
+                async function confirmEmergencyReset() {
+                    await applyEmergencyAction(
+                        '/api/emergency-reset',
+                        'Activité reprise.',
+                        closeEmergencyResetDialog,
+                    );
                 }
 
                 // ─── Toggle handlers (anti-règle A5) ────────────────────
@@ -1069,6 +1305,40 @@
                         : 'Confirmer'
                 );
 
+                // Circuit Breaker (iter #82)
+                // The state is one of HEALTHY / WARNING / TRIGGERED / FROZEN.
+                // ``isBreakerHealthy`` drives the Sécurité card branching :
+                // when true → "Arrêt d'urgence" CTA ; when false → red
+                // alert + "Reprendre l'activité" CTA.
+                const breakerState = computed(
+                    () => dashboardSnapshot.value?.circuit_breaker_state ?? 'HEALTHY'
+                );
+                const isBreakerHealthy = computed(
+                    () => breakerState.value === 'HEALTHY'
+                );
+                const breakerLabel = computed(() => {
+                    const s = breakerState.value;
+                    if (s === 'HEALTHY') return 'Sain';
+                    if (s === 'WARNING') return 'Vigilance';
+                    if (s === 'TRIGGERED') return 'Déclenché';
+                    if (s === 'FROZEN') return 'Gelé';
+                    return s;
+                });
+                const breakerChipColor = computed(() => {
+                    const s = breakerState.value;
+                    if (s === 'HEALTHY') return 'success';
+                    if (s === 'WARNING') return 'warning';
+                    return 'error';
+                });
+                const breakerChipIcon = computed(() => {
+                    const s = breakerState.value;
+                    if (s === 'HEALTHY') return 'mdi-shield-check-outline';
+                    if (s === 'WARNING') return 'mdi-shield-alert-outline';
+                    if (s === 'TRIGGERED') return 'mdi-alert-octagon-outline';
+                    if (s === 'FROZEN') return 'mdi-snowflake';
+                    return 'mdi-shield-outline';
+                });
+
                 // Credentials (iter #81)
                 const apiKeyDisplay = computed(() => {
                     const status = credentialsStatus.value;
@@ -1117,6 +1387,10 @@
                     credentialsSaveInProgress,
                     credentialsSaveError,
                     showClearCredentialsDialog,
+                    showEmergencyStopDialog,
+                    showEmergencyResetDialog,
+                    emergencyInProgress,
+                    emergencyError,
                     // computed view-model
                     pageTitle,
                     formattedCapital,
@@ -1136,6 +1410,11 @@
                     realConfirmLabel,
                     apiKeyDisplay,
                     canSaveCredentials,
+                    breakerState,
+                    isBreakerHealthy,
+                    breakerLabel,
+                    breakerChipColor,
+                    breakerChipIcon,
                     // handlers
                     openRealDialog,
                     closeRealDialog,
@@ -1147,6 +1426,12 @@
                     clearCredentials,
                     openClearCredentialsDialog,
                     closeClearCredentialsDialog,
+                    openEmergencyStopDialog,
+                    closeEmergencyStopDialog,
+                    openEmergencyResetDialog,
+                    closeEmergencyResetDialog,
+                    confirmEmergencyStop,
+                    confirmEmergencyReset,
                 };
             },
         };

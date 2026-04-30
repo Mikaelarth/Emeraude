@@ -29,6 +29,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import TYPE_CHECKING, Final
 
+from emeraude.agent.execution import circuit_breaker
 from emeraude.services.dashboard_types import (
     DashboardSnapshot,
 )
@@ -118,4 +119,5 @@ class TrackerDashboardDataSource:
             cumulative_pnl=cumulative,
             n_closed_trades=n_closed,
             mode=self._mode_provider(),
+            circuit_breaker_state=circuit_breaker.get_state().value,
         )

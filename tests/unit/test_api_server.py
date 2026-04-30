@@ -301,6 +301,10 @@ class TestHTTPIntegration:
             assert "cumulative_pnl" in body
             assert "n_closed_trades" in body
             assert "mode" in body
+            # iter #82 : circuit_breaker_state surfaced for the
+            # emergency-stop banner.
+            assert "circuit_breaker_state" in body
+            assert isinstance(body["circuit_breaker_state"], str)
             # cumulative_pnl was Decimal("0") at cold start ; serialises
             # as the string "0".
             assert isinstance(body["cumulative_pnl"], str)
@@ -816,6 +820,124 @@ class TestHTTPIntegration:
             resp = conn.getresponse()
             resp.read()
             assert resp.status == 404
+        finally:
+            self._stop(server, thread)
+
+    # ── /api/emergency-stop + /api/emergency-reset (iter #82) ────────────────
+
+    def test_emergency_stop_requires_auth(self, tmp_path: Path) -> None:
+        port, _token, thread, server = self._setup_server(tmp_path)
+        try:
+            status, body = self._post_json(port, "/api/emergency-stop", {}, token=None)
+            assert status == 403
+            assert "error" in body
+        finally:
+            self._stop(server, thread)
+
+    def test_emergency_reset_requires_auth(self, tmp_path: Path) -> None:
+        port, _token, thread, server = self._setup_server(tmp_path)
+        try:
+            status, body = self._post_json(port, "/api/emergency-reset", {}, token=None)
+            assert status == 403
+            assert "error" in body
+        finally:
+            self._stop(server, thread)
+
+    def test_emergency_stop_freezes_breaker_and_returns_state(self, tmp_path: Path) -> None:
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            # No body is required — emergency stop is unambiguous.
+            status, body = self._post_json(port, "/api/emergency-stop", {}, token=token)
+            assert status == 200
+            assert body["state"] == "FROZEN"
+
+            # Round-trip via /api/dashboard to confirm the snapshot
+            # surfaces the state for the UI banner.
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request(
+                "GET",
+                "/api/dashboard",
+                headers={"Cookie": f"{AUTH_COOKIE}={token}"},
+            )
+            resp = conn.getresponse()
+            dashboard = json.loads(resp.read())
+            assert dashboard["circuit_breaker_state"] == "FROZEN"
+
+            # Reset for the next test (state is persisted in SQLite).
+            self._post_json(port, "/api/emergency-reset", {}, token=token)
+        finally:
+            self._stop(server, thread)
+
+    def test_emergency_reset_returns_to_healthy(self, tmp_path: Path) -> None:
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            # Freeze first so the reset has work to do.
+            stop_status, stop_body = self._post_json(port, "/api/emergency-stop", {}, token=token)
+            assert stop_status == 200
+            assert stop_body["state"] == "FROZEN"
+
+            reset_status, reset_body = self._post_json(
+                port, "/api/emergency-reset", {}, token=token
+            )
+            assert reset_status == 200
+            assert reset_body["state"] == "HEALTHY"
+
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request(
+                "GET",
+                "/api/dashboard",
+                headers={"Cookie": f"{AUTH_COOKIE}={token}"},
+            )
+            resp = conn.getresponse()
+            dashboard = json.loads(resp.read())
+            assert dashboard["circuit_breaker_state"] == "HEALTHY"
+        finally:
+            self._stop(server, thread)
+
+    def test_emergency_stop_idempotent(self, tmp_path: Path) -> None:
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            status1, body1 = self._post_json(port, "/api/emergency-stop", {}, token=token)
+            status2, body2 = self._post_json(port, "/api/emergency-stop", {}, token=token)
+            assert status1 == 200
+            assert status2 == 200
+            assert body1["state"] == "FROZEN"
+            assert body2["state"] == "FROZEN"
+
+            # Reset for cleanup.
+            self._post_json(port, "/api/emergency-reset", {}, token=token)
+        finally:
+            self._stop(server, thread)
+
+    def test_emergency_reset_idempotent_on_healthy(self, tmp_path: Path) -> None:
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            # Two resets in a row from a healthy state — still 200.
+            status1, body1 = self._post_json(port, "/api/emergency-reset", {}, token=token)
+            status2, body2 = self._post_json(port, "/api/emergency-reset", {}, token=token)
+            assert status1 == 200
+            assert status2 == 200
+            assert body1["state"] == "HEALTHY"
+            assert body2["state"] == "HEALTHY"
+        finally:
+            self._stop(server, thread)
+
+    def test_emergency_stop_ignores_request_body(self, tmp_path: Path) -> None:
+        # The endpoint takes no body parameters — sending one shouldn't
+        # break it (we just don't read the body in the handler).
+        port, token, thread, server = self._setup_server(tmp_path)
+        try:
+            status, body = self._post_json(
+                port,
+                "/api/emergency-stop",
+                {"unexpected": "field"},
+                token=token,
+            )
+            assert status == 200
+            assert body["state"] == "FROZEN"
+
+            # Cleanup.
+            self._post_json(port, "/api/emergency-reset", {}, token=token)
         finally:
             self._stop(server, thread)
 

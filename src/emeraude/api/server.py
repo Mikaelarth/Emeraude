@@ -6,19 +6,22 @@ Architecture (cf. ADR-0004) :
 * Ce serveur sert :
     - ``GET  /``                  index.html (Vue 3 + Vuetify SPA)
     - ``GET  /static/<path>``     assets statiques (JS, CSS, fonts)
-    - ``GET    /api/dashboard``     :class:`DashboardSnapshot` -> JSON
-    - ``GET    /api/journal``       :class:`JournalSnapshot`  -> JSON
-    - ``GET    /api/config``        :class:`ConfigSnapshot`   -> JSON
-    - ``GET    /api/credentials``   :class:`BinanceCredentialsStatus` -> JSON
-    - ``POST   /api/toggle-mode``   ``{"mode": ...}`` -> :class:`ConfigSnapshot`
-    - ``POST   /api/credentials``   ``{"api_key", "api_secret"}`` -> status
-    - ``DELETE /api/credentials``   -> updated status (idempotent)
+    - ``GET    /api/dashboard``       :class:`DashboardSnapshot` -> JSON
+    - ``GET    /api/journal``         :class:`JournalSnapshot`  -> JSON
+    - ``GET    /api/config``          :class:`ConfigSnapshot`   -> JSON
+    - ``GET    /api/credentials``     :class:`BinanceCredentialsStatus` -> JSON
+    - ``POST   /api/toggle-mode``     ``{"mode": ...}`` -> :class:`ConfigSnapshot`
+    - ``POST   /api/credentials``     ``{"api_key", "api_secret"}`` -> status
+    - ``POST   /api/emergency-stop``  -> ``{state}`` (freeze breaker, audit)
+    - ``POST   /api/emergency-reset`` -> ``{state}`` (reset breaker, audit)
+    - ``DELETE /api/credentials``     -> updated status (idempotent)
 
 * Iter #78 a livré la route ``/api/dashboard`` ; iter #79 ajoute
   ``/api/journal`` + ``/api/config`` (lecture seule) ; iter #80 ajoute
   la première mutation : ``POST /api/toggle-mode`` ; iter #81 ajoute
-  la saisie des clés API Binance (``GET/POST/DELETE /api/credentials``)
-  qui couvre la dernière brique du panneau Config doc 02.
+  la saisie des clés API Binance (``GET/POST/DELETE /api/credentials``) ;
+  iter #82 ajoute l'arrêt d'urgence (``POST /api/emergency-stop`` /
+  ``POST /api/emergency-reset``) qui pilote le ``CircuitBreaker``.
 
 Sécurité loopback
 =================
@@ -102,6 +105,14 @@ _AUDIT_MODE_CHANGED: Final[str] = "MODE_CHANGED"
 #: suffix (we wouldn't have one to expose).
 _AUDIT_CREDENTIALS_SAVED: Final[str] = "CREDENTIALS_SAVED"
 _AUDIT_CREDENTIALS_CLEARED: Final[str] = "CREDENTIALS_CLEARED"
+
+#: Audit event types for the emergency stop / reset. Distinct from the
+#: ``CIRCUIT_BREAKER_STATE_CHANGE`` event emitted by ``circuit_breaker``
+#: itself : the latter is a technical state transition log, the former
+#: is an explicit user-decision marker (queryable as "show me when the
+#: user pulled the plug" without false positives from automated trips).
+_AUDIT_EMERGENCY_STOP: Final[str] = "EMERGENCY_STOP"
+_AUDIT_EMERGENCY_RESET: Final[str] = "EMERGENCY_RESET"
 
 #: MIME types per file extension. Limited intentionally — only file
 #: types we actually ship in ``web/``.
@@ -412,6 +423,14 @@ class _RequestHandler(BaseHTTPRequestHandler):
             self._handle_save_credentials()
             return
 
+        if route == "emergency-stop":
+            self._handle_emergency_stop()
+            return
+
+        if route == "emergency-reset":
+            self._handle_emergency_reset()
+            return
+
         self._send_json(HTTPStatus.NOT_FOUND, {"error": "unknown route"})
 
     # ─── DELETE API routes ──────────────────────────────────────────────────
@@ -533,6 +552,59 @@ class _RequestHandler(BaseHTTPRequestHandler):
         status = service.get_status()
         audit.audit(_AUDIT_CREDENTIALS_CLEARED, {"source": "api"})
         self._send_json(HTTPStatus.OK, _serialise(status))
+
+    def _handle_emergency_stop(self) -> None:
+        """Freeze the Circuit Breaker (manual emergency stop).
+
+        FROZEN is the strongest non-recoverable state : only an explicit
+        :func:`circuit_breaker.reset` (= the matching emergency-reset
+        endpoint) clears it. The bot trade path checks
+        :func:`circuit_breaker.is_trade_allowed` and refuses to enter
+        new positions while frozen.
+
+        No request body required — the action is unambiguous. The
+        previous state is captured for the audit payload so
+        post-mortem can tell whether the user froze a bot that was
+        already in trouble (TRIGGERED) or hit the panic button on
+        a healthy bot.
+        """
+        # Local imports : ``circuit_breaker`` pulls ``infra.audit`` and
+        # SQLite via ``infra.database`` — defer until POST actually fires.
+        from emeraude.agent.execution import circuit_breaker  # noqa: PLC0415
+        from emeraude.infra import audit  # noqa: PLC0415
+
+        previous = circuit_breaker.get_state()
+        circuit_breaker.freeze(reason="emergency_stop:user")
+        new_state = circuit_breaker.get_state()
+        audit.audit(
+            _AUDIT_EMERGENCY_STOP,
+            {"from": previous.value, "to": new_state.value, "source": "api"},
+        )
+        self._send_json(HTTPStatus.OK, {"state": new_state.value})
+
+    def _handle_emergency_reset(self) -> None:
+        """Reset the Circuit Breaker to HEALTHY (admin operation).
+
+        This unfreezes a previously frozen breaker — but does **not**
+        re-activate real-money trading on its own. The mode is unchanged
+        ; if the user wants to go back to real trading, they must still
+        toggle the mode (which goes through the A5 5-second countdown).
+
+        Idempotent : resetting an already-healthy breaker is a no-op
+        but still emits the audit event so the user-decision is
+        observable in the trail.
+        """
+        from emeraude.agent.execution import circuit_breaker  # noqa: PLC0415
+        from emeraude.infra import audit  # noqa: PLC0415
+
+        previous = circuit_breaker.get_state()
+        circuit_breaker.reset(reason="emergency_reset:user")
+        new_state = circuit_breaker.get_state()
+        audit.audit(
+            _AUDIT_EMERGENCY_RESET,
+            {"from": previous.value, "to": new_state.value, "source": "api"},
+        )
+        self._send_json(HTTPStatus.OK, {"state": new_state.value})
 
     def _read_json_object(self) -> dict[str, Any] | None:
         """Parse a JSON object from the POST body.

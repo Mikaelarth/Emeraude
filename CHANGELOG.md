@@ -6,6 +6,135 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.0.86] - 2026-04-30
+
+### Added — iter #82 : arrêt d'urgence (Emergency Stop, H2-H4)
+
+L'iter #81 a fermé la chaîne de saisie des credentials. L'iter #82
+livre la **dernière brique de sécurité** côté UI avant le test
+runtime smartphone du palier P1 : un bouton **« Arrêt d'urgence »**
+qui gèle immédiatement le bot (Circuit Breaker -> ``FROZEN``) +
+banner d'alerte + bouton **« Reprendre l'activité »** pour réinitialiser.
+
+Implémente le critère 🔴 **H2-H4 Human override** (stop d'urgence UI).
+
+### Added
+
+- ``src/emeraude/services/dashboard_types.py`` :
+  - ``DashboardSnapshot`` gagne un champ
+    ``circuit_breaker_state: str`` (un de ``HEALTHY`` /
+    ``WARNING`` / ``TRIGGERED`` / ``FROZEN``). Surfacé pour que le
+    Dashboard polling 5 s pump le banner d'alerte sans nouvelle
+    route HTTP. Anti-règle A1 : pas d'état caché.
+- ``src/emeraude/services/dashboard_data_source.py`` :
+  - ``TrackerDashboardDataSource.fetch_snapshot()`` populate le
+    nouveau champ via ``circuit_breaker.get_state().value``.
+    Read-only — la data source ne mute jamais le breaker.
+
+- ``src/emeraude/api/server.py`` :
+  - Route ``POST /api/emergency-stop`` (handler
+    ``_handle_emergency_stop``) : appelle
+    ``circuit_breaker.freeze(reason="emergency_stop:user")`` puis
+    audit ``EMERGENCY_STOP`` avec ``{from, to, source}``. Renvoie
+    ``{state}``. Idempotent : refreezer un breaker déjà gelé est OK.
+  - Route ``POST /api/emergency-reset`` (handler
+    ``_handle_emergency_reset``) : symétrique, appelle
+    ``circuit_breaker.reset(reason="emergency_reset:user")``, audit
+    ``EMERGENCY_RESET``. Rest la mode courant — l'éventuel re-toggle
+    Paper -> Réel reste protégé par le double-tap A5 5 s (iter #80).
+  - Constantes ``_AUDIT_EMERGENCY_STOP`` / ``_AUDIT_EMERGENCY_RESET``
+    distinctes du ``CIRCUIT_BREAKER_STATE_CHANGE`` émis par
+    ``circuit_breaker`` lui-même : permet de filter dans l'audit log
+    "show me when the user pulled the plug" sans faux positifs venant
+    des trips automatisés (drift, drawdown, etc.).
+  - Body POST optionnel : aucun paramètre requis pour ces deux
+    endpoints — l'action est non-ambiguë. Le handler skip
+    proprement le ``_read_json_object`` qui exige un body.
+
+- ``src/emeraude/web/index.html`` :
+  - Nouvelle ligne **"État Circuit Breaker"** dans la card
+    "Statut du bot" du Dashboard, avec chip coloré (vert sain /
+    jaune warning / rouge déclenché ou gelé).
+  - Nouvelle card **"Sécurité"** sur le Dashboard :
+    - Quand ``HEALTHY`` : explication concise + bouton rouge
+      ``Arrêt d'urgence`` (variant flat, color error).
+    - Quand non-``HEALTHY`` : ``v-alert error tonal`` indiquant
+      "Bot arrêté ({state})" + bouton primary ``Reprendre l'activité``.
+  - **Dialog de confirmation arrêt** (``v-dialog persistent``) :
+    titre rouge, explication des conséquences (FROZEN, positions
+    intactes, mode inchangé), boutons Annuler / Confirmer l'arrêt.
+  - **Dialog de confirmation reprise** (``v-dialog persistent``) :
+    titre primary, mention explicite que reprendre ne réactive PAS
+    le mode Réel par lui-même (l'A5 5 s reste appliqué au toggle).
+  - Snackbar feedback ``"Arrêt d'urgence activé."`` /
+    ``"Activité reprise."``.
+  - Computed ``breakerState`` / ``isBreakerHealthy`` /
+    ``breakerLabel`` (Sain / Vigilance / Déclenché / Gelé) /
+    ``breakerChipColor`` / ``breakerChipIcon``
+    (mdi-shield-check-outline / mdi-shield-alert-outline /
+    mdi-alert-octagon-outline / mdi-snowflake).
+  - Helper interne ``applyEmergencyAction(path, msg, onSuccess)``
+    pour DRY entre stop et reset (POST + refetch dashboard +
+    snackbar + ferme le dialog).
+
+- ``tests/unit/test_api_server.py`` : **+7 tests intégration HTTP**
+  - ``test_emergency_stop_requires_auth`` /
+    ``test_emergency_reset_requires_auth`` : 403 sans cookie.
+  - ``test_emergency_stop_freezes_breaker_and_returns_state`` :
+    POST stop -> 200 ``{state: "FROZEN"}`` + round-trip via
+    ``/api/dashboard`` confirme ``circuit_breaker_state === "FROZEN"``.
+  - ``test_emergency_reset_returns_to_healthy`` : freeze puis
+    reset -> ``HEALTHY`` ; round-trip dashboard confirme.
+  - ``test_emergency_stop_idempotent`` /
+    ``test_emergency_reset_idempotent_on_healthy`` : double appel
+    OK pour les deux endpoints.
+  - ``test_emergency_stop_ignores_request_body`` : envoyer un
+    body inattendu ne casse pas l'endpoint.
+- ``tests/unit/test_api_server.py::test_api_dashboard_returns_snapshot``
+  étendu pour assert la présence + le type de
+  ``circuit_breaker_state``.
+- ``tests/unit/test_dashboard_formatter.py`` /
+  ``tests/unit/test_dashboard_screen.py`` /
+  ``tests/unit/test_refresh_cycle.py`` : factories
+  ``_snapshot()`` / fakes mises à jour pour fournir le nouveau
+  champ avec le default ``"HEALTHY"``.
+
+### Changed
+
+- ``src/emeraude/api/server.py`` : docstring de tête mise à jour
+  pour lister les 9 routes (4 GET + 4 POST + 1 DELETE).
+- ``pyproject.toml`` + ``buildozer.spec`` : ``0.0.85`` -> ``0.0.86``.
+
+### Notes
+
+- **Suite stable à 1 767 tests** (+7 vs v0.0.85), coverage **99.48 %**,
+  ruff + ruff format + mypy strict + bandit + pip-audit OK.
+- **Mesure objectif iter #82** :
+  - Avant : 0 endpoint emergency stop ; pas de bouton « Arrêt
+    d'urgence » côté SPA ; le ``CircuitBreaker`` est câblé infra
+    mais pas exposé HTTP.
+  - Après : **2 routes POST + champ breaker dans DashboardSnapshot
+    + carte Sécurité avec stop/reset + 2 dialogs + audit
+    ``EMERGENCY_STOP``/``EMERGENCY_RESET``** -> ✅ atteint.
+- **Sécurité (anti-règle A5 + R10)** :
+  - Pas de countdown 5 s sur le **stop** (A5 protège l'**activation**
+    du trading réel — un stop est l'inverse, doit être instantané).
+  - Pas de countdown sur le **reset** non plus : la barrière A5
+    s'applique au prochain toggle Paper -> Réel, qui reste séparé.
+  - **R10 Circuit Breaker non-bypass** : aucune route n'expose un
+    "skip breaker" — la seule façon de retrader après un stop est
+    le reset explicite + (si Réel) le double-tap A5.
+  - L'``EMERGENCY_STOP`` audit trace la décision **utilisateur**
+    spécifiquement, séparé du ``CIRCUIT_BREAKER_STATE_CHANGE``
+    technique du breaker.
+- **Statut palier P1 après iter #82** :
+  - ✅ P1.8 Toggle Bot Maître exige confirmation argent réel (#80)
+  - ✅ Section Connexion Binance complète (#81)
+  - ✅ Stop d'urgence UI (#82, ce iter)
+  - 🔴 P1.1-P1.4 (runtime smartphone Android requis)
+- Reste pour l'iter #83+ : merge sur main pour déclencher le build
+  APK CI, puis test runtime sur Redmi (P1.1-P1.4).
+
 ## [0.0.85] - 2026-04-30
 
 ### Added — iter #81 : saisie clés API Binance (GET/POST/DELETE /api/credentials)
